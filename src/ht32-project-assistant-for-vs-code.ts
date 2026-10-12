@@ -145,7 +145,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         const _f: string | undefined = _s['ht32.activeProjectFile'];
         if (_f) {
           const _p = path.isAbsolute(_f) ? _f : path.join(bgParentDir, _f);
-          projects = JSON.parse(fs.readFileSync(_p, 'utf8')).projects ?? [];
+          projects = parseHt32vsFile(_p)?.projects ?? [];
         }
       } catch {}
       const idx = projects.indexOf(bgName);
@@ -241,11 +241,11 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!activeFile) { vscode.window.showErrorMessage('No active project file.'); return; }
       // Read currently listed projects from .ht32vs
       const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
-      let existing: string[] = [];
-      try {
-        const ws = JSON.parse(fs.readFileSync(ht32wsPath, 'utf8'));
-        if (Array.isArray(ws.projects)) { existing = ws.projects; }
-      } catch {}
+      const _parsed = parseHt32vsFile(ht32wsPath, e =>
+        vscode.window.showErrorMessage(`Project file "${path.basename(ht32wsPath)}" contains invalid JSON: ${e.message}`)
+      );
+      if (!_parsed) return;
+      const existing: string[] = _parsed.projects ?? [];
       // Find bgDirs in the same parent that are not yet listed
       const available = fs.existsSync(parent)
         ? fs.readdirSync(parent).filter(d => isBgDir(parent, d) && !existing.includes(d)).sort()
@@ -288,14 +288,11 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!activeFile) return;
       const dirName = item.id ? path.basename(item.id as string) : (item.label as string);
       const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
-      let projects: string[] = [];
-      try {
-        const ws = JSON.parse(fs.readFileSync(ht32wsPath, 'utf8'));
-        if (Array.isArray(ws.projects)) { projects = ws.projects; }
-      } catch (e: any) {
-        vscode.window.showErrorMessage(`Project file "${path.basename(ht32wsPath)}" contains invalid JSON: ${e.message}`);
-        return;
-      }
+      const parsed = parseHt32vsFile(ht32wsPath, e =>
+        vscode.window.showErrorMessage(`Project file "${path.basename(ht32wsPath)}" contains invalid JSON: ${e.message}`)
+      );
+      if (!parsed) return;
+      const projects: string[] = parsed.projects ?? [];
       if (projects.length <= 1) {
         vscode.window.showWarningMessage('Cannot remove the only remaining sub-project.');
         return;
@@ -392,8 +389,8 @@ export async function activate(ctx: vscode.ExtensionContext) {
       // Collect all bgDirs for per-project settings panel
       const bgParentDir = root ? bgParent(root) : undefined;
       const activeBg = vscode.workspace.getConfiguration('ht32').get<string>('activeBuildGen') || '';
-      const allowedBgs = bgParentDir ? readAllowedBgSet(bgParentDir) : undefined;
       const ht32vsOrder = bgParentDir ? readProjectOrder(bgParentDir) : undefined;
+      const allowedBgs = ht32vsOrder ? new Set(ht32vsOrder) : undefined;
       const ht32vsOrderMap = ht32vsOrder ? new Map(ht32vsOrder.map((p, i) => [p, i])) : undefined;
       const bgDirNames: string[] = bgParentDir && fs.existsSync(bgParentDir)
         ? fs.readdirSync(bgParentDir).filter(d =>
@@ -1529,8 +1526,7 @@ function addNewProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       const af = readActiveProjectFile(wsOpenRootPre);
       if (af) {
         const afPath = path.isAbsolute(af) ? af : path.join(wsOpenRootPre, af);
-        let existing: string[] = [];
-        try { existing = JSON.parse(fs.readFileSync(afPath, 'utf8')).projects ?? []; } catch {}
+        const existing: string[] = parseHt32vsFile(afPath)?.projects ?? [];
         if (existing.length === 1) {
           const defaultName = path.basename(lockedFolder);
           const name = await showInputDialog({
@@ -1779,10 +1775,15 @@ function readActiveProjectFile(bgParentDir: string): string | undefined {
   } catch { return undefined; }
 }
 
-/** 從 active .ht32vs 讀取允許顯示的 bgDir 名稱集合；無 .ht32vs 時回傳 undefined（不過濾）。 */
-function readAllowedBgSet(bgParentDir: string): Set<string> | undefined {
-  const order = readProjectOrder(bgParentDir);
-  return order ? new Set(order) : undefined;
+/** 讀取並解析 .ht32vs 檔案，相容 trailing comma；失敗時回傳 undefined 並呼叫 onError。 */
+function parseHt32vsFile(filePath: string, onError?: (e: Error) => void): { projects: string[] } | undefined {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw.replace(/,\s*([}\]])/g, '$1'));
+  } catch (e) {
+    onError?.(e instanceof Error ? e : new Error(String(e)));
+    return undefined;
+  }
 }
 
 /** 從 active .ht32vs 讀取 projects[] 順序陣列；無 .ht32vs 時回傳 undefined。 */
@@ -1790,12 +1791,14 @@ function readProjectOrder(bgParentDir: string): string[] | undefined {
   const activeFile = readActiveProjectFile(bgParentDir);
   if (!activeFile) return undefined;
   const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(bgParentDir, activeFile);
-  try {
-    const ws = JSON.parse(fs.readFileSync(ht32wsPath, 'utf8'));
-    if (Array.isArray(ws.projects) && ws.projects.length > 0) {
-      return ws.projects.filter((p: unknown): p is string => typeof p === 'string');
-    }
-  } catch {}
+  const ws = parseHt32vsFile(ht32wsPath, () =>
+    vscode.window.showWarningMessage(
+      `HT32: "${path.basename(ht32wsPath)}" 格式錯誤，無法解析，將顯示所有專案。請檢查 JSON 格式是否正確。`
+    )
+  );
+  if (ws && Array.isArray(ws.projects) && ws.projects.length > 0) {
+    return ws.projects.filter((p: unknown): p is string => typeof p === 'string');
+  }
   return undefined;
 }
 
@@ -1846,8 +1849,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     const af = readActiveProjectFile(bgParent(wsOpenRoot));
     if (af) {
       const afPath = path.isAbsolute(af) ? af : path.join(bgParent(wsOpenRoot), af);
-      let existing: string[] = [];
-      try { existing = JSON.parse(fs.readFileSync(afPath, 'utf8')).projects ?? []; } catch {}
+      const existing: string[] = parseHt32vsFile(afPath)?.projects ?? [];
       if (existing.length === 1) {
         const defaultName = path.basename(path.dirname(bgParent(wsOpenRoot)));
         const name = await showInputDialog({
@@ -3656,8 +3658,8 @@ async function generateTasksAndLaunch(
     const _f: string | undefined = _s['ht32.activeProjectFile'];
     if (_f) {
       const _p = path.isAbsolute(_f) ? _f : path.join(bgParentDir, _f);
-      const _ws = JSON.parse(fs.readFileSync(_p, 'utf8'));
-      if (Array.isArray(_ws.projects)) ht32vsOrder = _ws.projects.filter((p: unknown): p is string => typeof p === 'string');
+      const _ws = parseHt32vsFile(_p);
+      if (_ws && Array.isArray(_ws.projects)) ht32vsOrder = _ws.projects.filter((p: unknown): p is string => typeof p === 'string');
     }
   } catch {}
   let bgDirs: string[];
@@ -4853,7 +4855,7 @@ function registerTreeEditCommands(
     if (!ht32vsName) return;
     const ht32vsPath = path.join(bgParentDir, ht32vsName);
     let projects: string[] = [];
-    try { projects = JSON.parse(fs.readFileSync(ht32vsPath, 'utf8')).projects ?? []; } catch {}
+    projects = parseHt32vsFile(ht32vsPath)?.projects ?? [];
     const idx = projects.indexOf(bgName);
     const newIdx = idx + delta;
     if (idx < 0 || newIdx < 0 || newIdx >= projects.length) return;
@@ -4998,10 +5000,7 @@ function writeOrUpdateProjectFile(bgParentDir: string, bgDirs: string[], project
   const ht32wsPath = path.join(bgParentDir, projectName + '.ht32vs');
   let prevProjects: string[] = [];
   if (fs.existsSync(ht32wsPath)) {
-    try {
-      const existing = JSON.parse(fs.readFileSync(ht32wsPath, 'utf8'));
-      if (Array.isArray(existing.projects)) { prevProjects = existing.projects; }
-    } catch {}
+    prevProjects = parseHt32vsFile(ht32wsPath)?.projects ?? [];
   }
   const merged = [...new Set([...prevProjects, ...bgDirs])];
   fs.writeFileSync(ht32wsPath, JSON.stringify({ projects: merged }, null, 2), 'utf8');
@@ -5073,13 +5072,11 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const _activeFile: string | undefined = _settingsData['ht32.activeProjectFile'];
     if (_activeFile) {
       const _ht32wsPath = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
-      try {
-        const ws = JSON.parse(fs.readFileSync(_ht32wsPath, 'utf8'));
-        if (Array.isArray(ws.projects) && ws.projects.length > 0) {
-          wsProjectOrder = ws.projects.filter((p: unknown): p is string => typeof p === 'string');
-          wsAllowedDirs = new Set(wsProjectOrder);
-        }
-      } catch {}
+      const _ws = parseHt32vsFile(_ht32wsPath);
+      if (_ws && Array.isArray(_ws.projects) && _ws.projects.length > 0) {
+        wsProjectOrder = _ws.projects.filter((p: unknown): p is string => typeof p === 'string');
+        wsAllowedDirs = new Set(wsProjectOrder);
+      }
     }
     let dirs: string[];
     try {

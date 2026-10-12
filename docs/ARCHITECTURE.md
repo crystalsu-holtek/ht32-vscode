@@ -205,14 +205,16 @@ vscode.window.registerCustomEditorProvider('ht32.ht32vsEditor', {
 
 ### .ht32vs 過濾機制
 
-TreeView、toolbar QuickPick（Build/Clean/Download）、Settings WebView、Debug 設定選擇，全部透過 `readAllowedBgSet(bgParentDir)` 讀取 active `.ht32vs` 的 projects 清單，並在掃描 bgDir 時套用過濾，確保只顯示 `.ht32vs` 內列出的 sub-project。
+TreeView、toolbar QuickPick（Build/Clean/Download）、Settings WebView、Debug 設定選擇，全部透過 `readProjectOrder(bgParentDir)` 讀取 active `.ht32vs` 的 projects 清單，並在掃描 bgDir 時套用過濾，確保只顯示 `.ht32vs` 內列出的 sub-project。
 
 ```
-readAllowedBgSet()
+readProjectOrder()
   → readActiveProjectFile()   ← 從 .vscode/settings.json 讀 ht32.activeProjectFile
-  → 讀 .ht32vs JSON           ← 取得 projects 陣列
-  → 回傳 Set<string>          ← undefined 表示不過濾（Open Folder 模式）
+  → parseHt32vsFile()         ← 讀 .ht32vs JSON，相容 trailing comma
+  → 回傳 string[] | undefined ← undefined 表示不過濾（Open Folder 模式）
 ```
+
+各 call site 從 `readProjectOrder()` 結果自行建立 `new Set(order)` 用於過濾，或 `new Map(order.map((p,i)=>[p,i]))` 用於排序。
 
 ### Open Folder 模式 vs Open Project 模式
 
