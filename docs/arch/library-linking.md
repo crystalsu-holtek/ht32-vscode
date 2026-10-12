@@ -36,7 +36,7 @@ $(BUILD)/$(TARGET).elf: $(OBJ) $(LIBS) | $(BUILD)
   → parseCProjectFile() → extraLibFiles[] (resolved absolute)
   → buildProjectMeta()  → groups["Libraries"][]
   → project.meta.json   → groups.Libraries
-  → updateProjectMeta() → buildRelPaths → libFiles → LIBS :=
+  → refreshDerivedFiles() → buildRelPaths → libFiles → LIBS :=
 ```
 
 ### 實際案例

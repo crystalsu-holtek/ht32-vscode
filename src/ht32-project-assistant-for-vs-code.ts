@@ -14,7 +14,7 @@ import { semverCmp, writeProjectLists } from './tools/utils';
 import { syncAfterBuildBats } from './tools/afterbuildSync';
 import * as https from 'https';
 
-let extensionPath: string;    // set in activate(), used by generateTasksAndLaunch()
+let extensionPath: string;    // set in activate(), used by generateTasksAndLaunchAndMakefile()
 let extensionVersion = '';    // set in activate(), injected into project.meta.json
 let _recentTree: RecentTreeProvider | undefined;  // set in activate()
 
@@ -61,6 +61,14 @@ export async function activate(ctx: vscode.ExtensionContext) {
     ctx.globalState.update('ht32.focusOnActivate', false);
     setTimeout(() => vscode.commands.executeCommand('ht32RecentView.focus'), 300);
     setTimeout(() => vscode.commands.executeCommand('ht32RecentView.focus'), 1000);
+  }
+
+  // open project / convert 後 reload：在背景工作開始之前立刻切回 HT32 panel，
+  // 避免使用者一直看著 Explorer 等慢操作（initProjectsFromMeta / generateTasksAndLaunchAndMakefile）結束。
+  if (ctx.globalState.get('ht32.focusHt32OnActivate')) {
+    ctx.globalState.update('ht32.focusHt32OnActivate', false);
+    setTimeout(() => vscode.commands.executeCommand(`workbench.view.extension.${CONTAINER_VIEW_ID}`), 200);
+    setTimeout(() => vscode.commands.executeCommand(`${PROJECT_VIEW_ID}.focus`), 350);
   }
 
   // StatusBar
@@ -180,7 +188,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         return;
       }
       await addRecentProject(ctx, filePath);
-      await openHt32wsFile(ctx, tree, filePath);
+      await openHt32vsFile(ctx, tree, filePath);
     }),
     vscode.commands.registerCommand('ht32.createProject', () => createProjectCommand(ctx, tree, treeView)),
     vscode.commands.registerCommand('ht32.addNewProject', () => addNewProjectCommand(ctx, tree, treeView)),
@@ -364,7 +372,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('ht32.convertUvision', () => convertUvision(ctx, tree, treeView)),
     vscode.commands.registerCommand('ht32.convertHt32Ide', () => convertHt32Ide(ctx, tree, treeView)),
-    vscode.commands.registerCommand('ht32.generateTasksLaunch', () => generateTasksLaunchCommand()),
+    vscode.commands.registerCommand('ht32.generateTasksLaunch', () => generateTasksLaunchCommand(ctx)),
     vscode.commands.registerCommand('ht32.regenerateCompileCommands', () => regenerateCompileCommandsCommand()),
     vscode.commands.registerCommand('ht32.regenerateMakefile', async () => {
       const root = currentWsRoot();
@@ -422,7 +430,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       openSettingsPanel(bgDirsArg, availableFlms, autoLoadersByBg, projectNamesByBg, flmAddrMap, settingsOcdExe, settingsOcdRoot, extensionPath, async (updateConfig) => {
         if (!root) return;
         if (updateConfig) {
-          await generateTasksAndLaunch(root);            // tasks/launch + full regen
+          await generateTasksAndLaunchAndMakefile(root);            // tasks/launch + full regen
         } else {
           await regenAllMakefileFlags(root, bgDirsArg);  // 只 regen 此 .ht32vs 的 projects
         }
@@ -591,7 +599,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.window.registerCustomEditorProvider('ht32.ht32vsEditor', {
       async resolveCustomTextEditor(document: vscode.TextDocument, webviewPanel: vscode.WebviewPanel) {
-        openHt32wsFile(ctx, tree, document.uri.fsPath).then(() => {
+        openHt32vsFile(ctx, tree, document.uri.fsPath).then(() => {
           try { webviewPanel.dispose(); } catch {}
         }).catch(() => {});
       }
@@ -604,7 +612,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const folder = path.dirname(doc.uri.fsPath);
       const currentRoot = currentWsRoot();
       if (!currentRoot || path.resolve(currentRoot) !== path.resolve(folder)) {
-        openHt32wsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
+        openHt32vsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
       }
     })
   );
@@ -615,18 +623,18 @@ export async function activate(ctx: vscode.ExtensionContext) {
     const folder = path.dirname(doc.uri.fsPath);
     const currentRoot = currentWsRoot();
     if (!currentRoot || path.resolve(currentRoot) !== path.resolve(folder)) {
-      openHt32wsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
+      openHt32vsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
       break;
     }
   }
 
   // 啟動時自動 attach 既有專案、並聚焦到我們的 View
-  await autoAttachProjectFromWorkspace(ctx, tree);
+  await autoAttachProjectFromWorkspace(ctx, tree).catch(e => logError(`autoAttach: ${e?.message ?? e}`));
 
   // 監聽 workspace 變動（例如剛 convert 後 openFolder 造成 reload）
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
-      await autoAttachProjectFromWorkspace(ctx, tree);
+      await autoAttachProjectFromWorkspace(ctx, tree).catch(e => logError(`autoAttach: ${e?.message ?? e}`));
     })
   );
 
@@ -660,16 +668,16 @@ export async function activate(ctx: vscode.ExtensionContext) {
 
     if (hasHint) {
       setTimeout(async () => {
-        // tasks.json 不存在時 generateTasksAndLaunch 會檢查，這裡只補「已有 tasks.json 但工具鏈未裝」的漏洞
+        // tasks.json 不存在時 generateTasksAndLaunchAndMakefile 會檢查，這裡只補「已有 tasks.json 但工具鏈未裝」的漏洞
         if (!fs.existsSync(path.join(root, '.vscode', 'tasks.json'))) return;
         const bgNames   = fs.existsSync(bgParentDir)
           ? fs.readdirSync(bgParentDir).filter(d => isBgDir(bgParentDir, d))
           : [];
         const bgDirsAll = bgNames.map(d => path.join(bgParentDir, d));
-        // 傳 [] 跳過 pyocd 偵測：pyocd 已在 generateTasksAndLaunch 內檢查過，此處只補 gcc/make 的缺口
+        // 傳 [] 跳過 pyocd 偵測：pyocd 已在 generateTasksAndLaunchAndMakefile 內檢查過，此處只補 gcc/make 的缺口
         await resolveToolchain(root, [], async () => {
           if (bgDirsAll.length > 0) { await initProjectsFromMeta(bgDirsAll, root); }
-          await generateTasksAndLaunch(root);
+          await generateTasksAndLaunchAndMakefile(root);
         });
       }, 300);
     }
@@ -977,7 +985,7 @@ const HT32_VSCODE_DIRNAME = 'HT32_VSCode';
 const BG_BASE     = 'Project';
 const BG_BASE_OLD = 'build-gen';   // kept for sort priority in existing old-layout dirs
 
-/** bg dir → config name suffix（與 generateTasksAndLaunch 內的 bgSuffix 邏輯相同） */
+/** bg dir → config name suffix（與 generateTasksAndLaunchAndMakefile 內的 bgSuffix 邏輯相同） */
 function bgDirSuffix(dir: string): string {
   const m = dir.match(/^(?:Project_|build-gen-)(\w+)$/);
   if (m) return m[1].toUpperCase();
@@ -1038,7 +1046,7 @@ async function ensureAdapterSerialFresh(bgDir: string, wsRoot: string): Promise<
   if (adapters.some(a => a.serial === serial)) return true;
 
   writeProjectSettings(bgDir, { ...projSettings, adapterSerial: '' });
-  await generateTasksAndLaunch(wsRoot);
+  await generateTasksAndLaunchAndMakefile(wsRoot);
   return false;
 }
 
@@ -1134,18 +1142,6 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
     }
   }
   await runTask(sel.label);
-}
-
-/** 在目前視窗開啟資料夾；若已在該資料夾則不動。mode='add' 會加入到 multi-root。 */
-async function ensureWorkspaceAt(root: string, mode: 'open' | 'add' = 'open') {
-  const folders = vscode.workspace.workspaceFolders || [];
-  const already = folders.some(f => path.normalize(f.uri.fsPath) === path.normalize(root));
-  if (already) return;
-  if (mode === 'add' && folders.length > 0) {
-    vscode.workspace.updateWorkspaceFolders(folders.length, 0, { uri: vscode.Uri.file(root), name: path.basename(root) });
-    return;
-  }
-  await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(root), false);
 }
 
 /** TreeView 選到 project node 時，更新 settings.json 的 --compile-commands-dir 並重啟 clangd。
@@ -1303,17 +1299,32 @@ async function resolveToolchain(
 
 /** FWLib bat 產生的模板專案：有 project.meta.json 但無 Makefile，
  *  從 meta + settings 自動產生 Makefile / sources.list / includes.list / defines.list / adefines.list / compile_commands.json。
- *  .vscode/ 由呼叫端在此之後呼叫 generateTasksAndLaunch() 產出。 */
+ *  .vscode/ 由呼叫端在此之後呼叫 generateTasksAndLaunchAndMakefile() 產出。 */
 async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<void> {
   const gccFound = await locateArmGcc();
   const gcc = gccFound ?? 'arm-none-eabi-gcc';
   for (const bgDir of bgDirs) {
     try {
+      // skip if Makefile is newer than both input files (settings/meta unchanged since last open)
+      // also require all derived list files to exist — missing lists (e.g. after git clean)
+      // must trigger regeneration even when mtime check would otherwise pass
+      const makefilePath  = path.join(bgDir, 'Makefile');
+      const settingsPath  = path.join(bgDir, 'project.settings.json');
+      const metaPath      = path.join(bgDir, 'project.meta.json');
+      if (fs.existsSync(makefilePath) && fs.existsSync(settingsPath) && fs.existsSync(metaPath)) {
+        const makeMtime     = fs.statSync(makefilePath).mtimeMs;
+        const settingsMtime = fs.statSync(settingsPath).mtimeMs;
+        const metaMtime     = fs.statSync(metaPath).mtimeMs;
+        const allListsExist = ['sources.list', 'includes.list', 'defines.list', 'adefines.list', 'compile_commands.json']
+          .every(f => fs.existsSync(path.join(bgDir, f)));
+        if (allListsExist && makeMtime > settingsMtime && makeMtime > metaMtime) { continue; }
+      }
+
       const meta = readProjectMeta(bgDir);
       if (!meta) continue;
       const s = readProjectSettings(bgDir);
 
-      // 1. 產生 Makefile（srcs 先空，updateProjectMeta 補 SRCS + compile rules）
+      // 1. 產生 Makefile（srcs 先空，refreshDerivedFiles 補 SRCS + compile rules）
       const linkerScripts = (meta.linkerScripts ?? ['../GNU_ARM/linker.ld']);
       const makeText = buildMakefileText({
         target:            s.targetName ?? path.basename(bgDir),
@@ -1340,17 +1351,12 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<v
       });
       fs.writeFileSync(path.join(bgDir, 'Makefile'), makeText);
 
-      // 2. 從 meta 更新 SRCS + 產生 sources.list（open project 路徑，不刪 ELF）
-      updateProjectMeta(bgDir, meta, { skipElfInvalidation: true });
+      // 2. 從 meta 更新 SRCS + sources.list + includes/defines/adefines.list + compile_commands.json
+      //    （refreshDerivedFiles 內部已呼叫 regenerateMakefileFlags 寫三個 list 檔）
+      refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true });
 
-      // 3-5. 產生 includes.list / defines.list / adefines.list
-      writeProjectLists(bgDir, {
-        includes: (s.includePaths ?? []).map(p => `-I"${p}"`).join(' '),
-        defines:  (s.cDefs  ?? []).map(d => `-D${d}`).join(' '),
-        adefines: (s.aDefs  ?? []).map(d => `-D${d}`).join(' '),
-      });
-
-      // 6. 產生 compile_commands.json
+      // 3. 以 locateArmGcc() 的完整路徑（含 auto-detect）重寫 compile_commands.json，
+      //    確保 -isystem 指向正確的 gcc header 目錄（refreshDerivedFiles 內部只讀 VS Code config）
       writeCCDbFromLists(bgDir, {
         gccFullPath: gcc ?? undefined,
         armCore:     s.mcu ?? 'cortex-m3',
@@ -1361,6 +1367,7 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<v
         gcSections:  s.gcSections,
       });
     } catch (e: any) { logError(`initProjectsFromMeta(${bgDir}): ${e?.message ?? e}`); }
+    await new Promise<void>(r => setImmediate(r));
   }
 }
 
@@ -1380,6 +1387,9 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
       } catch { return false; }
     })();
     if (hasBuildGen) {
+      // 儘早設 loading state：讓 tree view 在背景工作完成前顯示 spinner
+      setContextHasProject(true);
+      tree.setLoading(true);
       const _firstBg = (readProjectOrder(parent) ?? fs.readdirSync(parent)).filter(d => isBgDir(parent, d))[0];
       // 從 project.meta.json sources 動態推算 FWLib root，產生 FWLib root .clangd
       try {
@@ -1409,9 +1419,13 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
           writeMakefileToolsSettings(root, bgNames, gccP ?? undefined);
           // 每次開啟都重新產生 tasks.json / launch.json，確保 probe 設定、serverType 等
           // 始終與 project.settings.json 同步，不需要手動 "Generate Build & Debug Config"
-          await generateTasksAndLaunch(root);
+          // regenMakefile: false — initProjectsFromMeta 已處理 Makefile/lists，不需重複
+          await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false });
         }
-      } catch (e: any) { logError(`initProjectsFromMeta failed: ${e?.message ?? e}`); }
+      } catch (e: any) {
+        logError(`initProjectsFromMeta failed: ${e?.message ?? e}`);
+        tree.setLoading(false);
+      }
       // Clear activeBuildGen so folder-mode always shows all projects.
       setActiveBuildGenSetting(computeWsOpenRoot(root), null);
       // Keep activeProjectFile if set — it was written intentionally (by conversion/open-via-ht32ws).
@@ -1431,11 +1445,13 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
       }, 300); // 延遲 0.8 秒讓 View 載入完再跳窗
       */
 
-      // 聚焦我們的容器與樹視圖（延遲一點確保已註冊）
+      // 聚焦 HT32 panel。openFolder reload 路徑的早期 focus 由 ht32.focusHt32OnActivate flag 處理，
+      // 這裡的 focus 是給 onDidChangeWorkspaceFolders（外部觸發）路徑補上，同時也作為 reload 路徑的確認。
       setTimeout(async () => {
         try { await vscode.commands.executeCommand(`workbench.view.extension.${CONTAINER_VIEW_ID}`); } catch {}
         try { await vscode.commands.executeCommand(`${PROJECT_VIEW_ID}.focus`); } catch {}
       }, 400);
+
       return true;
     }
   }
@@ -1483,9 +1499,9 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       const generatedBgDirName = generated.elfPath.split('/')[0] || BG_BASE;
       const cpBgDir = path.join(bgParent(wsOpenRoot), generatedBgDirName);
       const cpMeta  = readProjectMeta(cpBgDir);
-      if (cpMeta) { updateProjectMeta(cpBgDir, cpMeta, { skipElfInvalidation: true }); }
+      if (cpMeta) { persistMeta(cpBgDir, cpMeta, { skipElfInvalidation: true }); }
 
-      await generateTasksAndLaunch(wsOpenRoot, {
+      await generateTasksAndLaunchAndMakefile(wsOpenRoot, {
         bgDirHint:      generatedBgDirName,
         elfPathHint:    generated.elfPath,
         deviceNameHint: generated.deviceName,
@@ -1499,6 +1515,7 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
       const _curRoot = currentWsRoot();
       if (!_curRoot || path.resolve(_curRoot) !== path.resolve(wsOpenRoot)) {
+        ctx.globalState.update('ht32.focusHt32OnActivate', true);
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsOpenRoot));
       } else {
         // writeOrUpdateProjectFile already wrote activeProjectFile to settings.json — just refresh.
@@ -1563,9 +1580,9 @@ function addNewProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       const generatedBgDirName = generated.elfPath.split('/')[0] || BG_BASE;
       const cpBgDir2 = path.join(bgParent(wsOpenRoot), generatedBgDirName);
       const cpMeta2  = readProjectMeta(cpBgDir2);
-      if (cpMeta2) { updateProjectMeta(cpBgDir2, cpMeta2, { skipElfInvalidation: true }); }
+      if (cpMeta2) { persistMeta(cpBgDir2, cpMeta2, { skipElfInvalidation: true }); }
 
-      await generateTasksAndLaunch(wsOpenRoot, {
+      await generateTasksAndLaunchAndMakefile(wsOpenRoot, {
         bgDirHint:      generatedBgDirName,
         elfPathHint:    generated.elfPath,
         deviceNameHint: generated.deviceName,
@@ -1607,11 +1624,11 @@ async function openProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTre
   if (!picks || !picks[0]) return;
   const ht32wsPath = picks[0].fsPath;
   await addRecentProject(ctx, ht32wsPath);
-  await openHt32wsFile(ctx, tree, ht32wsPath);
+  await openHt32vsFile(ctx, tree, ht32wsPath);
 }
 
 /** Open a .ht32vs project file: set it as active and open the parent folder if needed. */
-async function openHt32wsFile(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, ht32wsPath: string) {
+async function openHt32vsFile(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, ht32wsPath: string) {
   const bgParentDir = path.dirname(ht32wsPath);
   const fileName    = path.basename(ht32wsPath);
   const currentRoot = currentWsRoot();
@@ -1636,6 +1653,7 @@ async function openHt32wsFile(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       fs.mkdirSync(path.join(bgParentDir, '.vscode'), { recursive: true });
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
     } catch {}
+    ctx.globalState.update('ht32.focusHt32OnActivate', true);
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bgParentDir));
   }
 }
@@ -1688,6 +1706,7 @@ async function openProjectFolderCommand(ctx: vscode.ExtensionContext, tree: Proj
     // 已在同一個 workspace — settings.json 已被 clearActiveProjectFileSetting 清掉，直接 re-attach
     await autoAttachProjectFromWorkspace(ctx, tree);
   } else {
+    ctx.globalState.update('ht32.focusHt32OnActivate', true);
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsRoot));
   }
 }
@@ -1955,7 +1974,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       }
     } // end for
 
-    // Write .ht32vs before generateTasksAndLaunch so that Build All order matches TreeView order.
+    // Write .ht32vs before generateTasksAndLaunchAndMakefile so that Build All order matches TreeView order.
     let uvProjFile: string;
     if (uvMultiProjSetup) {
       writeOrUpdateProjectFile(bgParent(wsOpenRoot), [projDirNames[0]], projDirNames[0]);
@@ -1965,7 +1984,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     }
     await addRecentProject(ctx, uvProjFile);
 
-    await generateTasksAndLaunch(wsOpenRoot, {
+    await generateTasksAndLaunchAndMakefile(wsOpenRoot, {
       bgDirHint:      activeBgDir,
       elfPathHint:    activeResult?.elfPath,
       deviceNameHint: activeResult?.deviceName,
@@ -1977,7 +1996,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     runAfterBuildSync(wsOpenRoot);
 
     // Sync auto-detected floatAbi/fpu into settings.json so Settings WebView reflects
-    // the actual Makefile values. Done after generateTasksAndLaunch (which creates
+    // the actual Makefile values. Done after generateTasksAndLaunchAndMakefile (which creates
     // settings.json). Use direct file write — cfg.update() requires workspace to be open
     // but ensureWorkspaceAt hasn't been called yet.
     if (activeResult) {
@@ -2031,6 +2050,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       setTimeout(() => vscode.commands.executeCommand('workbench.panel.markers.view.focus'), 300);
     }
     if (needsReload2) {
+      ctx.globalState.update('ht32.focusHt32OnActivate', true);
       await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsOpenRoot));
     }
   });
@@ -2128,7 +2148,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       const r = convertHt32IdeProject(projectDir, { extPath: extensionPath, gccPath });
       ideConvertWarnings.push(...r.warnings);
       convResults.push({ bgDir: r.bgDir, projectName: r.projectName });
-      updateProjectMeta(r.bgDir, r.meta);
+      persistMeta(r.bgDir, r.meta);
       if (!activeWsRoot) {
         activeWsRoot  = r.wsRoot;
         activeDirName = r.dirName;
@@ -2140,7 +2160,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
     const ideWsOpenRoot = computeWsOpenRoot(activeWsRoot!);
 
-    // Write .ht32vs before generateTasksAndLaunch so that Build All order matches TreeView order.
+    // Write .ht32vs before generateTasksAndLaunchAndMakefile so that Build All order matches TreeView order.
     // For multiple projects: write one .ht32vs per sub-project (each listing only itself),
     // then write (and activate) one merged .ht32vs listing all converted projects.
     if (convResults.length > 1) {
@@ -2159,7 +2179,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       await addRecentProject(ctx, ideProjFile);
     }
 
-    await generateTasksAndLaunch(ideWsOpenRoot, {
+    await generateTasksAndLaunchAndMakefile(ideWsOpenRoot, {
       bgDirHint:      activeDirName,
       deviceNameHint: activeResult?.deviceName,
       mcuHint:        activeResult?.armCore,
@@ -2213,6 +2233,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       }
     }
     if (needsReload3) {
+      ctx.globalState.update('ht32.focusHt32OnActivate', true);
       await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(ideWsOpenRoot));
     }
   });
@@ -2263,7 +2284,7 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
 
 }
 
-async function generateTasksLaunchCommand() {
+async function generateTasksLaunchCommand(ctx: vscode.ExtensionContext) {
   // 優先使用已開啟的 workspace root，否則才跳 folder picker
   const wsFolder = currentWsRoot()
     ?? (await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectMany: false }))?.[0]?.fsPath;
@@ -2274,12 +2295,13 @@ async function generateTasksLaunchCommand() {
   const root = computeWsOpenRoot(wsFolder);
 
   await withProgress('Generate Build & Debug Config', async () => {
-    await generateTasksAndLaunch(root);
+    await generateTasksAndLaunchAndMakefile(root);
     vscode.window.showInformationMessage('tasks.json & launch.json updated under .vscode/');
   });
 
   // Switch workspace to HT32_VSCode/ if needed (same as Convert flow)
   if (path.resolve(root) !== path.resolve(wsFolder)) {
+    ctx.globalState.update('ht32.focusHt32OnActivate', true);
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(root));
   }
 }
@@ -2528,11 +2550,17 @@ function readSettingsIni(extPath: string): Record<string, number> {
  */
 // Cache: pdscPath → raw XML string；同一 PDSC 檔案只讀一次，解析仍各自按需進行
 const _pdscRawCache = new Map<string, string>();
+// Cache: deviceName → parsed result；同一 device 只 parse 一次
+// INVARIANT: extPath === extensionPath，在 activate() 中設定後 session 內不變，故 key 不含 extPath
+const _mcuCfgResultCache = new Map<string, { flashStart: number; flashEnd: number; optStart: number; optEnd: number } | null>();
+// Cache: `${deviceName}:${flashSizeBytes}` → FLM basename（同上 extPath invariant）
+const _internalFlmCache = new Map<string, string | undefined>();
 
 function parseMcuCfg(deviceName: string, extPath: string): {
   flashStart: number; flashEnd: number;
   optStart:   number; optEnd:   number;
 } | null {
+  if (_mcuCfgResultCache.has(deviceName)) return _mcuCfgResultCache.get(deviceName) ?? null;
   const stripped = deviceName.replace(/_[^_]+$/, '');
   const parser = new XMLParser({
     ignoreAttributes: false, attributeNamePrefix: '',
@@ -2569,17 +2597,20 @@ function parseMcuCfg(deviceName: string, extPath: string): {
               }
             }
             if (flashStart !== undefined && flashEnd !== undefined) {
-              return {
+              const result = {
                 flashStart, flashEnd,
                 optStart: optStart ?? 0x1FF00000,
                 optEnd:   optEnd   ?? 0x1FF00FFF,
               };
+              _mcuCfgResultCache.set(deviceName, result);
+              return result;
             }
           }
         }
       }
     } catch { /* malformed PDSC — try next */ }
   }
+  _mcuCfgResultCache.set(deviceName, null);
   return null;
 }
 
@@ -2589,6 +2620,8 @@ function parseMcuCfg(deviceName: string, extPath: string): {
  * Returns FLM basename (e.g. "HT32F493x5_512.FLM"), or undefined if not found.
  */
 function selectInternalFlm(deviceName: string, flashSizeBytes: number, extPath: string): string | undefined {
+  const cacheKey = `${deviceName}:${flashSizeBytes}`;
+  if (_internalFlmCache.has(cacheKey)) return _internalFlmCache.get(cacheKey);
   const stripped = deviceName.replace(/_[^_]+$/, '');
   const parser = new XMLParser({
     ignoreAttributes: false, attributeNamePrefix: '',
@@ -2616,7 +2649,9 @@ function selectInternalFlm(deviceName: string, flashSizeBytes: number, extPath: 
               if (/OPT/i.test(algName)) continue;                    // skip option bytes
               const algSize = parseInt(algo.size);
               if (!isNaN(algSize) && Math.abs(algSize - flashSizeBytes) < 1024) {
-                return path.basename(algName);  // e.g. "HT32F493x5_512.FLM"
+                const flm = path.basename(algName);
+                _internalFlmCache.set(cacheKey, flm);
+                return flm;
               }
             }
           }
@@ -2624,6 +2659,7 @@ function selectInternalFlm(deviceName: string, flashSizeBytes: number, extPath: 
       }
     } catch { /* malformed PDSC — try next */ }
   }
+  _internalFlmCache.set(cacheKey, undefined);
   return undefined;
 }
 
@@ -3329,13 +3365,21 @@ function generatePyocdFiles(
  * Returns undefined when pyocd is already in PATH (cortex-debug finds it automatically).
  */
 let _pyocdInstallPromise: Promise<string | undefined> | undefined;
+let _pyocdPathCache: string | null | undefined = undefined;  // undefined = not checked, null = not found
 
 async function findOrInstallPyocd(extPath: string): Promise<string | undefined> {
+  if (_pyocdPathCache !== undefined) return _pyocdPathCache ?? undefined;
   if (_pyocdInstallPromise) return _pyocdInstallPromise;
-  return (_pyocdInstallPromise = _doFindOrInstallPyocd(extPath).finally(() => { _pyocdInstallPromise = undefined; }));
+  return (_pyocdInstallPromise = _doFindOrInstallPyocd(extPath).then(r => {
+    // null  = permanent no-path state (in PATH, no uv): cache so we skip subprocess next call
+    // string = found uv-managed path: cache
+    // undefined = user declined / install failed: don't cache, re-ask / retry next call
+    if (r !== undefined) _pyocdPathCache = r;
+    return r ?? undefined;
+  }).finally(() => { _pyocdInstallPromise = undefined; }));
 }
 
-async function _doFindOrInstallPyocd(extPath: string): Promise<string | undefined> {
+async function _doFindOrInstallPyocd(extPath: string): Promise<string | null | undefined> {
   function runCmd(cmd: string, timeoutMs: number): Promise<{ ok: boolean; out: string }> {
     return new Promise(resolve => {
       cpExec(cmd, { windowsHide: true, timeout: timeoutMs }, (err, stdout) => {
@@ -3348,14 +3392,14 @@ async function _doFindOrInstallPyocd(extPath: string): Promise<string | undefine
   const inPath = await runCmd('pyocd --version', 5000);
   if (inPath.ok) {
     logInfo('[pyOCD] found in PATH');
-    return undefined;
+    return null;  // cache: permanent no-path state (cortex-debug finds it via PATH)
   }
 
   // 2. Bundled uv (Windows only)
   const uvExe = path.join(extPath, 'bin', 'win32-x64', 'uv.exe');
   if (!fs.existsSync(uvExe)) {
     logWarn('[pyOCD] not in PATH and bundled uv not found — skipping auto-install');
-    return undefined;
+    return null;  // cache: permanent no-path state for this session
   }
 
   // 3. Check if already installed via uv
@@ -3623,9 +3667,9 @@ function runAfterBuildSync(wsRoot: string): void {
   } catch (e: any) { logError(`afterbuildSync failed: ${e?.message ?? e}`); }
 }
 
-async function generateTasksAndLaunch(
+async function generateTasksAndLaunchAndMakefile(
   root: string,
-  opts?: { bgDirHint?: string; elfPathHint?: string; deviceNameHint?: string; mcuHint?: string; ramOriginHint?: string; ramLengthHint?: string; spimFlmHint?: string },
+  opts?: { bgDirHint?: string; elfPathHint?: string; deviceNameHint?: string; mcuHint?: string; ramOriginHint?: string; ramLengthHint?: string; spimFlmHint?: string; regenMakefile?: boolean },
   isRetry = false
 ) {
   const cfg = vscode.workspace.getConfiguration('ht32');
@@ -3685,7 +3729,9 @@ async function generateTasksAndLaunch(
     const bp      = bgParent(root);
     const bgNames = fs.existsSync(bp) ? fs.readdirSync(bp).filter(d => isBgDir(bp, d)) : [];
     if (bgNames.length) await initProjectsFromMeta(bgNames.map(d => path.join(bp, d)), root);
-    await generateTasksAndLaunch(root, opts, true);
+    // 工具鏈剛安裝完，必須完整 regen（不沿用 open-project 路徑的 regenMakefile: false）
+    const { regenMakefile: _dropped, ...optsForRetry } = opts ?? {};
+    await generateTasksAndLaunchAndMakefile(root, optsForRetry, true);
   };
   const { makePathFull, makeExe, gccPath, pyocdPath: pyocdServerPath } = await resolveToolchain(
     root, bgFullDirs, onToolchainInstalled
@@ -4318,13 +4364,18 @@ async function generateTasksAndLaunch(
         dependsOrder: 'sequence',
       });
     }
+    // yield to event loop so output channel flushes after each project (avoids all logs appearing at once)
+    await new Promise<void>(r => setImmediate(r));
   }
 
   writeJsonPretty(path.join(vscodeDir, 'tasks.json'), { version: '2.0.0', tasks: taskList });
   writeJsonPretty(path.join(vscodeDir, 'launch.json'), { version: '0.2.0', configurations });
 
   // Makefile flags 重新產生（只處理本次已知有 Makefile 的 bgDirs，避免掃到同目錄下其他專案）
-  await regenAllMakefileFlags(root, bgDirs.map(d => ({ name: d, dir: path.join(bgParentDir, d) })));
+  // regenMakefile 預設 true；open project 路徑（initProjectsFromMeta 已做完）傳 false 跳過
+  if (opts?.regenMakefile !== false) {
+    await regenAllMakefileFlags(root, bgDirs.map(d => ({ name: d, dir: path.join(bgParentDir, d) })));
+  }
 }
 
 
@@ -4353,7 +4404,7 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
       const meta = readProjectMeta(bgDir);
       if (meta) {
         // per-file rules (--redefine-sym, -mpure-code) + CFLAGS/LDFLAGS + CCDb in one pass
-        updateProjectMeta(bgDir, meta, { skipElfInvalidation: true });
+        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true });
         continue;
       }
       // fallback: no project.meta.json (very old projects), patch CFLAGS/LDFLAGS only
@@ -4429,14 +4480,12 @@ interface ProjectEntry {
  * ───────────────────────────────────────────── */
 
 /**
- * Persist modified meta back to disk:
- *  1. project.meta.json
- *  2. sources.list   (flat list, all groups)
- *  3. Makefile SRCS line (regex replacement)
+ * Regenerate all derived build files from the current meta + project.settings.json,
+ * without touching project.meta.json.
+ * Called by persistMeta (after writing meta) and by read-only paths (open project,
+ * regenAllMakefileFlags) that need to refresh build files without modifying meta.
  */
-function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidation?: boolean }): void {
-  if (extensionVersion) { meta.metaVersion = extensionVersion; }
-  fs.writeFileSync(path.join(buildGenDir, 'project.meta.json'), JSON.stringify(meta, null, 2));
+function refreshDerivedFiles(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidation?: boolean }): void {
 
   // meta.groups paths are relative to project root (grandparent of Project dir,
   // same in both old layout .vscode/build-gen and new layout HT32_VSCode/Project).
@@ -4559,8 +4608,7 @@ function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInva
   }
 
   // 5. Rebuild LDFLAGS + elf dependency from meta.linkerScripts[] via shared regenerate.
-  //    meta.json was already written at the top of this function, so regenerateMakefileFlags
-  //    will read the updated linkerScripts[] from it.
+  //    meta.json on disk is the authoritative source for linkerScripts[] here.
   const bgProjSettings = readProjectSettings(buildGenDir);
   if (bgProjSettings.mcu) {
     const bgBuildMeta = { mcu: bgProjSettings.mcu!, targetName: bgProjSettings.targetName ?? 'firmware' };
@@ -4582,6 +4630,8 @@ function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInva
         scanfFloat:        bgProjSettings.scanfFloat         ?? false,
         gcSections:        bgProjSettings.gcSections,
         includePaths:      bgProjSettings.includePaths       ?? [],
+        cDefs:             bgProjSettings.cDefs              ?? [],
+        aDefs:             bgProjSettings.aDefs              ?? [],
         outputName:        bgProjSettings.outputName?.trim() || undefined,
       });
     } catch { /* Makefile might not exist for new projects mid-creation */ }
@@ -4600,7 +4650,7 @@ function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInva
       gcSections:  bgProjSettings.gcSections,
     });
   } catch (e) {
-    logWarn(`updateProjectMeta: compile_commands.json update failed: ${e}`);
+    logWarn(`refreshDerivedFiles: compile_commands.json update failed: ${e}`);
   }
 
   // 6. Patch linker script ROM regions for files with rom fileOption
@@ -4609,7 +4659,7 @@ function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInva
     try {
       patchLinkerScriptRom(ldPath, meta.fileOptions);
     } catch (e: any) {
-      logWarn(`updateProjectMeta: linker script ROM patch failed: ${e?.message ?? e}`);
+      logWarn(`refreshDerivedFiles: linker script ROM patch failed: ${e?.message ?? e}`);
     }
   }
 
@@ -4629,9 +4679,20 @@ function updateProjectMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInva
         }
       }
     } catch (e) {
-      logWarn(`updateProjectMeta: stale ELF cleanup failed: ${e}`);
+      logWarn(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
     }
   }
+}
+
+/**
+ * Persist meta changes to disk and refresh all derived build files.
+ * Use this when meta content has actually changed (TreeView edits, convert, create project).
+ * For read-only paths (open project, regenAllMakefileFlags), use refreshDerivedFiles directly.
+ */
+function persistMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidation?: boolean }): void {
+  if (extensionVersion) { meta.metaVersion = extensionVersion; }
+  fs.writeFileSync(path.join(buildGenDir, 'project.meta.json'), JSON.stringify(meta, null, 2));
+  refreshDerivedFiles(buildGenDir, meta, opts);
 }
 
 /** Parse file item id: "{buildGenDir}::{groupName}::{filePath}" */
@@ -4681,7 +4742,7 @@ function registerTreeEditCommands(
     if (!meta.groups) meta.groups = {};
     if (meta.groups[name]) { vscode.window.showWarningMessage(`Group "${name}" already exists.`); return; }
     meta.groups[name] = [];
-    updateProjectMeta(buildGenDir, meta);
+    persistMeta(buildGenDir, meta);
     tree.refresh();
     // Reveal the new group so user sees it without manually expanding
     const newGroupItem = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.Expanded);
@@ -4697,7 +4758,7 @@ function registerTreeEditCommands(
     if (!meta.groups) meta.groups = {};
     const existing = new Set<string>(meta.groups[groupName] ?? []);
     // Use project root (grandparent of buildGenDir) as the base for relative paths.
-    // This matches the base used by buildProjectMeta() during conversion and by updateProjectMeta().
+    // This matches the base used by buildProjectMeta() during conversion and by refreshDerivedFiles().
     // DO NOT use root() here — for new-layout projects root() points to HT32_VSCode/, which is
     // one level shallower than project root, causing paths like "../foo.a" that resolve incorrectly.
     const projectRoot = path.dirname(path.dirname(buildGenDir));
@@ -4718,7 +4779,7 @@ function registerTreeEditCommands(
       notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
     }
 
-    updateProjectMeta(buildGenDir, meta);
+    persistMeta(buildGenDir, meta);
     tree.refresh();
     const groupItem = new vscode.TreeItem(groupName, vscode.TreeItemCollapsibleState.Expanded);
     groupItem.id = `${buildGenDir}::${groupName}`;
@@ -4785,7 +4846,7 @@ function registerTreeEditCommands(
     const meta = readProjectMeta(buildGenDir);
     if (!meta?.groups) return;
     delete meta.groups[groupName];
-    updateProjectMeta(buildGenDir, meta);
+    persistMeta(buildGenDir, meta);
     tree.refresh();
   }));
 
@@ -4804,7 +4865,7 @@ function registerTreeEditCommands(
       meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
       notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
     }
-    updateProjectMeta(buildGenDir, meta);
+    persistMeta(buildGenDir, meta);
     tree.refresh();
   }));
 
@@ -4840,7 +4901,7 @@ function registerTreeEditCommands(
         meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
         notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
       }
-      updateProjectMeta(buildGenDir, meta);
+      persistMeta(buildGenDir, meta);
     }
     tree.refresh();
   }));
@@ -4863,7 +4924,7 @@ function registerTreeEditCommands(
     fs.writeFileSync(ht32vsPath, JSON.stringify({ projects }, null, 2), 'utf8');
     tree.refresh();
     const wsRoot = tree.getRoot();
-    if (wsRoot) await generateTasksAndLaunch(wsRoot);
+    if (wsRoot) await generateTasksAndLaunchAndMakefile(wsRoot);
   };
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeMoveProjectUp',   (item: vscode.TreeItem) => moveProject(item, -1)));
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeMoveProjectDown', (item: vscode.TreeItem) => moveProject(item,  1)));
@@ -4947,7 +5008,7 @@ function registerTreeEditCommands(
     }
     if (!Object.keys(meta.fileOptions).length) delete meta.fileOptions;
 
-    updateProjectMeta(buildGenDir, meta);
+    persistMeta(buildGenDir, meta);
     tree.refresh();
   }));
 }
@@ -5028,6 +5089,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private root?: string;
   private projects: ProjectEntry[] = [];
   private _clangdActiveBgDir = '';
+  private _loading = false;
 
   setRoot(r: string | undefined) {
     this.root = r;
@@ -5052,7 +5114,13 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     } catch { /* non-critical */ }
   }
 
+  setLoading(v: boolean) {
+    this._loading = v;
+    this._em.fire();
+  }
+
   refresh() {
+    this._loading = false;
     if (!this.root) { this._em.fire(); return; }
     this.projects = this.scanProjects(this.root);
     this._em.fire();
@@ -5153,7 +5221,14 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   getTreeItem(el: vscode.TreeItem) { return el; }
 
   getChildren(el?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
-    if (!this.root) { return Promise.resolve([]); }
+    if (!this.root) {
+      if (this._loading && !el) {
+        const item = new vscode.TreeItem('Loading project...', vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon('loading~spin');
+        return Promise.resolve([item]);
+      }
+      return Promise.resolve([]);
+    }
 
     // 根層：.vscode 節點（顯示 .ht32vs 檔名）+ 每個 build-gen*/ 專案節點
     if (!el) {

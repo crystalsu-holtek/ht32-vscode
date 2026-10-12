@@ -36,8 +36,7 @@
   },
   "activationEvents": [
     "onStartupFinished",
-    "workspaceContains:.vscode/build-gen/project.meta.json",
-    "workspaceContains:.vscode/build-gen/compile_commands.json",
+    "workspaceContains:*/project.meta.json",
     "onView:ht32ProjectView",
     "onCommand:ht32.convertUvision",
     "onCommand:ht32.convertHt32Ide",

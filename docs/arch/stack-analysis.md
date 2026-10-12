@@ -141,7 +141,7 @@ __attribute__((weak, noinline)) void StackUsageAnalysisInit(u32 addr) { ... }
 
 ### 解決方案：source patch（`weak` 互換）
 
-`updateProjectMeta` 偵測到舊版 misc.c 時，直接修改兩個 source 檔：
+`refreshDerivedFiles` 偵測到舊版 misc.c 時，直接修改兩個 source 檔：
 
 | 檔案 | 修改前 | 修改後 |
 |------|--------|--------|
@@ -150,7 +150,7 @@ __attribute__((weak, noinline)) void StackUsageAnalysisInit(u32 addr) { ... }
 
 結果：misc.c 變 weak、ht32_stack_analysis.c 變 strong → linker 選 ht32_stack_analysis.c ✓。clangd 同樣看到 strong symbol 在 ht32_stack_analysis.c，F12 跳到正確檔案 ✓。
 
-**升級 FWLib 後**（舊 misc.c 換成新版）：`updateProjectMeta` 偵測到 misc.c 日期 > 2025-12-02，自動將 ht32_stack_analysis.c 還原為 `weak`，防止 duplicate strong symbol linker error。
+**升級 FWLib 後**（舊 misc.c 換成新版）：`refreshDerivedFiles` 偵測到 misc.c 日期 > 2025-12-02，自動將 ht32_stack_analysis.c 還原為 `weak`，防止 duplicate strong symbol linker error。
 
 > 不修改 `templates/GNU_ARM/ht32_stack_analysis.c`（bundled template），只修改 user project 下的副本。
 
@@ -174,18 +174,19 @@ export function miscCNeedsRedefine(absPath: string): boolean {
 }
 ```
 
-每次 `updateProjectMeta` 即時讀取，不儲存到 `project.meta.json`。
+每次 `refreshDerivedFiles` 即時讀取，不儲存到 `project.meta.json`。
 
 ### 涵蓋路徑
 
-均透過 `updateProjectMeta`：
-- uVision / HT32-IDE / Create Project / Open Project 轉換後立刻呼叫
-- TreeView 操作（加入/移除 group/file、toggle xo…）直接呼叫
-- Settings Save → `regenAllMakefileFlags` → 若有 `project.meta.json` 呼叫 `updateProjectMeta`（`skipElfInvalidation: true`）
+均透過 `refreshDerivedFiles`：
+- uVision / HT32-IDE / Create Project 轉換後，`persistMeta` → `refreshDerivedFiles`
+- Open Project → `initProjectsFromMeta` → `refreshDerivedFiles`（mtime check 後）
+- TreeView 操作（加入/移除 group/file、toggle xo…）→ `persistMeta` → `refreshDerivedFiles`
+- Settings Save / `generateTasksAndLaunchAndMakefile` → `regenAllMakefileFlags` → `refreshDerivedFiles`（`skipElfInvalidation: true`）
 
 ### `.needs-rebuild` 機制
 
-`updateProjectMeta` 比較舊 rules section 與新 rules section。若有差異（`-mpure-code` 等 per-file flag 變動），寫入 `buildGenDir/.needs-rebuild`，下次 Build 前強制 clean rebuild。
+`refreshDerivedFiles` 比較舊 rules section 與新 rules section。若有差異（`-mpure-code` 等 per-file flag 變動），寫入 `buildGenDir/.needs-rebuild`，下次 Build 前強制 clean rebuild。
 
 > source patch（`weak` 互換）直接修改 `.c` 檔，make 自動偵測 source 變更並重新編譯，不依賴 `.needs-rebuild`。
 

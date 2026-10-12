@@ -62,8 +62,8 @@ gcc / make 缺失 warning 在以下兩個時間點各觸發一次（場景不重
 
 | 時間點 | 觸發條件 | 負責範圍 |
 |---|---|---|
-| **extension 啟動**（300ms 後）| 偵測到 HT32 專案（`hasHint`）**且 tasks.json 已存在** | 補漏：tasks.json 存在時 `generateTasksAndLaunch` 被跳過，此處確保使用者曾按 X 略過安裝仍能收到通知 |
-| **`generateTasksAndLaunch`** | tasks.json 不存在、Convert uVision / HT32-IDE、所有轉換流程 | 涵蓋初次設定與所有轉換流程 |
+| **extension 啟動**（300ms 後）| 偵測到 HT32 專案（`hasHint`）**且 tasks.json 已存在** | 補漏：tasks.json 存在時 `generateTasksAndLaunchAndMakefile` 被跳過，此處確保使用者曾按 X 略過安裝仍能收到通知 |
+| **`generateTasksAndLaunchAndMakefile`** | tasks.json 不存在、Convert uVision / HT32-IDE、所有轉換流程 | 涵蓋初次設定與所有轉換流程 |
 
 啟動時的 warning 包含 pyocd（若專案使用 pyocd backend）；使用者點選 Install 後才執行安裝。
 

@@ -116,7 +116,7 @@ ht32.vscode.solution/
 
 | 模組 | 職責 |
 |------|------|
-| `ht32-project-assistant-for-vs-code.ts` | Extension 主入口。負責：`activate()` 啟動、註冊所有 Commands（convert / create / build / clean / download / debug / settings）、建立 ProjectTreeView 與 RecentProjectsTreeView、`generateTasksAndLaunch()` 產生 `.vscode/tasks.json` + `launch.json`（含 `bgDirSuffix()` 統一命名、`htBgDir` 欄位標記）、`regenerateMakefileFlags()` 將 Settings Webview 的設定同步回 Makefile、OpenOCD 相關函式（`selectTargetCfg` / `parseMcuCfg` / `selectInternalHlm` / SPIM loader 選擇） |
+| `ht32-project-assistant-for-vs-code.ts` | Extension 主入口。負責：`activate()` 啟動、註冊所有 Commands（convert / create / build / clean / download / debug / settings）、建立 ProjectTreeView 與 RecentProjectsTreeView、`generateTasksAndLaunchAndMakefile()` 產生 `.vscode/tasks.json` + `launch.json`（含 `bgDirSuffix()` 統一命名、`htBgDir` 欄位標記）、`regenerateMakefileFlags()` 將 Settings Webview 的設定同步回 Makefile、OpenOCD 相關函式（`selectTargetCfg` / `parseMcuCfg` / `selectInternalHlm` / SPIM loader 選擇） |
 | `tools/uv2make.ts` | Keil uVision `.uvprojx` / `.uvmpw` → Makefile 轉換器。解析 XML 取得 sources / includes / C defines（Cads）/ ASM-only defines（Aads）/ 記憶體配置 / scatter file / FPU 設定，呼叫 `scatter2ld` 產生 linker script，輸出 `Makefile` + `sources.list` + `includes.list` + `defines.list` + `adefines.list` + `compile_commands.json` + `project.meta.json`。`regenerateMakefileFlags()` 負責將 Settings Webview 儲存的所有設定重新寫入 Makefile（含 `cDefs`→`defines.list`、`aDefs`→`adefines.list`；接受 `cc?` 參數，傳入後同步更新 CC / AR / OBJCOPY / OBJDUMP / SIZE 五行）；舊版 Makefile 缺少 `LD_NO_WARN` 時自動補入 upgrade patch。Makefile LDFLAGS 以 `$(LD_NO_WARN)` 動態偵測 `--no-warn-rwx-segments` 支援（GCC 10/11 不支援，GCC 12+ 支援）；Windows 用 `findstr`、Unix 用 `grep`，以 `comma := ,` 解決 `$(if)` 不能含逗號的限制。**`writeCCDbFromLists(bgDir, opts)`** 是三條轉換路徑共用的 compile_commands.json 產生器，同時讀 `defines.list` + `adefines.list` 確保 clangd 看到全部 define；接受 `gccFullPath?`，傳入後自動使用完整路徑作為 compiler 並計算 `-isystem` 旗標。**`buildCCDb()`** 每個 entry 永遠插入 `--target=arm-none-eabi`，確保 clangd 以 ARM target 解析型別。**`computeIsystemPaths(gccFull)`** 從 gcc 完整路徑推算 newlib / gcc include 目錄，供 `writeCCDbFromLists` 呼叫。**`enforceMinHeap(heapSize)`** 強制最小 heap 大小（`MIN_HEAP_SIZE = 0x40`），所有路徑共用 |
 | `tools/ht32ide2make.ts` | HT32-IDE `.project` / `.cproject` → Makefile 轉換器。解析 Eclipse CDT XML 取得 sources / includes / C defines / ASM-only defines（`tool.assembler` `assembler.defs`）/ 記憶體配置 / linker script，產生與 uv2make 相同格式的輸出。支援 M0/M3/M4 及 49x 系列，處理 HT32-IDE 特有的 exclude file 標記。`writeHt32IdeLists()` 分別寫入 `defines.list`（C defines）與 `adefines.list`（ASM-only defines），再由主程式呼叫 `writeCCDbFromLists()` 產生 compile_commands.json |
 | `tools/scatter2ld.ts` | Keil scatter file（`.sct` / `.lin`）→ GNU LD linker script 轉換器。支援 HT32 常見配置：標準 Flash/RAM、外部 SRAM、SPIM XIP、IAP offset、Option Bytes region。不處理組語轉換（`keil2gnu()` 在 `uv2make.ts`）；本模組聚焦 scatter 語法解析與 MEMORY/SECTIONS 產生 |
@@ -267,15 +267,15 @@ activate()
   └── ensureToolchain(root, extensionPath)     ← 檢查 GCC / Make 是否存在
 
 createProject()
-  └── runCreateProjectWizard() → generateProjectFiles() → generateTasksAndLaunch(wsOpenRoot)
+  └── runCreateProjectWizard() → generateProjectFiles() → generateTasksAndLaunchAndMakefile(wsOpenRoot)
 
 convertUvision()
-  └── uv2make() → generateTasksAndLaunch(root, { elfPath, deviceName, mcu, ramOrigin, ramLength })
+  └── uv2make() → generateTasksAndLaunchAndMakefile(root, { elfPath, deviceName, mcu, ramOrigin, ramLength })
 
 convertHt32Ide()
-  └── ht32ide2make() → patchStartupFiles() → generateTasksAndLaunch(root)
+  └── ht32ide2make() → patchStartupFiles() → generateTasksAndLaunchAndMakefile(root)
 
-generateTasksAndLaunch()
+generateTasksAndLaunchAndMakefile()
   ├── 讀取 project.settings.json（per-project）+ machine settings（gcc/make/openocd path）
   ├── locateMake(extensionPath) / locateArmGcc()  ← 設定值優先，否則自動偵測
   ├── selectInterfaceCfg()               ← e-Link32 / ST-Link / J-Link

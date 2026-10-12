@@ -62,7 +62,7 @@ HT32-IDE 專案使用的 FreeRTOS portable 通常已是 GCC 版（HT32-IDE 本�
 ## RTOS 偵測
 
 Extension **不**在 `project.meta.json` 或 `project.settings.json` 儲存 `rtos` 欄位。
-`generateTasksAndLaunch()` 動態掃描 `project.meta.json` 的 `groups` 所有檔案路徑，只要有任何路徑符合 `/freertos/i`，即視為 FreeRTOS 專案：
+`generateTasksAndLaunchAndMakefile()` 動態掃描 `project.meta.json` 的 `groups` 所有檔案路徑，只要有任何路徑符合 `/freertos/i`，即視為 FreeRTOS 專案：
 
 ```typescript
 const bgAllPaths = Object.values(bgMeta.groups).flat()
@@ -103,6 +103,6 @@ rtos.name: FreeRTOS   # 通常自動偵測即可
 ## 相關位置
 
 - `src/tools/uv2make.ts` — sources loop `.c` 替換 / includes 替換
-- `src/ht32-project-assistant-for-vs-code.ts` — `generateTasksAndLaunch()`，`bgRtos` 偵測與分流
+- `src/ht32-project-assistant-for-vs-code.ts` — `generateTasksAndLaunchAndMakefile()`，`bgRtos` 偵測與分流
 - `buildPyocdServerConfigs()` — 不接受 `rtos` 參數
 - `buildOpenocdServerConfigs()` — 接受 `rtos?` 參數

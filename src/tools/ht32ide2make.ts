@@ -999,7 +999,8 @@ export interface Ht32IdeConvertProjectResult {
 /**
  * Core HT32-IDE → HT32_VSCode conversion for a single project directory.
  * Does not call VS Code APIs — usable from CLI scripts.
- * Caller is responsible for calling updateProjectMeta(bgDir, result.meta) afterwards.
+ * Writes project.meta.json internally. Caller should call persistMeta(bgDir, result.meta)
+ * to additionally refresh all derived build files (sources.list, Makefile SRCS, compile_commands.json).
  */
 export function convertHt32IdeProject(
   projectDir: string,

@@ -3218,7 +3218,7 @@ export function regenerateMakefileFlags(
 /**
  * Generate the SRCS/OBJ_SPACED/OBJ variable block and the per-file explicit compile
  * rules section from a list of build-gen-relative source paths.
- * Used by updateProjectMeta() to fully regenerate the dynamic parts of the Makefile
+ * Used by refreshDerivedFiles() to fully regenerate the dynamic parts of the Makefile
  * whenever the user adds/removes files via the TreeView.
  */
 export function generateCompileRuleSection(
@@ -3290,7 +3290,7 @@ export function generateCompileRuleSection(
 
 /**
  * Lightweight helper: extract device name + RAM/ROM info from a .uvprojx
- * without running the full uv2make conversion. Used by generateTasksAndLaunch
+ * without running the full uv2make conversion. Used by generateTasksAndLaunchAndMakefile
  * as a last-resort fallback when project.settings.json is missing or incomplete.
  */
 export function extractDeviceInfoFromUvprojx(

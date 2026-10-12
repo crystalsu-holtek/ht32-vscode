@@ -11,7 +11,7 @@ HT32: Create Project（ht32.createProject）
   └─ openCreateProjectPanel()     ← Webview wizard UI
        └─ onGenerate callback
             └─ generateProjectFiles()   ← 主要產生邏輯
-                 └─ generateTasksAndLaunch()  ← 寫 tasks.json / launch.json
+                 └─ generateTasksAndLaunchAndMakefile()  ← 寫 tasks.json / launch.json
 ```
 
 ---

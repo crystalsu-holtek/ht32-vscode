@@ -6,14 +6,44 @@
 
 | 檔案 | 管理者 |
 |------|--------|
-| `Makefile` | 初次：轉換/Create Project；Patch：`updateProjectMeta` + `regenerateMakefileFlags` |
-| `sources.list` | `updateProjectMeta`（唯一管理者） |
-| `includes.list` | 轉換時；`regenerateMakefileFlags`（Settings Save） |
-| `defines.list` | 轉換時；`regenerateMakefileFlags`（Settings Save） |
-| `adefines.list` | 轉換時；`regenerateMakefileFlags`（Settings Save） |
-| `compile_commands.json` | `updateProjectMeta` + `regenAllMakefileFlags` + 獨立指令 |
-| `project.meta.json` | 轉換時；`updateProjectMeta`（每次呼叫都寫） |
+| `Makefile` | 初次：轉換/Create Project/Open Project（無 Makefile）；Patch：`refreshDerivedFiles` + `regenerateMakefileFlags` |
+| `sources.list` | `refreshDerivedFiles`（唯一管理者） |
+| `includes.list` | 轉換時；`refreshDerivedFiles`（每次呼叫都更新） |
+| `defines.list` | 轉換時；`refreshDerivedFiles`（每次呼叫都更新） |
+| `adefines.list` | 轉換時；`refreshDerivedFiles`（每次呼叫都更新） |
+| `compile_commands.json` | `refreshDerivedFiles` + `regenAllMakefileFlags` + 獨立指令 |
+| `project.meta.json` | 轉換時初次建立；`persistMeta`（有改動才呼叫） |
 | `project.settings.json` | 轉換時（初次）；Settings Save |
+
+---
+
+## 兩個核心函式
+
+### `refreshDerivedFiles(bgDir, meta, opts?)`
+
+從現有的 `project.meta.json` + `project.settings.json` 重新產生所有衍生 build 檔案，**不寫 meta.json**。
+
+產生順序：
+1. `sources.list`（從 `meta.groups` 展開）
+2. Makefile SRCS / OBJ / per-file compile rules（patch 現有 Makefile）
+3. `regenerateMakefileFlags` → `includes.list` / `defines.list` / `adefines.list` / CFLAGS/LDFLAGS patch
+4. `writeCCDbFromLists` → `compile_commands.json`
+5. Linker script ROM region patch（fileOptions.rom）
+6. 若 per-file rules 有變動，寫 `.needs-rebuild`
+7. `opts.skipElfInvalidation` 為 false 時，刪除 stale ELF/bin/hex
+
+呼叫時機：
+- `initProjectsFromMeta`（open project，mtime check 後）
+- `regenAllMakefileFlags`（Settings Save / `generateTasksAndLaunchAndMakefile`）
+
+### `persistMeta(bgDir, meta, opts?)`
+
+meta 內容有實際改動時使用。注入 `metaVersion`，寫回 `project.meta.json`，再呼叫 `refreshDerivedFiles`。
+
+呼叫時機：
+- TreeView：加入 / 移除 group / file，toggle xo / exclude / rom，改 linker script
+- uVision / HT32-IDE 轉換後
+- Create Project / Add Project 後
 
 ---
 
@@ -26,21 +56,21 @@
 | uVision 轉換 | `uv2make()` → `buildMakefileFromProjectSettings(readProjectSettings(outDirAbs), { ... })` | `outDirAbs` |
 | HT32-IDE 轉換 | `convertHt32IdeProject()` → `generateMakefile(result, bgDir, ...)` → `buildMakefileText({ ... })` | `bgDir` |
 | Create Project | `generateProjectFiles(bgDir, ...)` → `buildMakefileFromProjectSettings(readProjectSettings(bgDir), { ... })` | `bgDir` |
-| Open Project（無 Makefile） | `initProjectsFromMeta()` → `buildMakefileText({ ... })` | `bgDir`（loop var） |
+| Open Project（無 Makefile，或 settings/meta/lists 任一不存在，或 settings/meta 比 Makefile 新） | `initProjectsFromMeta()` → `buildMakefileText({ ... })` | `bgDir`（loop var）；Makefile、settings、meta 全存在且 4 個 .list 存在且 Makefile 比兩個輸入檔都新時跳過 |
 
-完整建立後，呼叫端立刻補一次 `updateProjectMeta`，patch per-file rules section（含 `--redefine-sym`、`-mpure-code` 偵測）。
+完整建立後，呼叫端立刻補一次 `persistMeta` 或 `refreshDerivedFiles`，patch per-file rules section（含 `--redefine-sym`、`-mpure-code` 偵測）。
 
-#### per-file 偵測統一由 `updateProjectMeta` 處理
+#### per-file 偵測統一由 `refreshDerivedFiles` 處理
 
-`-mpure-code`（xo 檔）等 per-file flag 偵測只在 `updateProjectMeta` 內做。所有觸碰 Makefile 的路徑最終都會經過 `updateProjectMeta`，確保偵測一致：
+`-mpure-code`（xo 檔）等 per-file flag 偵測只在 `refreshDerivedFiles` 內做。所有觸碰 Makefile 的路徑最終都會經過 `refreshDerivedFiles`，確保偵測一致：
 
-- 四條初次建立路徑：建立後立刻呼叫 `updateProjectMeta`
-- TreeView 操作：直接呼叫 `updateProjectMeta`
-- Settings Save / `generateTasksAndLaunch`：`regenAllMakefileFlags` → 若 `project.meta.json` 存在則呼叫 `updateProjectMeta`（`skipElfInvalidation: true`），同時完成 per-file rules + CFLAGS/LDFLAGS + compile_commands.json 更新
+- 四條初次建立路徑：建立後立刻呼叫 `persistMeta`（convert/create）或 `refreshDerivedFiles`（open project）
+- TreeView 操作：呼叫 `persistMeta`
+- Settings Save / `generateTasksAndLaunchAndMakefile`：`regenAllMakefileFlags` → 若 `project.meta.json` 存在則呼叫 `refreshDerivedFiles`（`skipElfInvalidation: true`），同時完成 per-file rules + CFLAGS/LDFLAGS + compile_commands.json 更新
 
-> 舊版 FWLib misc.c 相容性不再透過 per-file Makefile rule（`objcopy --redefine-sym）處理，改為直接 patch source 檔（見 [stack-analysis.md](stack-analysis.md)）。
+> 舊版 FWLib misc.c 相容性不再透過 per-file Makefile rule（`objcopy --redefine-sym`）處理，改為直接 patch source 檔（見 [stack-analysis.md](stack-analysis.md)）。
 
-### Patch：SRCS + per-file compile rules（`updateProjectMeta`）
+### Patch：SRCS + per-file compile rules（`refreshDerivedFiles`）
 
 | 觸發 |
 |------|
@@ -49,7 +79,7 @@
 | TreeView：加入 / 移除 file |
 | TreeView：toggle xo（`-mpure-code`）/ exclude / rom |
 
-`updateProjectMeta` 內部也會呼叫 `regenerateMakefileFlags`（見下）。
+`refreshDerivedFiles` 內部也會呼叫 `regenerateMakefileFlags`（見下）。
 
 若 per-file rules section 有變動，同時寫入 `.needs-rebuild` marker，下次 Build 前自動 clean rebuild。
 
@@ -57,9 +87,9 @@
 
 | 觸發 | 呼叫路徑 |
 |------|---------|
-| `updateProjectMeta`（step 5，每次） | 內部呼叫 |
-| Settings Save | `openSettingsPanel` callback → `regenAllMakefileFlags` → `regenerateMakefileFlags` |
-| `generateTasksAndLaunch` | → `regenAllMakefileFlags` → `regenerateMakefileFlags` |
+| `refreshDerivedFiles`（step 3，每次） | 內部呼叫 |
+| Settings Save | `openSettingsPanel` callback → `regenAllMakefileFlags` → `refreshDerivedFiles` → `regenerateMakefileFlags` |
+| `generateTasksAndLaunchAndMakefile`（`regenMakefile: true`，預設） | → `regenAllMakefileFlags` → `refreshDerivedFiles` → `regenerateMakefileFlags` |
 
 CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `build/`。
 
@@ -67,11 +97,11 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 
 ## sources.list
 
-**唯一管理者：`updateProjectMeta`（step 2）**
+**唯一管理者：`refreshDerivedFiles`（step 1）**
 
-從 `meta.groups` 展開所有非 exclude 檔案，轉換成 bgDir-relative 路徑後寫入。所有轉換路徑皆透過 `updateProjectMeta`，不由轉換器直接寫（轉換器寫的版本會立刻被 `updateProjectMeta` 覆蓋）。
+從 `meta.groups` 展開所有非 exclude 檔案，轉換成 bgDir-relative 路徑後寫入。所有觸發路徑皆透過 `refreshDerivedFiles`，不由轉換器直接寫（轉換器寫的版本會立刻被 `refreshDerivedFiles` 覆蓋）。
 
-> 例外：uVision 的 `writeLists()`、HT32-IDE 的 `writeHt32IdeLists()`、Create Project 的 `generateProjectFiles()` 均自行寫一次，但緊接著的 `updateProjectMeta` 以 `buildRelPaths` 重新算過後覆蓋。
+> 例外：uVision 的 `writeLists()`、HT32-IDE 的 `writeHt32IdeLists()`、Create Project 的 `generateProjectFiles()` 均自行寫一次，但緊接著的 `persistMeta` → `refreshDerivedFiles` 以 `buildRelPaths` 重新算過後覆蓋。
 
 ---
 
@@ -82,10 +112,8 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | uVision 轉換 | `writeLists()` in `uv2make.ts` | `-I"path"` 格式，含 `../GNU_ARM` |
 | HT32-IDE 轉換 | `writeHt32IdeLists()` in `ht32ide2make.ts` | |
 | Create Project | `generateProjectFiles()` | |
-| Open Project（無 Makefile） | `initProjectsFromMeta()` step 3 | 從 `project.settings.json` 的 `includePaths` 重建 |
-| Settings Save | `regenerateMakefileFlags()` | 當 `includePaths` 有提供時更新 |
-
-`updateProjectMeta` **不更新** `includes.list`；include paths 的 source of truth 是 `project.settings.json` 的 `includePaths` 欄位。
+| Open Project（無 Makefile，或 settings/meta/lists 任一不存在，或 settings/meta 比 Makefile 新） | `initProjectsFromMeta()` → `refreshDerivedFiles` step 3 | 從 `project.settings.json` 的 `includePaths` 重建 |
+| Settings Save / `generateTasksAndLaunchAndMakefile` | `regenAllMakefileFlags` → `refreshDerivedFiles` → `regenerateMakefileFlags` | 同上 |
 
 ---
 
@@ -96,8 +124,8 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | uVision 轉換 | `writeLists()` | `-DXXX` 格式 |
 | HT32-IDE 轉換 | `writeHt32IdeLists()` | |
 | Create Project | `generateProjectFiles()` | |
-| Open Project（無 Makefile） | `initProjectsFromMeta()` step 4 | 從 `project.settings.json` 的 `cDefs` 重建 |
-| Settings Save | `regenerateMakefileFlags()` | 當 `cDefs` 有提供時更新 |
+| Open Project（無 Makefile，或 settings/meta/lists 任一不存在，或 settings/meta 比 Makefile 新） | `initProjectsFromMeta()` → `refreshDerivedFiles` step 3 | 從 `project.settings.json` 的 `cDefs` 重建 |
+| Settings Save / `generateTasksAndLaunchAndMakefile` | `regenAllMakefileFlags` → `refreshDerivedFiles` → `regenerateMakefileFlags` | 同上 |
 
 ---
 
@@ -108,7 +136,8 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | uVision 轉換 | `writeLists()` | ASM-only defines，std 系列含 `USE_HT32_CHIP=X` |
 | HT32-IDE 轉換 | `writeHt32IdeLists()` | |
 | Create Project | `generateProjectFiles()` | |
-| Settings Save | `regenerateMakefileFlags()` | 當 `aDefs` 有提供時更新 |
+| Open Project（無 Makefile，或 settings/meta/lists 任一不存在，或 settings/meta 比 Makefile 新） | `initProjectsFromMeta()` → `refreshDerivedFiles` step 3 | 從 `project.settings.json` 的 `aDefs` 重建 |
+| Settings Save / `generateTasksAndLaunchAndMakefile` | `regenAllMakefileFlags` → `refreshDerivedFiles` → `regenerateMakefileFlags` | 同上 |
 | 舊專案升級 | `regenerateMakefileFlags()` | 若檔案不存在自動建立空檔 |
 
 ---
@@ -122,9 +151,8 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | uVision 轉換 | `buildCCDb()` in `uv2make()` |
 | HT32-IDE 轉換 | `writeCCDbFromLists()` in `convertHt32IdeProject()` |
 | Create Project | `writeCCDbFromLists()` in `generateProjectFiles()` |
-| Open Project（無 Makefile） | `initProjectsFromMeta()` step 5 |
-| `updateProjectMeta`（step 5，每次） | `writeCCDbFromLists()` |
-| Settings Save / `generateTasksAndLaunch` | `regenAllMakefileFlags()` → `writeCCDbFromLists()` |
+| Open Project（無 Makefile，或 settings/meta/lists 任一不存在，或 settings/meta 比 Makefile 新） | `initProjectsFromMeta()` → `refreshDerivedFiles` step 4 |
+| `refreshDerivedFiles`（step 4，每次） | `writeCCDbFromLists()` |
 | `ht32.regenerateCompileCommands` 指令 | `regenerateCompileCommandsCommand()` |
 
 每個 bgDir 有自己的 `compile_commands.json`；`regenAllMakefileFlags` 完成後另外合併成 `.vscode/compile_commands.json`（供 clangd 使用）。
@@ -138,7 +166,9 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | uVision 轉換 | 初次建立 |
 | HT32-IDE 轉換 | 初次建立 |
 | Create Project | 初次建立 |
-| `updateProjectMeta`（step 1，每次） | 把傳入的 meta 物件寫回磁碟 |
+| `persistMeta`（每次呼叫） | 注入 `metaVersion`，把傳入的 meta 物件寫回磁碟 |
+
+Open project 使用 `refreshDerivedFiles`（不寫 meta.json），Settings Save / `generateTasksAndLaunchAndMakefile` 使用 `regenAllMakefileFlags` → `refreshDerivedFiles`（同樣不寫 meta.json）。
 
 **source of truth**：`meta.groups`（檔案列表）、`meta.linkerScripts`、`meta.fileOptions`（xo/exclude/rom，使用者設定）。
 
@@ -161,6 +191,6 @@ CFLAGS/ASFLAGS 有變動時寫入 `.needs-rebuild`，下次 Build 前刪整個 `
 | 觸發 | 範圍 |
 |------|------|
 | `regenerateMakefileFlags`：CFLAGS/ASFLAGS 有變動 | 下次 Build 前刪整個 `build/` |
-| `updateProjectMeta`：per-file rules section 有變動 | 同上 |
+| `refreshDerivedFiles`：per-file rules section 有變動 | 同上 |
 
 由 `smartRunTask`（Build 指令）在執行 make 前檢查並消費（刪除 marker + 刪 `build/`）。

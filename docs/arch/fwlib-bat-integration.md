@@ -36,7 +36,7 @@ _CreateProject.bat
 | json | `compile_commands.json` | extension（`initProjectsFromMeta`）| clangd 用，從 .list 重生 |
 
 > **Template 只需放 2 個 json**（`project.meta.json` + `project.settings.json`）。  
-> bat gsar 只修改這 2 個 json；其餘 5 個檔案由 extension 在第一次開啟時自動產生。
+> bat gsar 只修改這 2 個 json；其餘 5 個檔案由 extension 在開啟時自動產生（Makefile 不存在，或 settings/meta 比 Makefile 新時產生；其餘情況跳過）。
 
 ---
 

@@ -165,7 +165,7 @@ scripts/
 
 ### pyOCD 自動偵測 / 安裝（`findOrInstallPyocd()`）
 
-Extension 啟動時（`generateTasksAndLaunch()` 偵測到任一 project 的 `serverType === 'pyocd'`）：
+Extension 啟動時（`generateTasksAndLaunchAndMakefile()` 偵測到任一 project 的 `serverType === 'pyocd'`）：
 
 1. 檢查 `pyocd --version`（PATH 中是否已有）→ 有則直接用，不設 `serverpath`（cortex-debug 自動找）
 2. 查 bundled `uv.exe`（`bin/win32-x64/uv.exe`）→ 執行 `uv tool dir --bin` 取得 bin 目錄 → 檢查其中是否有 `pyocd.exe`
@@ -185,7 +185,7 @@ pyOCD 透過 `--pack` 取得 PDSC 與 FLM，extension 自動從 `dfp/` 根目錄
 
 ### 產生的設定檔
 
-`generateTasksAndLaunch()` 在 pyOCD 模式下，於 `HT32_VSCode/{bg}/` 目錄額外產生：
+`generateTasksAndLaunchAndMakefile()` 在 pyOCD 模式下，於 `HT32_VSCode/{bg}/` 目錄額外產生：
 
 | 檔案 | 說明 |
 |---|---|
@@ -213,7 +213,7 @@ pyOCD 透過 `--pack` 取得 PDSC 與 FLM，extension 自動從 `dfp/` 根目錄
 
 ## ht32.internal.extensionRoot
 
-`generateTasksAndLaunch()` 產生的 `tasks.json` / `launch.json` 內，所有指向 extension 內部資源的路徑（OpenOCD exe、cfg 檔、HLM loader、pyOCD --pack 參數、bundled make 目錄）均使用 VS Code 變數：
+`generateTasksAndLaunchAndMakefile()` 產生的 `tasks.json` / `launch.json` 內，所有指向 extension 內部資源的路徑（OpenOCD exe、cfg 檔、HLM loader、pyOCD --pack 參數、bundled make 目錄）均使用 VS Code 變數：
 
 ```
 ${config:ht32.internal.extensionRoot}

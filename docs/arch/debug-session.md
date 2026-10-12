@@ -82,7 +82,7 @@ ELF 若含 `.extflash` section，GDB `load` 會把整段資料（可能 2MB+）�
 
 **`pyocd_user.py` 重新產生時機：**
 
-`generateTasksAndLaunch()` 被呼叫時（包含 Convert、Open Project、Generate Build & Debug Config、Create Project），
+`generateTasksAndLaunchAndMakefile()` 被呼叫時（包含 Convert、Open Project、Generate Build & Debug Config、Create Project），
 `pyocd_user.py` 與 `pyocd.yaml` 都會重新寫入。現有檔案不會自動更新，需手動觸發上述操作。
 
 **EXT flash（SPIM）支援：**

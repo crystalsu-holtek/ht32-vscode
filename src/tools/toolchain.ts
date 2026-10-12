@@ -89,8 +89,21 @@ async function whereAll(cmd: string): Promise<string[]> {
   return stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 }
 
+/** In-session cache：同一個 VS Code 視窗內只搜尋一次（找到時才 cache；找不到不 cache，讓安裝後可重試） */
+let _makePathCache: string | undefined = undefined;
+
 /** 跨平台尋找 make（只吃 MSYS2 / Git / MinGW；排除 GnuWin32 / Cygwin） */
 export async function locateMake(extensionPath?: string): Promise<string | undefined> {
+  if (_makePathCache !== undefined) {
+    logInfo(`locateMake: returning cached result: ${_makePathCache}`);
+    return _makePathCache;
+  }
+  const found = await _locateMakeInner(extensionPath);
+  if (found !== undefined) { _makePathCache = found; }
+  return found;
+}
+
+async function _locateMakeInner(extensionPath?: string): Promise<string | undefined> {
   logInfo('======= locateMake() START =======');
   logInfo(`platform = ${process.platform}`);
 

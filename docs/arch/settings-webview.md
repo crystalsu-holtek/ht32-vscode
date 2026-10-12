@@ -3,7 +3,7 @@
 Settings Webview 的每個選項儲存在 `project.settings.json`，儲存後透過兩條路徑反映到輸出檔：
 
 1. **`regenAllMakefileFlags`** → `regenerateMakefileFlags` → Makefile / compile_commands.json
-2. **`generateTasksAndLaunch`** → tasks.json / launch.json / pyocd.yaml
+2. **`generateTasksAndLaunchAndMakefile`** → tasks.json / launch.json / pyocd.yaml
 
 ---
 

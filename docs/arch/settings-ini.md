@@ -21,7 +21,7 @@ HT32F49310    = 0x20000000, 0x18000
 
 ### 1. OpenOCD HLM Flash Algorithm WORKAREASIZE
 
-**位置**：`generateTasksAndLaunch()` → `buildOpenOcdServerConfigs()` → `selectHlmConfig()`
+**位置**：`generateTasksAndLaunchAndMakefile()` → `buildOpenOcdServerConfigs()` → `selectHlmConfig()`
 
 **用途**：OpenOCD 需要在 MCU SRAM 裡放 HLM（Host-side Load Module）。  
 Settings.ini 提供每顆 MCU 的安全 SRAM 起始位址與大小，轉換成 `WORKAREASIZE` 參數寫入 `launch.json`：

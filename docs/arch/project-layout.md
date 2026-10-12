@@ -41,8 +41,8 @@ PROJECT_ROOT/
 |------|------|---------|
 | `Makefile` | `make` 編譯主體：TARGET、CFLAGS、LDFLAGS、每個源文件的獨立規則 | 轉換時產生；TreeView 變動時 patch SRCS/OBJ/規則區段 |
 | linker script | GNU LD linker script，含 FLASH/RAM 地址與大小；**保留原始檔名**（e.g. `linker.ld`、`HT32F12345_FLASH.ld`）；檔名記錄於 `project.meta.json` 的 `ldFile` 欄位 | 只在轉換時產生 |
-| `sources.list` | 源文件路徑清單（相對 Project/，`\n` 分隔）。**Makefile 不讀**（SRCS 硬寫）；extension `updateProjectMeta()` 讀取以 patch Makefile SRCS / compile_commands | 轉換 + TreeView 變動時重寫 |
-| `includes.list` | include 路徑清單（空格分隔 `-I"path"`）。**Makefile 以 `$(file <includes.list)` 讀取**（需 GNU Make 4.0+）；extension `updateProjectMeta()` 讀取以產生 compile_commands | 轉換時寫入；Settings Webview 的 `includePaths` 非空時更新 |
+| `sources.list` | 源文件路徑清單（相對 Project/，`\n` 分隔）。**Makefile 不讀**（SRCS 硬寫）；extension `refreshDerivedFiles()` 讀取以 patch Makefile SRCS / compile_commands | 轉換 + TreeView 變動時重寫 |
+| `includes.list` | include 路徑清單（空格分隔 `-I"path"`）。**Makefile 以 `$(file <includes.list)` 讀取**（需 GNU Make 4.0+）；extension `refreshDerivedFiles()` 讀取以產生 compile_commands | 轉換時寫入；每次 `refreshDerivedFiles` 更新 |
 | `defines.list` | C compiler preprocessor define 清單（空格分隔 `-DFOO`）。**Makefile 以 `$(file <defines.list)` 讀取**；`DEFS := $(file <defines.list)` 展開後加入 CFLAGS 與 ASFLAGS | 轉換時寫入；Settings Webview 的 `cDefs` 更新時重寫 |
 | `adefines.list` | 組語專屬 preprocessor define 清單（空格分隔 `-DFOO`）。**Makefile 以 `$(file <adefines.list)` 讀取**；`ADEFS := $(file <adefines.list)` 只附加到 ASFLAGS，不影響 CFLAGS。標準系列含 `USE_HT32_CHIP=X`，49x 系列為空。空檔案 = 空字串 = 不影響編譯 | 轉換時寫入（即使為空）；Settings Webview 的 `aDefs` 更新時重寫；`regenerateMakefileFlags` 升級舊 Makefile 時自動建立 |
 | `project.meta.json` | TreeView 資料來源：`{ projectName, groups: { "GroupName": ["rel/path/..."] } }`，路徑相對 workspace root | 轉換 + TreeView 變動時更新 |
@@ -58,19 +58,20 @@ PROJECT_ROOT/
 uvprojx / .cproject / Create Project
   └─ converter ──────┬─ Makefile                ← make 編譯（SRCS 硬寫；INCS/DEFS 讀 list）
                      ├─ linker_script.ld
-                     ├─ sources.list             ← extension updateProjectMeta()
+                     ├─ sources.list             ← extension refreshDerivedFiles()
                      ├─ includes.list            ← Makefile $(file <) + extension compile_commands
                      ├─ defines.list             ← Makefile $(file <)；Settings Webview cDefs 更新時重寫
                      ├─ adefines.list            ← Makefile $(file <) → ADEFS → ASFLAGS；Settings Webview aDefs 更新時重寫
                      ├─ project.meta.json        ← TreeView
-                     ├─ project.settings.json    ← generateTasksAndLaunch() + Settings Webview
+                     ├─ project.settings.json    ← generateTasksAndLaunchAndMakefile() + Settings Webview
                      └─ compile_commands.json    ← IntelliSense
 
 TreeView add/remove
-  └─ updateProjectMeta() ─┬─ project.meta.json (重寫)
-                          ├─ sources.list      (重寫)
-                          ├─ Makefile          (patch SRCS/OBJ/規則)
-                          └─ compile_commands.json (重寫，讀 includes.list)
+  └─ persistMeta() ──────┬─ project.meta.json (重寫)
+                         └─ refreshDerivedFiles()
+                               ├─ sources.list      (重寫)
+                               ├─ Makefile          (patch SRCS/OBJ/規則)
+                               └─ compile_commands.json (重寫，讀 includes.list)
 ```
 
 ---
@@ -135,8 +136,8 @@ ADEFS := $(file <adefines.list)   # 組語專屬 defines；空檔案 = 空字串
 
 | 檔案 | Makefile | extension |
 |------|----------|-----------|
-| `sources.list` | ✗ | `updateProjectMeta()` 讀取以 patch Makefile SRCS + compile_commands |
-| `includes.list` | ✓ `$(file <)` → `INCS` → CFLAGS + ASFLAGS | `updateProjectMeta()` 讀取以產生 compile_commands |
+| `sources.list` | ✗ | `refreshDerivedFiles()` 讀取以 patch Makefile SRCS + compile_commands |
+| `includes.list` | ✓ `$(file <)` → `INCS` → CFLAGS + ASFLAGS | `refreshDerivedFiles()` 讀取以產生 compile_commands |
 | `defines.list` | ✓ `$(file <)` → `DEFS` → CFLAGS + ASFLAGS | `writeCCDbFromLists()` 讀取；Settings Webview `cDefs` 存檔時重寫 |
 | `adefines.list` | ✓ `$(file <)` → `ADEFS` → **ASFLAGS only** | `writeCCDbFromLists()` 讀取（合併 defines.list 給 clangd）；Settings Webview `aDefs` 存檔時重寫 |
 
@@ -156,9 +157,9 @@ ADEFS := $(file <adefines.list)   # 組語專屬 defines；空檔案 = 空字串
 |------|------|------|---------|
 | `project.meta.json` groups | workspace root（`HT32_VSCode/` 父目錄） | 相對路徑，`../` 表示 workspace 外（FWLib 等）；僅跨 drive 才用絕對 | `buildProjectMeta()` / `uv2make metaGroups` |
 | `project.settings.json` includePaths | bgDir（`Project/`） | 相對路徑，`../` 表示 bgDir 外；僅跨 drive 才用絕對 | 三條路徑轉換器寫入時以 `path.relative(bgDir, abs)` 正規化 |
-| `sources.list` | bgDir | 相對路徑（bgDir-relative），由 `updateProjectMeta()` 從 `meta.groups` 轉換而來 | `updateProjectMeta()` |
+| `sources.list` | bgDir | 相對路徑（bgDir-relative），由 `refreshDerivedFiles()` 從 `meta.groups` 轉換而來 | `refreshDerivedFiles()` |
 | `includes.list` | bgDir | `-I"bgDir-relative-path"` 格式 | 轉換器初始寫入；Settings Webview 更新時由 `regenerateMakefileFlags()` 重寫 |
 
-**設計原則**：`project.meta.json` 用 wsRoot-relative 讓 TreeView 可定位原始碼；`sources.list` / `includes.list` 用 bgDir-relative 讓 Makefile 以 `$(file <)` 直接讀取。`updateProjectMeta()` 是兩者之間的橋梁，負責將 wsRoot-relative（含 `../`）或絕對路徑統一轉換成 bgDir-relative。
+**設計原則**：`project.meta.json` 用 wsRoot-relative 讓 TreeView 可定位原始碼；`sources.list` / `includes.list` 用 bgDir-relative 讓 Makefile 以 `$(file <)` 直接讀取。`refreshDerivedFiles()` 是兩者之間的橋梁，負責將 wsRoot-relative（含 `../`）或絕對路徑統一轉換成 bgDir-relative。
 
 **跨 drive 例外**：`path.relative()` 在 Windows 跨磁碟時回傳絕對路徑，此時直接保留絕對路徑。Create Project 對跨 drive 直接 throw error。

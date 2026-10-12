@@ -40,7 +40,7 @@
 
 ## Makefile 效果
 
-`updateProjectMeta` 讀 `fileOptions` 後，透過 `generateCompileRuleSection(buildRelPaths, extraFlagsMap)` 重產 Makefile 的編譯規則區：
+`refreshDerivedFiles` 讀 `fileOptions` 後，透過 `generateCompileRuleSection(buildRelPaths, extraFlagsMap)` 重產 Makefile 的編譯規則區：
 
 - **excluded**：從 `sources.list` 移除，不出現在 `SRCS`
 - **xo**：為該檔案產生獨立的 `make` compile rule，加 `EXTRA_FLAGS = -mpure-code`

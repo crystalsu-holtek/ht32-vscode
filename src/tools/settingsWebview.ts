@@ -196,7 +196,7 @@ export function readProjectSettings(bgDir: string): ProjectSettings {
 /** Write per-project settings to build-gen-{name}/project.settings.json */
 export function writeProjectSettings(bgDir: string, s: ProjectSettings, opts?: { keepEmptyFlashLoaders?: boolean }): void {
   // Omit flashLoaders when empty unless explicitly requested (e.g. webview save).
-  // Key absence = "never configured" → generateTasksAndLaunch will auto-detect SPIM.
+  // Key absence = "never configured" → generateTasksAndLaunchAndMakefile will auto-detect SPIM.
   // Key present as [] = user intentionally cleared loaders → skip auto-detect.
   const toWrite: Record<string, unknown> = { ...s, schemaVersion: '0.2.0' };
   if (!opts?.keepEmptyFlashLoaders &&

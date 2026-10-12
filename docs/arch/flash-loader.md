@@ -70,7 +70,7 @@ key 為 `flm`（FLM basename），不再是 `hlm`。
 
 ## 外部 SPIM Flash Loader 偵測邏輯
 
-每次 `generateTasksAndLaunch`（Convert / Generate Build Config）都執行：
+每次 `generateTasksAndLaunchAndMakefile`（Convert / Generate Build Config）都執行：
 
 1. **取 primary flash 範圍**：`parseMcuCfg(deviceName, extPath)` 從 PDSC 讀 flashStart/flashEnd/optStart/optEnd
 2. **掃 LD MEMORY block**：`ldUncoveredFlashAddrs()` 找 `(rx)` region（有 `r`、無 `w`）中不在 primary 或 option 範圍內的 ORIGIN → `uncoveredAddrs: Set<number>`
