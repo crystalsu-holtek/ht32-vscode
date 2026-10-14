@@ -1,4 +1,4 @@
-// src/ht32-project-assistant-for-vs-code.ts
+﻿// src/ht32-project-assistant-for-vs-code.ts
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1435,7 +1435,6 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
       // 儘早設 loading state：讓 tree view 在背景工作完成前顯示 spinner
       setContextHasProject(true);
       tree.setLoading(true);
-      const _firstBg = (readProjectOrder(parent) ?? fs.readdirSync(parent)).filter(d => isBgDir(parent, d))[0];
       // 從 project.meta.json sources 動態推算 FWLib root，產生 FWLib root .clangd
       try {
         const _names = (readProjectOrder(parent) ?? fs.readdirSync(parent)).filter(d => isBgDir(parent, d));
@@ -1454,31 +1453,62 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
       // 每次開啟專案都重新產生 Makefile / sources.list / includes.list / defines.list / adefines.list
       // 確保與 project.meta.json + project.settings.json 保持一致
       try {
-        const bgNames    = (readProjectOrder(parent) ?? fs.readdirSync(parent)).filter(d => isBgDir(parent, d));
-        const bgDirsAll  = bgNames.map(d => path.join(parent, d));
-        if (bgDirsAll.length > 0) {
-          await initProjectsFromMeta(bgDirsAll, root);
-          // 把各 bgDir 的 compile_commands.json 合併進 .vscode/compile_commands.json
-          // （initProjectsFromMeta 只寫 Project_xxx/，clangd 讀的是 .vscode/）
-          const gccP    = await locateArmGcc();
-          writeMakefileToolsSettings(root, bgNames, gccP ?? undefined);
-          // 每次開啟都重新產生 tasks.json / launch.json，確保 probe 設定、serverType 等
-          // 始終與 project.settings.json 同步，不需要手動 "Generate Build & Debug Config"
-          // regenMakefile: false — initProjectsFromMeta 已處理 Makefile/lists，不需重複
-          await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false });
+        const allBgNames = (readProjectOrder(parent) ?? fs.readdirSync(parent)).filter(d => {
+          try {
+            const p = path.join(parent, d);
+            return fs.statSync(p).isDirectory() &&
+              (fs.existsSync(path.join(p, 'project.meta.json')) ||
+               fs.existsSync(path.join(p, 'project.settings.json')) ||
+               fs.existsSync(path.join(p, 'compile_commands.json')));
+          } catch { return false; }
+        });
+
+        const invalidErrors: string[] = [];
+        const bgNames = allBgNames.filter(d => {
+          const err = validateProjectFiles(path.join(parent, d));
+          if (err) { invalidErrors.push(`${d}: ${err}`); logError(`[Open] ${d}: ${err}`); }
+          return !err;
+        });
+        if (invalidErrors.length > 0 && bgNames.length > 0) {
+          CHANNEL.show(true);
+          vscode.window.showWarningMessage(`Skipped ${invalidErrors.length} invalid project(s). Check "HT32 VSCode" output for details.`);
+        }
+        if (bgNames.length === 0) {
+          const _af = vscode.workspace.getConfiguration('ht32').get<string>('activeProjectFile');
+          if (_af) {
+            const _abs = path.isAbsolute(_af) ? _af : path.join(parent, _af);
+            await removeRecentProject(ctx, _abs);
+          }
+          tree.setRoot(undefined);
+          tree.refresh();
+          tree.setLoading(false);
+          setContextHasProject(false);
+          await vscode.window.showErrorMessage(
+            `Failed to open project: ${invalidErrors.join(' | ')}`,
+            { modal: true }, 'OK'
+          );
+          await ctx.globalState.update('ht32.focusHt32OnActivate', true);
+          await vscode.commands.executeCommand('workbench.action.closeFolder');
+          return false;
+        }
+
+        setActiveBuildGenSetting(computeWsOpenRoot(root), null);
+
+        const bgDirsAll = bgNames.map(d => path.join(parent, d));
+        await initProjectsFromMeta(bgDirsAll, root);
+        const gccP = await locateArmGcc();
+        writeMakefileToolsSettings(root, bgNames, gccP ?? undefined);
+        await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false });
+
+        const _activeFile = vscode.workspace.getConfiguration('ht32').get<string>('activeProjectFile');
+        if (_activeFile) {
+          const _ht32wsAbs = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
+          if (fs.existsSync(_ht32wsAbs)) { await addRecentProject(ctx, _ht32wsAbs); }
         }
       } catch (e: any) {
         logError(`initProjectsFromMeta failed: ${e?.message ?? e}`);
         tree.setLoading(false);
-      }
-      // Clear activeBuildGen so folder-mode always shows all projects.
-      setActiveBuildGenSetting(computeWsOpenRoot(root), null);
-      // Keep activeProjectFile if set — it was written intentionally (by conversion/open-via-ht32ws).
-      // "Open Folder" mode clears it in settings.json before opening, so it won't be present there.
-      const _activeFile = vscode.workspace.getConfiguration('ht32').get<string>('activeProjectFile');
-      if (_activeFile) {
-        const _ht32wsAbs = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
-        if (fs.existsSync(_ht32wsAbs)) { await addRecentProject(ctx, _ht32wsAbs); }
+        return false;
       }
       tree.setRoot(root);
       await vscode.commands.executeCommand('setContext', 'ht32.hasProject', true);
@@ -4760,6 +4790,18 @@ function readProjectMeta(buildGenDir: string): Meta | null {
   } catch { return null; }
 }
 
+/** Validate project.meta.json and project.settings.json for a bgDir.
+ *  Returns an error string if either file is missing or contains invalid JSON, null if OK. */
+function validateProjectFiles(bgDir: string): string | null {
+  for (const fname of ['project.meta.json', 'project.settings.json']) {
+    const fpath = path.join(bgDir, fname);
+    if (!fs.existsSync(fpath)) return `${fname} missing`;
+    try { JSON.parse(fs.readFileSync(fpath, 'utf8')); }
+    catch { return `${fname} contains invalid JSON`; }
+  }
+  return null;
+}
+
 function registerTreeEditCommands(
   ctx: vscode.ExtensionContext,
   tree: ProjectTreeProvider,
@@ -5082,6 +5124,13 @@ function ldRomRegions(buildGenDir: string, meta: Meta): Array<{ name: string; or
 /** ====== Recent Projects ====== */
 const RECENT_KEY = 'ht32.recentProjects';
 const RECENT_MAX = 10;
+
+async function removeRecentProject(ctx: vscode.ExtensionContext, folderPath: string): Promise<void> {
+  const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => p !== folderPath);
+  await ctx.globalState.update(RECENT_KEY, list);
+  if (list.length === 0) { await vscode.commands.executeCommand('setContext', 'ht32.hasRecent', false); }
+  _recentTree?.refresh();
+}
 
 async function addRecentProject(ctx: vscode.ExtensionContext, folderPath: string): Promise<void> {
   const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => p !== folderPath);
