@@ -577,8 +577,10 @@ After conversion or project creation, the extension auto-generates `.clangd` and
 | `HT32: Refresh Stack Usage` | Manually refresh the Stack Usage Analysis panel |
 | `HT32: Update Extension (Online)` | Check the VS Code Marketplace for a newer version and install it automatically |
 | `HT32: Install Extension from VSIX` | Open a file picker to install a local `.vsix` package |
-| `HT32: Update Device Packs (Online)` | Download and install missing DFP packs from the GitHub pack repository |
+| `HT32: Update Device Packs (Online)` | Download and install missing DFP packs from Holtek's official website |
 | `HT32: Install Device Pack from File` | Open a file picker to install one or more local `.pack` files |
+
+> **Note:** Device Packs add support for MCUs that pyocd does not recognize out of the box. This only affects **pyocd**-based debug sessions — OpenOCD uses its own built-in scripts and is not affected by pack installation.
 
 ---
 

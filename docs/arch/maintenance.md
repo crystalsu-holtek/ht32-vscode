@@ -1,4 +1,4 @@
-# 維護手冊
+﻿# 維護手冊
 
 ## 新增 MCU 支援
 
@@ -7,23 +7,20 @@ Flash 位址與 FLM 選擇全從 DFP PDSC 讀取，**PyOCD 路徑不需要 HLM �
 
 | 檔案 | 路徑 | 必要性 |
 |---|---|---|
-| DFP PDSC / FLM | `dfp/Holtek/HT32_DFP/{版號}/` | **必要**（所有路徑）|
-| `.pack` 檔 | `dfp/Holtek.{DFPName}.{版號}.pack` | **必要**（pyOCD）|
+| `.pack` 檔 | `dfp/Holtek.{DFPName}.{版號}.pack` | **必要**（所有路徑）|
 | Settings.ini 條目 | `conf/Settings.ini` → WORKAREASIZE | **必要**（OpenOCD）|
 | 內部 Flash HLM | `openocd/FlashLoader/{Device}_{sizeKB}.HLM` | OpenOCD 專用 |
 | MCU cfg | `openocd/MCU/{DeviceName}.cfg` | OpenOCD 專用 |
 | Target cfg | `openocd/scripts/target/HLM{suffix}.cfg` | OpenOCD（新架構時）|
 
-`.pack` 的命名格式：`Holtek.{DFPName}.{版號}.pack`，例如：
-- `Holtek.HT32_DFP.1.0.79.pack`（標準系列，所有 STD MCU）
-- `Holtek.HT32F493x5_DFP.1.0.6.pack`（49x 特定系列）
+`.pack` 下載來源（Holtek 官網）：
 
-打包方式（PowerShell）：
-```powershell
-Add-Type -Assembly "System.IO.Compression.FileSystem"
-[System.IO.Compression.ZipFile]::CreateFromDirectory($src, $dest)
-```
-其中 `$src` 為 `dfp/Holtek/HT32_DFP/{版號}/` 目錄，`$dest` 為 `dfp/Holtek.HT32_DFP.{版號}.pack`。
+- Pack 清單與最新版號：`https://www.holtek.com.tw/pack/Holtek.pidx`
+- 下載 URL 格式：`https://www.holtek.com.tw/pack/Holtek.{DFPName}.{版號}.pack`
+
+Extension 在背景自動從 `Holtek.pidx` 取得所有 pack 清單與最新版號並下載（`updateDevicePacks`）；`dfp/Holtek/{PackName}/{版號}/` 解壓目錄為 runtime 自動產生，不需手動建立。
+
+### OpenOCD Target cfg（新架構時）
 
 **若新 MCU 是 Cortex-M4 且支援 SWO：**  
 Target cfg 的 `target create` 之後須加：
@@ -77,54 +74,18 @@ ITM/SWO 日常使用選 `TRACE_MODE=00`，由 OpenOCD `tpiu init` 在 debug sess
 
 ---
 
-## DFP Pack 線上更新機制
-
-Extension 支援從 GitHub (`ht32-holtek/pack`) 下載 DFP pack 並自動解壓，不需要重新安裝 extension。
-
-### 觸發方式
-
-| 方式 | 說明 |
-|---|---|
-| 自動（背景，24h cooldown） | `activate()` 呼叫 `checkDfpPackUpdatesInBackground()`，每 24h 靜默檢查一次 |
-| 手動 | Welcome 畫面 **Online Update (Device Packs)** 或 Command Palette `HT32: Update Device Packs (Online)` |
-| 本機安裝 | Welcome 畫面 **Install from Pack Files** 或 Command Palette `HT32: Install Device Pack from File` |
-
-### Pack 存放位置
-
-`.pack` 檔與解壓後的 PDSC/FLM/SVD 皆存放在 `extensionPath/dfp/`：
-
-```
-extensionPath/dfp/
-  Holtek.HT32_DFP.1.0.80.pack       ← .pack 原始檔（供 pyOCD）
-  Holtek/
-    HT32_DFP/
-      1.0.80/
-        Holtek.HT32_DFP.pdsc
-        Flash/...
-        SVD/...
-```
-
-### 解壓邏輯（`extractDfpPacksIfNeeded`）
-
-- 掃描 `dfp/*.pack`，找出尚未解壓的（以 `dfp/Holtek/{PackName}/{版號}/Holtek.{PackName}.pdsc` 是否存在判斷）
-- 先解壓至 `targetDir._tmp/`，成功後 rename 為正式目錄，避免部分解壓被誤判為完成
-- 解壓完成後清除所有 PDSC / MCU cfg / SVD cache，確保後續查詢取得最新資料
-- `activate()` 以 fire-and-forget 呼叫，不阻塞 activation
-
----
-
 ## HT32-IDE 改版時的更新流程
 
 | 資源 | 位置 | 動作 |
 |---|---|---|
-| DFP PDSC + FLM | `dfp/Holtek/HT32_DFP/{新版號}/` | **新建版號資料夾，複製 .pdsc 和 Flash/*.FLM**（Flash 位址/FLM 選擇來源）|
-| SVD 檔 | `dfp/Holtek/HT32_DFP/{新版號}/SVD/` | 複製至同一版號資料夾 |
-| `.pack` 檔（pyOCD）| `dfp/Holtek.HT32_DFP.{新版號}.pack` | **新建 pack**：用 PowerShell ZipFile 將新版號 DFP 資料夾打包；舊版 pack 保留不刪（pyOCD 按版號選最新）|
+| `.pack` 檔 | `dfp/Holtek.HT32_DFP.{新版號}.pack` | **新建 pack**：從 HT32-IDE DFP 資料夾打包（含 .pdsc、Flash/*.FLM、SVD/）；舊版 pack 保留不刪（semver 選最新）|
 | Settings.ini | `conf/Settings.ini` | 直接複製（與 HT32-IDE 相同格式，含 WORKAREASIZE）|
 | Flash Loader HLM | `openocd/FlashLoader/` | OpenOCD 專用：直接複製新增的 .HLM |
 | MCU cfg | `openocd/MCU/` | OpenOCD 專用：直接複製 |
 | OpenOCD 執行檔 | `openocd/bin/` | 有更新才複製 |
 | Target / Interface cfg | `openocd/scripts/` | 通常**不需要**，除非新架構 |
+
+---
 
 ## Bundled Templates 更新（`templates/`）
 
@@ -161,10 +122,10 @@ Extension 在 `templates/` 內 bundle 了各標準系列的 `project_template/IP
 |---|---|
 | FWLib 升版，`project_template/IP/Example/GNU_ARM/` 有改動 | 對應系列的 `templates/{familyTag}/GNU_ARM/`（startup .s、ht32_op.c、ht32_op2.c（若存在）、linker.ld）|
 | FWLib 升版，`project_template/IP/Example/` 範例檔有改動 | 對應系列的 `templates/{familyTag}/`（main.c、*_it.c、conf.h 等）|
-| 新增系列（例如新的 L 系列晶片）| 新增對應 `templates/{newTag}/GNU_ARM/` 目錄並複製樣板 |
+| 新增系列（例如新的 L 系列晶片）| 新增對應 `templates/{newTag}/GNU_ARM/` 目錄並複製樣板（pack 清單由 `Holtek.pidx` 自動取得，不需改程式碼）|
 | `ht32_stack_analysis.c` / `syscalls.c` 有改動 | `templates/GNU_ARM/`（共用，各系列皆用）|
 
-### 更新步驟
+### 更新步驟（升版現有系列）
 
 1. 從最新 FWLib 找到 `project_template/IP/Example/GNU_ARM/` 目錄
 2. 複製需要更新的檔案到對應的 `templates/{familyTag}/GNU_ARM/`
@@ -172,115 +133,44 @@ Extension 在 `templates/` 內 bundle 了各標準系列的 `project_template/IP
 4. 執行 `npm run compile` 確認無誤
 5. 執行 `node test_scripts/test-create-project.js` 確認資源完整性
 
+### 新增系列步驟
+
+以 `HT32F7xxxx`（familyTag = `f7xxxx`）為例：
+
+**來源**（FWLib 根目錄）：
+```
+{fwlib}/project_template/IP/Example/GNU_ARM/   ← GNU_ARM 檔案
+{fwlib}/project_template/IP/Example/           ← 範例樣板
+```
+
+**目的地**（extension 根目錄）：
+```
+templates/f7xxxx/GNU_ARM/   ← GNU_ARM 檔案
+templates/f7xxxx/           ← 範例樣板
+```
+
+**必須複製的檔案（extension 實際使用）：**
+
+| 來源路徑（相對 Example/） | 目的地 | 說明 |
+|---|---|---|
+| `GNU_ARM/startup_ht32f7xxxx_gcc_*.s` | `f7xxxx/GNU_ARM/` | startup（所有 variant）|
+| `GNU_ARM/linker.ld` | `f7xxxx/GNU_ARM/linker.ld` | linker script |
+| `GNU_ARM/ht32_op.c` | `f7xxxx/GNU_ARM/ht32_op.c` | option bytes |
+| `GNU_ARM/ht32_op2.c` | `f7xxxx/GNU_ARM/ht32_op2.c` | 若存在才複製 |
+| `main.c` | `f7xxxx/main.c` | |
+| `system_ht32f7xxxx_*.c` | `f7xxxx/` | system init（所有 variant）|
+| `ht32f7xxxx_*_it.c` | `f7xxxx/` | interrupt handler |
+| `ht32f7xxxx_conf.h` | `f7xxxx/` | FWLib config header |
+| `ht32f7xxxx_*_usbdconf.h` | `f7xxxx/` | USB config（1～3 個 variant）|
+| `ht32_can_config.h` | `f7xxxx/` | CAN config（若存在才複製）|
+
+> familyTag 規則：`library/HT32F7xxxx_Driver` → `f7xxxx`（取 `F7` 後接 `xxxx`，全小寫）。
+
 > Fallback 只用於舊版 FWLib 缺失的情況；新版 FWLib 完整時，extension 優先使用 FWLib 自身的檔案，bundled 版本不會被採用。因此更新 bundled templates 的優先級低於更新 DFP / Settings.ini。
 
 ---
 
-## openocd/scripts/ 最小結構（2026-05-08 清理後）
-
-標準 OpenOCD 所附帶的 board/chip/cpu 等數百個 cfg 已全部移除，只保留 HT32 所需：
-
-```
-scripts/
-  interface/
-    cmsis-dap.cfg   ← e-Link32 Pro（預設）
-    htlink.cfg      ← e-Link32 Pro / Lite
-    stlink.cfg      ← ST-Link
-    jlink.cfg       ← J-Link
-  target/
-    HLMm0x.cfg      ← Cortex-M0
-    HLMm3x.cfg      ← Cortex-M3 / HT32F1xxxx
-    HLM490x1.cfg    ← Cortex-M4（有 tpiu create）
-    HLM491x3.cfg    ← Cortex-M4（有 tpiu create）
-    HLM493x5.cfg    ← Cortex-M4（有 tpiu create）
-    swj-dp.tcl      ← 被所有 HLM cfg source，必要
-    readme.txt
-```
-
-## pyOCD 架構說明
-
-### pyOCD 自動偵測 / 安裝（`findOrInstallPyocd()`）
-
-Extension 啟動時（`generateTasksAndLaunchAndMakefile()` 偵測到任一 project 的 `serverType === 'pyocd'`）：
-
-1. 檢查 `pyocd --version`（PATH 中是否已有）→ 有則直接用，不設 `serverpath`（cortex-debug 自動找）
-2. 查 bundled `uv.exe`（`bin/win32-x64/uv.exe`）→ 執行 `uv tool dir --bin` 取得 bin 目錄 → 檢查其中是否有 `pyocd.exe`
-3. 若都沒有 → 跳出 Progress Notification，執行 `uv tool install pyocd` 自動安裝（timeout 3 分鐘）
-4. 找到的 `pyocd.exe` 絕對路徑設為 cortex-debug 的 `serverpath`
-
-**bundled uv**：`bin/win32-x64/uv.exe`（與 GNU Make 放在同一目錄）
-
-### pack 檔選取（`findPacksForDevice()`）
-
-pyOCD 透過 `--pack` 取得 PDSC 與 FLM，extension 自動從 `dfp/` 根目錄掃描 `.pack` 檔：
-
-- 格式：`Holtek.{DFPName}.{版號}.pack`
-- 優先選特定系列（`HT32F493x5_DFP` 等，prefix 較長者優先），再 fallback 到 `HT32_DFP`
-- 同系列多版本並存時選最新（semver 排序）
-- 所有選中的 pack 透過多個 `--pack` 參數傳給 cortex-debug
-
-### 產生的設定檔
-
-`generateTasksAndLaunchAndMakefile()` 在 pyOCD 模式下，於 `HT32_VSCode/{bg}/` 目錄額外產生：
-
-| 檔案 | 說明 |
-|---|---|
-| `pyocd.yaml` | `user_script: pyocd_user.py`（有 SPIM loader 時才加；無 SPIM 則為空 yaml）|
-| `pyocd_user.py` | 僅在有外部 SPIM Flash Loader 時產生；用 `will_connect` hook 注入 EXT FlashRegion |
-
-`pyocd_user.py` 注意事項：
-- 必須純 ASCII（pyOCD 在 Windows 以系統編碼讀取，中文會失敗）
-- FLM 從 `.pack` ZIP 解壓到 temp 檔再傳給 `FlashRegion(flm=...)`
-- 使用 `will_connect(board)` hook，**不用** `did_init_target`（Flash instance 版本相容問題）
-
-### serverType 設定
-
-`project.settings.json` 的 `serverType` 欄位（由 Settings Webview 設定）：
-- `"openocd"`（預設）：走 OpenOCD 路徑，需 HLM / MCU cfg / Settings.ini WORKAREASIZE
-- `"pyocd"`：走 pyOCD 路徑，需 `.pack` 檔，不需 HLM / MCU cfg
-
----
-
-## 測試腳本（test_scripts/）
-
-詳見 [test-scripts.md](test-scripts.md)。
-
----
-
-## ht32.internal.extensionRoot
-
-`generateTasksAndLaunchAndMakefile()` 產生的 `tasks.json` / `launch.json` 內，所有指向 extension 內部資源的路徑（OpenOCD exe、cfg 檔、HLM loader、pyOCD --pack 參數、bundled make 目錄）均使用 VS Code 變數：
-
-```
-${config:ht32.internal.extensionRoot}
-```
-
-VS Code 在執行 task / launch 時動態展開為實際的 extensionPath（含版號目錄），因此 extension 升版後**不需重新執行「Generate Build & Debug Config」**，tasks / launch 自動套用新路徑。
-
-### 寫入時機
-
-Extension `activate()` 時比對現有值，只有 extensionPath 改變（即升版後首次啟動）才呼叫 `globalCfg.update()`，平常開 VS Code 不寫入。
-
-### 儲存位置
-
-Machine-scoped setting（`package.json` 中宣告 `"scope": "machine"`），寫入 VS Code User `settings.json`（`%APPDATA%\Code\User\settings.json`）。Machine scope 不會被 VS Code Settings Sync 跨機器同步。
-
-### 注意事項
-
-- `pyocd_user.py` 內的 pack 路徑仍使用實際絕對路徑（pyocd 直接讀取，不經 VS Code 變數展開）
-- 使用者自訂的 `ht32.openocdPath` / `ht32.makePath` 不受影響，仍以實際路徑優先
-
----
-
-## Bundled GNU Make 4.4.1
-
-`bin/win32-x64/make.exe` 為 GNU Make 4.4.1（2023），來源：`mbuilov/gnumake-windows`（GitHub）standalone exe，無需額外 DLL。
-
-**必要原因**：支援 `$(file <filename)` 函式（GNU Make 4.0 新增）。舊版 Make 3.81（2006）不支援此語法。
-
----
-
-## Microsoft 平台關係與 Token 申請流程
+## Release 到 VS Code Marketplace
 
 ### 平台關係
 
@@ -295,21 +185,7 @@ Microsoft 收購歷史造成多平台並存：
 
 VS Code Extension 發布路徑：**Microsoft 帳號 → Azure DevOps 組織 → PAT → vsce publish**
 
-### GitHub PAT 申請（用於 git push）
-
-1. GitHub → Settings → Developer settings → Personal access tokens
-2. 選 **Tokens (classic)** 或 **Fine-grained tokens**
-   - Classic：勾 `repo`，對帳號下所有 repo 有效
-   - Fine-grained：指定特定 repo → Contents: Read and write（較安全）
-3. 複製 token（只顯示一次）
-4. 使用方式：
-   ```
-   git remote set-url origin https://<TOKEN>@github.com/<org>/<repo>.git
-   ```
-
-本專案 token 寫在 `push_docs.bat` 的 remote URL 中。
-
-### Azure DevOps PAT 申請（用於 vsce 發布 VS Code Marketplace）
+### Azure DevOps PAT（用於 vsce 發布）
 
 前提：需先在 `https://aex.dev.azure.com/signup` 建立 Azure DevOps 組織。
 
@@ -330,3 +206,52 @@ VS Code Extension 發布路徑：**Microsoft 帳號 → Azure DevOps 組織 → 
 
 > 若 Azure DevOps 無法建立組織（Continue 無反應），可改用 Marketplace 網頁直接上傳 `.vsix`：
 > `marketplace.visualstudio.com/manage/publishers/holtek` → **+ New extension**
+
+### GitHub PAT（用於 git push）
+
+1. GitHub → Settings → Developer settings → Personal access tokens
+2. 選 **Tokens (classic)** 或 **Fine-grained tokens**
+   - Classic：勾 `repo`，對帳號下所有 repo 有效
+   - Fine-grained：指定特定 repo → Contents: Read and write（較安全）
+3. 複製 token（只顯示一次）
+4. 使用方式：
+   ```
+   git remote set-url origin https://<TOKEN>@github.com/<org>/<repo>.git
+   ```
+
+本專案 token 寫在 `push_docs.bat` 的 remote URL 中。
+
+---
+
+## 參考
+
+### openocd/scripts/ 最小結構
+
+標準 OpenOCD 所附帶的 board/chip/cpu 等數百個 cfg 已全部移除，只保留 HT32 所需：
+
+```
+scripts/
+  interface/
+    cmsis-dap.cfg   ← e-Link32 Pro（預設）
+    htlink.cfg      ← e-Link32 Pro / Lite
+    stlink.cfg      ← ST-Link
+    jlink.cfg       ← J-Link
+  target/
+    HLMm0x.cfg      ← Cortex-M0
+    HLMm3x.cfg      ← Cortex-M3 / HT32F1xxxx
+    HLM490x1.cfg    ← Cortex-M4（有 tpiu create）
+    HLM491x3.cfg    ← Cortex-M4（有 tpiu create）
+    HLM493x5.cfg    ← Cortex-M4（有 tpiu create）
+    swj-dp.tcl      ← 被所有 HLM cfg source，必要
+    readme.txt
+```
+
+### Bundled GNU Make 4.4.1
+
+`bin/win32-x64/make.exe` 為 GNU Make 4.4.1（2023），來源：`mbuilov/gnumake-windows`（GitHub）standalone exe，無需額外 DLL。
+
+**必要原因**：支援 `$(file <filename)` 函式（GNU Make 4.0 新增）。舊版 Make 3.81（2006）不支援此語法。
+
+### 測試腳本（test_scripts/）
+
+詳見 [test-scripts.md](test-scripts.md)。

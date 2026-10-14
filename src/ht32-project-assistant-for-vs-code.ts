@@ -4048,7 +4048,7 @@ async function generateTasksAndLaunchAndMakefile(
 
     // MCU cfg is required for flash address resolution; report error if missing
     if (bgDevice && !parseMcuCfg(bgDevice, extensionPath)) {
-      const msg = `MCU config not found for "${bgDevice}". Flash programming will not work correctly. Check the device name or update the bundled DFP.`;
+      const msg = `MCU config not found for "${bgDevice}". Flash programming will not work correctly. Check the device name, or use "HT32: Update Device Packs (Online)" / "HT32: Install Device Pack from File" to add support for this MCU.`;
       logError(msg);
       if (isActiveBg) { vscode.window.showErrorMessage(msg); }
     }
@@ -5492,7 +5492,7 @@ class RecentTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 /** ====== DFP pack update ====== */
 
-const GITHUB_PACK_REPO = 'ht32-holtek/pack';
+const HOLTEK_PACK_BASE = 'https://www.holtek.com.tw/pack';
 let _extracting: Promise<void> | null = null;
 const DFP_CHECK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -5523,21 +5523,19 @@ function httpsGet(url: string, redirectsLeft = 5, extraHeaders: Record<string, s
   });
 }
 
-/** Fetch the list of .pack files available in the GitHub pack repo. */
-async function fetchGitHubPackList(): Promise<{ name: string; download_url: string }[]> {
-  const buf = await httpsGet(
-    `https://api.github.com/repos/${GITHUB_PACK_REPO}/contents`,
-    5,
-    { 'Accept': 'application/vnd.github.v3+json' }
-  );
-  const parsed = JSON.parse(buf.toString('utf8'));
-  if (!Array.isArray(parsed)) {
-    const msg = (parsed as any)?.message ?? 'Unknown GitHub API error';
-    throw new Error(`GitHub API error: ${msg}`);
-  }
-  return (parsed as any[]).filter(f =>
-    typeof f.name === 'string' && /^Holtek\..+\.pack$/i.test(f.name) && f.download_url
-  );
+/** Fetch the pack list from Holtek.pidx.
+ *  Returns one entry per pack with the latest version and download URL. */
+async function fetchHoltekPidx(): Promise<{ name: string; download_url: string; version: string }[]> {
+  const buf = await httpsGet(`${HOLTEK_PACK_BASE}/Holtek.pidx`);
+  const doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' }).parse(buf.toString('utf8'));
+  const entries: any[] = doc?.index?.pindex?.pdsc ?? [];
+  const list = Array.isArray(entries) ? entries : [entries];
+  return list
+    .filter((e: any) => e.vendor && e.name && e.version)
+    .map((e: any) => {
+      const fileName = `${e.vendor}.${e.name}.${e.version}.pack`;
+      return { name: fileName, download_url: `${HOLTEK_PACK_BASE}/${fileName}`, version: e.version };
+    });
 }
 
 /** Download a URL to a local file. */
@@ -5602,33 +5600,35 @@ async function _doExtractDfpPacks(extPath: string): Promise<void> {
   _svdBundledExtPath = '';
 }
 
-/** Download and extract missing DFP packs from GitHub. */
+/** Download and extract missing DFP packs from Holtek's website. */
 async function updateDevicePacks(extPath: string, showProgress: boolean): Promise<boolean> {
   const dfpDir = path.join(extPath, 'dfp');
   fs.mkdirSync(dfpDir, { recursive: true });
 
-  let list: { name: string; download_url: string }[];
-  try { list = await fetchGitHubPackList(); }
+  // Fetch latest pack list from Holtek.pidx.
+  let pidxList: { name: string; download_url: string; version: string }[];
+  try { pidxList = await fetchHoltekPidx(); }
   catch (e: any) {
-    logError(`[DFP] fetchGitHubPackList failed: ${e?.message ?? e}`);
+    logError(`[DFP] fetchHoltekPidx failed: ${e?.message ?? e}`);
     return false;
   }
-  if (list.length === 0) return false;
-
-  // For each pack name, keep only the latest version from GitHub.
-  const latestByName = new Map<string, { name: string; download_url: string; version: string }>();
-  for (const f of list) {
-    const m = /^Holtek\.(.+?)\.([\d.]+)\.pack$/i.exec(f.name);
-    if (!m) continue;
-    const [, packName, version] = m;
-    const existing = latestByName.get(packName);
-    if (!existing || semverCmp(version, existing.version) > 0) {
-      latestByName.set(packName, { name: f.name, download_url: f.download_url, version });
-    }
+  if (pidxList.length === 0) {
+    logError('[DFP] fetchHoltekPidx returned no entries — check Holtek.pidx structure or network.');
+    if (showProgress) vscode.window.showWarningMessage('HT32: Could not retrieve pack list from Holtek. Check Output for details.');
+    return false;
   }
 
-  // Build map of local latest version per pack name.
+  const latestByName = new Map<string, { name: string; download_url: string; version: string }>();
+  for (const f of pidxList) {
+    const m = /^Holtek\.(.+?)\.([\d.]+)\.pack$/i.exec(f.name);
+    if (!m) continue;
+    const existing = latestByName.get(m[1]);
+    if (!existing || semverCmp(f.version, existing.version) > 0) latestByName.set(m[1], f);
+  }
+
   const localFiles = fs.existsSync(dfpDir) ? fs.readdirSync(dfpDir) : [];
+
+  // Build map of local latest version per pack name.
   const localLatestByName = new Map<string, string>();
   for (const n of localFiles) {
     const m = /^Holtek\.(.+?)\.([\d.]+)\.pack$/i.exec(n);
@@ -5638,13 +5638,10 @@ async function updateDevicePacks(extPath: string, showProgress: boolean): Promis
     if (!cur || semverCmp(version, cur) > 0) localLatestByName.set(packName, version);
   }
 
-  // Only download if GitHub has a newer version than what is already local,
-  // and the exact file doesn't already exist.
+  // Only download if Holtek has a newer version than what is already local.
   const missing = [...latestByName.values()].filter(f => {
     if (fs.existsSync(path.join(dfpDir, f.name))) return false;
-    const m = /^Holtek\.(.+?)\.([\d.]+)\.pack$/i.exec(f.name);
-    if (!m) return false;
-    const localV = localLatestByName.get(m[1]);
+    const localV = localLatestByName.get(f.name.match(/^Holtek\.(.+?)\.([\d.]+)\.pack$/i)![1]);
     return !localV || semverCmp(f.version, localV) > 0;
   });
   if (missing.length === 0) { logInfo('[DFP] All packs up to date.'); return true; }
@@ -5691,7 +5688,8 @@ async function checkDfpPackUpdatesInBackground(extPath: string, ctx: vscode.Exte
   const lastCheck = ctx.globalState.get<number>('ht32.dfpLastCheck', 0);
   if (Date.now() - lastCheck < DFP_CHECK_COOLDOWN_MS) return;
   const ok = await updateDevicePacks(extPath, false).catch(() => false);
-  if (ok) await ctx.globalState.update('ht32.dfpLastCheck', Date.now());
+  // Update timestamp even on empty pidxList to avoid hammering the server on every startup.
+  await ctx.globalState.update('ht32.dfpLastCheck', Date.now());
 }
 
 function fetchMarketplaceVersion(extensionId: string): Promise<string> {

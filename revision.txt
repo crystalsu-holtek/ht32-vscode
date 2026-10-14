@@ -2,6 +2,70 @@
 Holtek HT32 VS Code Extension — Revision History
 ================================================================================
 
+v0.3.1  (from v0.3.0)
+--------------------------------------------------------------------------------
+
+修正
+- Device Pack 線上更新改從 Holtek 官網（holtek.com.tw）下載，不再依賴 GitHub
+
+================================================================================
+
+v0.3.0  (from v0.2.5)
+--------------------------------------------------------------------------------
+
+新功能
+- Device Pack 線上更新（HT32: Online Update (Device Packs)）：
+  從 GitHub holtek/HT32_STD_xxx_FWLib Releases 取得最新 .pack 下載連結，
+  本機已有相同或更新版本時略過，下載後自動解壓至 extension 目錄；
+  並發防護：_extracting guard 防止多次同時解壓
+- Device Pack 手動安裝（HT32: Install from Pack Files）：
+  從本機選取 Holtek.*.pack 檔案安裝，不限版本
+- Welcome 畫面更新：移除「# Welcome to Holtek HT32 VS Code Extension」標題；
+  「Update Extension」區塊改名為「Updates」，加入 Device Pack 更新入口
+
+修正
+- activationEvents glob 修正：`*/project.meta.json` → `.vscode/*/project.meta.json`
+  修正：原 glob 只匹配一層，需要兩層（.vscode/<bgDir>/project.meta.json）才能正確觸發 activation
+- 開啟專案時新增 validateProjectFiles 前置驗證：
+  逐一檢查每個 bgDir 的 project.meta.json 及 project.settings.json 是否存在且為合法 JSON
+  全部無效 → modal 錯誤對話框 → 自動關閉 workspace → 聚焦回 HT32 panel；
+  部分無效 → warning toast（打開 Output Channel 顯示詳情）→ 跳過壞的繼續開啟有效的；
+  全部無效時自動從 HT32 recent projects 移除對應 .ht32vs（removeRecentProject）
+- 修正 catch fall-through：initProjectsFromMeta 失敗時 catch block 加入 return false，
+  不再落穿到 tree.setRoot(root) 與 setContext hasProject=true
+- 修正 setActiveBuildGenSetting / addRecentProject 意外遺失：
+  開啟專案每次清除 activeBuildGen、成功後更新 recent projects 記錄
+
+================================================================================
+
+v0.2.5  (from v0.2.4)
+--------------------------------------------------------------------------------
+
+新功能
+- 新增 gcSections 編譯選項：Settings Webview 新增「GC Sections」開關（預設開啟），
+  控制 -ffunction-sections -fdata-sections -Wl,--gc-sections；
+  所有 Makefile 產生路徑（initProjectsFromMeta / regenAllMakefileFlags /
+  updateProjectMeta / regenerateMakefileFlags）均已傳遞
+- 開啟專案加速（mtime 短路）：initProjectsFromMeta 新增 mtime 判斷，
+  若 Makefile 比 project.settings.json 和 project.meta.json 都新、且所有 list 檔存在，
+  直接 skip 該 bgDir，不重寫 Makefile / sources.list / compile_commands.json
+- ht32.focusHt32OnActivate flag：Convert / Open 後 reload 時，
+  Extension activation 立刻切回 HT32 panel（在 initProjectsFromMeta 等慢操作之前），
+  避免使用者看著 Explorer 等待
+
+修正
+- Afterbuild .bat 更新保留使用者設定值：版本升級替換 .bat 時，
+  自動將舊檔中 APSEQ / APSAVE_ENDADDR / BIN_OFFSET / CMP_RESULT 等使用者自訂
+  SET KEY=VALUE 搬移到新版本，不再覆蓋為 bundled 預設值
+- .ht32vs 解析改用 parseHt32vsFile helper：集中化解析邏輯，
+  支援 trailing comma（JSON5 相容），格式錯誤時顯示明確錯誤訊息；
+  所有讀取 .ht32vs 的路徑統一改用 parseHt32vsFile，取代散落的 JSON.parse + try/catch
+- Update Extension 流程改善：改用 semverCmp 比較版本（修正舊版字串比較誤判）；
+  更新成功後顯示「Reload Now」按鈕；安裝/更新 log 輸出至 Output Channel；
+  VSIX 安裝失敗時顯示詳細錯誤訊息
+
+================================================================================
+
 v0.2.4  (from v0.2.3)
 --------------------------------------------------------------------------------
 

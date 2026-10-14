@@ -2,7 +2,7 @@
   "name": "ht32-vscode",
   "displayName": "Holtek HT32 VS Code Extension",
   "description": "Create, convert, and manage Holtek HT32 projects in VS Code. Supports Keil uVision (.uvprojx) and HT32-IDE (.project/.cproject) conversion, with build, flash, and debug support.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "holtek",
   "icon": "media/ht32.png",
   "engines": {
