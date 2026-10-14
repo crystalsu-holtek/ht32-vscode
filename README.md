@@ -78,7 +78,7 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 
 After installation, the **HT32 icon** appears in the Activity Bar. Click it to open the HT32 panel.
 
-**When no project is open:** shows **Create / Open / Convert** buttons, plus a **Recent Projects** list below for quick access.
+**When no project is open:** shows **Create Project** and **Open Project** buttons, a **View README** link, **Convert a uVision Project** and **Convert HT32-IDE Projects** buttons, and an **Updates** section with **Online Update (Extension)**, **Install from VSIX**, **Online Update (Device Packs)**, and **Install from Pack Files** shortcuts. If any projects have been opened before, a **Recent Projects** list appears below for quick access.
 
 <img src="media/4.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -577,6 +577,8 @@ After conversion or project creation, the extension auto-generates `.clangd` and
 | `HT32: Refresh Stack Usage` | Manually refresh the Stack Usage Analysis panel |
 | `HT32: Update Extension (Online)` | Check the VS Code Marketplace for a newer version and install it automatically |
 | `HT32: Install Extension from VSIX` | Open a file picker to install a local `.vsix` package |
+| `HT32: Update Device Packs (Online)` | Download and install missing DFP packs from the GitHub pack repository |
+| `HT32: Install Device Pack from File` | Open a file picker to install one or more local `.pack` files |
 
 ---
 

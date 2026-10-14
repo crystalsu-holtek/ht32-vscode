@@ -77,6 +77,42 @@ ITM/SWO 日常使用選 `TRACE_MODE=00`，由 OpenOCD `tpiu init` 在 debug sess
 
 ---
 
+## DFP Pack 線上更新機制
+
+Extension 支援從 GitHub (`ht32-holtek/pack`) 下載 DFP pack 並自動解壓，不需要重新安裝 extension。
+
+### 觸發方式
+
+| 方式 | 說明 |
+|---|---|
+| 自動（背景，24h cooldown） | `activate()` 呼叫 `checkDfpPackUpdatesInBackground()`，每 24h 靜默檢查一次 |
+| 手動 | Welcome 畫面 **Online Update (Device Packs)** 或 Command Palette `HT32: Update Device Packs (Online)` |
+| 本機安裝 | Welcome 畫面 **Install from Pack Files** 或 Command Palette `HT32: Install Device Pack from File` |
+
+### Pack 存放位置
+
+`.pack` 檔與解壓後的 PDSC/FLM/SVD 皆存放在 `extensionPath/dfp/`：
+
+```
+extensionPath/dfp/
+  Holtek.HT32_DFP.1.0.80.pack       ← .pack 原始檔（供 pyOCD）
+  Holtek/
+    HT32_DFP/
+      1.0.80/
+        Holtek.HT32_DFP.pdsc
+        Flash/...
+        SVD/...
+```
+
+### 解壓邏輯（`extractDfpPacksIfNeeded`）
+
+- 掃描 `dfp/*.pack`，找出尚未解壓的（以 `dfp/Holtek/{PackName}/{版號}/Holtek.{PackName}.pdsc` 是否存在判斷）
+- 先解壓至 `targetDir._tmp/`，成功後 rename 為正式目錄，避免部分解壓被誤判為完成
+- 解壓完成後清除所有 PDSC / MCU cfg / SVD cache，確保後續查詢取得最新資料
+- `activate()` 以 fire-and-forget 呼叫，不阻塞 activation
+
+---
+
 ## HT32-IDE 改版時的更新流程
 
 | 資源 | 位置 | 動作 |

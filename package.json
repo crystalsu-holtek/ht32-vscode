@@ -2,7 +2,7 @@
   "name": "ht32-vscode",
   "displayName": "Holtek HT32 VS Code Extension",
   "description": "Create, convert, and manage Holtek HT32 projects in VS Code. Supports Keil uVision (.uvprojx) and HT32-IDE (.project/.cproject) conversion, with build, flash, and debug support.",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "publisher": "holtek",
   "icon": "media/ht32.png",
   "engines": {
@@ -114,6 +114,18 @@
         "category": "HT32",
         "title": "Update Extension (Online)",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "ht32.updateDevicePacks",
+        "category": "HT32",
+        "title": "Update Device Packs (Online)",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "ht32.installPackFile",
+        "category": "HT32",
+        "title": "Install Device Pack from File",
+        "icon": "$(package)"
       },
       {
         "command": "ht32.installFromVsix",
@@ -698,7 +710,7 @@
     "viewsWelcome": [
       {
         "view": "ht32ProjectView",
-        "contents": "# Welcome to Holtek HT32 VS Code Extension\n\n[Create Project](command:ht32.createProject)\n[Open Project](command:ht32.openProject)\n\n[View README](command:ht32.openReadme)\n",
+        "contents": "[Create Project](command:ht32.createProject)\n[Open Project](command:ht32.openProject)\n\n[View README](command:ht32.openReadme)\n",
         "when": "!ht32.hasProject"
       },
       {
@@ -708,7 +720,7 @@
       },
       {
         "view": "ht32ProjectView",
-        "contents": "Update Extension\n\n[Online Update](command:ht32.updateFromMarketplace)\n[Install From VSIX](command:ht32.installFromVsix)\n",
+        "contents": "Updates\n\n[Online Update (Extension)](command:ht32.updateFromMarketplace)\n[Install from VSIX](command:ht32.installFromVsix)\n\n[Online Update (Device Packs)](command:ht32.updateDevicePacks)\n[Install from Pack Files](command:ht32.installPackFile)\n",
         "when": "!ht32.hasProject"
       }
     ]
@@ -724,6 +736,7 @@
     "test:compile": "node test_scripts/test-compile.js"
   },
   "dependencies": {
+    "adm-zip": "^0.5.10",
     "fast-xml-parser": "^4.4.0"
   },
   "devDependencies": {
