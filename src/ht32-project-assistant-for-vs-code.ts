@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec as cpExec, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
-import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak } from './tools/uv2make';
+import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
 import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
@@ -2450,80 +2450,6 @@ function selectInterfaceCfg(debugInterface: string, openocdRoot: string): string
     case 'e-Link32 Lite': return `${openocdRoot}/scripts/interface/htlink.cfg`;  // legacy values
     default:             return `${openocdRoot}/scripts/interface/cmsis-dap.cfg`;
   }
-}
-
-/** Expand "HT32F52342_52" → ["HT32F52342", "HT32F52352"] */
-function expandSvdVariants(svdBase: string): string[] {
-  const us = svdBase.indexOf('_');
-  if (us < 0) return [svdBase];
-  const base   = svdBase.slice(0, us);   // "HT32F52342"
-  const suffix = svdBase.slice(us + 1);  // "52"
-  const variant = base.slice(0, base.length - suffix.length) + suffix;
-  return [base, variant];
-}
-
-// Cache: deviceNameUpper → svdPath；第一次呼叫時一次掃完所有 SVD 目錄，之後 O(1) 查表
-const _svdBundledCache  = new Map<string, string | undefined>();
-let   _svdBundledExtPath = '';
-
-/** Find the SVD file for a given device name.
- *  Search order: ht32.dfpPath setting → bundled dfp (latest version)
- */
-function findSvdFile(dfpPath: string, deviceName: string, extPath: string, extraPdscPaths: string[] = []): string | undefined {
-  const nameUpper = deviceName.toUpperCase();
-
-  // User-provided dfpPath / extraPdscPaths — always fresh, skip cache
-  if (dfpPath || extraPdscPaths.length > 0) {
-    const searchDirs: string[] = [];
-    if (dfpPath) searchDirs.push(path.join(dfpPath, 'SVD'));
-    for (const p of extraPdscPaths) {
-      if (p) searchDirs.push(path.join(path.dirname(p), 'SVD'));
-    }
-    for (const svdDir of searchDirs) {
-      if (!fs.existsSync(svdDir)) continue;
-      for (const file of fs.readdirSync(svdDir)) {
-        if (!file.toLowerCase().endsWith('.svd')) continue;
-        const variants = expandSvdVariants(file.slice(0, -4));
-        if (variants.some(v => v.toUpperCase() === nameUpper)) {
-          return path.join(svdDir, file).replace(/\\/g, '/');
-        }
-      }
-    }
-  }
-
-  // Bundled DFP — 一次掃完所有 SVD 目錄建成完整 Map，之後所有查詢都 O(1)
-  if (_svdBundledExtPath !== extPath) {
-    _svdBundledCache.clear();
-    const holtekRoot = path.join(extPath, 'dfp', 'Holtek');
-    if (fs.existsSync(holtekRoot)) {
-      for (const dfpName of fs.readdirSync(holtekRoot).sort()) {
-        const dfpBase = path.join(holtekRoot, dfpName);
-        if (!fs.statSync(dfpBase).isDirectory()) continue;
-        const versions = fs.readdirSync(dfpBase)
-          .filter(v => fs.statSync(path.join(dfpBase, v)).isDirectory())
-          .sort((a, b) => semverCmp(b, a));
-        for (const v of versions) {
-          const svdDir = path.join(dfpBase, v, 'SVD');
-          if (!fs.existsSync(svdDir)) continue;
-          for (const file of fs.readdirSync(svdDir)) {
-            if (!file.toLowerCase().endsWith('.svd')) continue;
-            for (const variant of expandSvdVariants(file.slice(0, -4))) {
-              const key = variant.toUpperCase();
-              if (!_svdBundledCache.has(key)) {   // newest-first → first write wins
-                _svdBundledCache.set(key, path.join(svdDir, file).replace(/\\/g, '/'));
-              }
-            }
-          }
-        }
-      }
-    }
-    _svdBundledExtPath = extPath;
-  }
-  const hit = _svdBundledCache.get(nameUpper);
-  if (hit !== undefined) return hit;
-  // Strip package suffix (e.g. HT32F52341_48LQFP → HT32F52341) and retry
-  const strippedUpper = nameUpper.replace(/_[^_]+$/, '');
-  return strippedUpper !== nameUpper ? _svdBundledCache.get(strippedUpper) : undefined;
 }
 
 /**
@@ -5596,8 +5522,7 @@ async function _doExtractDfpPacks(extPath: string): Promise<void> {
   _pdscRawCache.clear();
   _mcuCfgResultCache.clear();
   _internalFlmCache.clear();
-  _svdBundledCache.clear();
-  _svdBundledExtPath = '';
+  clearSvdCache();
 }
 
 /** Download and extract missing DFP packs from Holtek's website. */

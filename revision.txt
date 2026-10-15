@@ -7,6 +7,22 @@ v0.3.1  (from v0.3.0)
 
 修正
 - Device Pack 線上更新改從 Holtek 官網（holtek.com.tw）下載，不再依賴 GitHub
+- SVD 查找邏輯從檔名比對改為讀取 PDSC `<debug svd="..."/>` 屬性：
+  原本以 SVD 檔名（如 HT32F493x5.svd）比對 device name，
+  無法識別 `x` 為 wildcard，導致 HT32F49153/49163/49365/49395 等
+  49x sub-series 查不到 SVD，launch.json 缺少 svdFile → Cortex-Debug 無暫存器視圖；
+  改為解析 PDSC family → subFamily → device 繼承鏈，直接讀取 `<debug svd>` 路徑
+  （device 優先，subFamily 次之，family 最後）
+- findSvdFile 移至 uv2make.ts（export），test-mcu.js 改 require 編譯後的版本，
+  不再維護重複實作
+- Device Pack 更新後 SVD cache 正確失效：
+  _doExtractDfpPacks 新增 clearSvdCache() 呼叫，
+  與 _pdscRawCache / _mcuCfgResultCache 同步清除；
+  修正：DFP 更新後 SVD 快取殘留舊值，需重啟 VS Code 才生效
+- 修正 searchPdsc 中 `return undefined` 應為 `continue`：
+  device 存在但無 `<debug svd>` 時，原本直接結束搜尋；
+  修正後繼續嘗試後續 subFamily / family / PDSC，確保 device-specific DFP
+  的 SVD 不會被 HT32_DFP 中無 SVD 的同名 device 短路
 
 ================================================================================
 

@@ -297,10 +297,11 @@ selectTargetCfg(mcu?, deviceName?)
   ├── M3/M4/M7 → target/HLMm3x.cfg
   └── default → target/HLMm0x.cfg
 
-findSvdFile(dfpPath, deviceName, extPath)
-  ├── 搜尋 ht32.dfpPath 設定 → SVD/
-  ├── 搜尋 bundled dfp（掃所有版本，新版優先）
-  └── expandSvdVariants()   ← "HT32F52342_52" → ["HT32F52342", "HT32F52352"]
+findSvdFile(dfpPath, deviceName, extPath[, extraPdscPaths])  [uv2make.ts]
+  ├── 讀 PDSC <debug svd="..."/> 屬性（device > subFamily > family，device 優先）
+  ├── 搜尋順序：ht32.dfpPath → extraPdscPaths → bundled dfp（新版優先）
+  ├── bundled 結果以 deviceName 為 key 快取（_svdDeviceCache）
+  └── DFP 更新後 clearSvdCache() 清除快取（同 _doExtractDfpPacks 清除其他 PDSC 快取）
 
 ProjectTreeProvider
   └── 掃描 HT32_VSCode/Project*/ 下的 project.meta.json 建立多專案樹（舊版相容：.vscode/build-gen*/）

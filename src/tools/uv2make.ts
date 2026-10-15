@@ -3321,6 +3321,85 @@ export interface UvmpwProject {
   isActive: boolean;
 }
 
+// ── SVD lookup via PDSC <debug svd="..."/> ──────────────────────────────────
+const _svdPdscRawCache  = new Map<string, string>();
+const _svdDeviceCache   = new Map<string, string | undefined>();
+let   _svdBundledExtPath = '';
+
+/**
+ * Find the SVD file for a device by reading the PDSC <debug svd="..."/> attribute.
+ * Inherits svd path from subFamily → family as per CMSIS-Pack spec.
+ * Search order: ht32.dfpPath setting → extraPdscPaths → bundled dfp
+ */
+export function findSvdFile(dfpPath: string, deviceName: string, extPath: string, extraPdscPaths: string[] = []): string | undefined {
+  const stripped = deviceName.replace(/_[^_]+$/, '');
+  // deviceName and PDSC Dname both use Holtek's uppercase convention; case-sensitive compare is intentional
+  const matches  = (name: string) => name === deviceName || name === stripped || name.replace(/_[^_]+$/, '') === stripped;
+  const parser   = new XMLParser({
+    ignoreAttributes: false, attributeNamePrefix: '',
+    isArray: (name: string) => ['family', 'subFamily', 'device'].includes(name),
+  });
+
+  function searchPdsc(pdscPath: string): string | undefined {
+    try {
+      if (!_svdPdscRawCache.has(pdscPath)) _svdPdscRawCache.set(pdscPath, fs.readFileSync(pdscPath, 'utf8'));
+      const doc: any = parser.parse(_svdPdscRawCache.get(pdscPath)!);
+      for (const fam of (doc?.package?.devices?.family ?? []) as any[]) {
+        const famSvd: string | undefined = fam.debug?.svd;
+        for (const subfam of [fam, ...(fam.subFamily ?? [])] as any[]) {
+          const subfamSvd: string | undefined = subfam.debug?.svd ?? famSvd;
+          for (const dev of (subfam.device ?? []) as any[]) {
+            if (!matches(dev.Dname ?? '')) continue;
+            const svdRel: string | undefined = dev.debug?.svd ?? subfamSvd;
+            if (!svdRel) continue;
+            const svdAbs = path.join(path.dirname(pdscPath), svdRel).replace(/\\/g, '/');
+            return fs.existsSync(svdAbs) ? svdAbs : undefined;
+          }
+        }
+      }
+    } catch { /* malformed PDSC — try next */ }
+    return undefined;
+  }
+
+  // User-provided dfpPath / extraPdscPaths — skip _svdDeviceCache, always re-evaluate
+  if (dfpPath || extraPdscPaths.length > 0) {
+    const pdscPaths: string[] = [];
+    if (dfpPath) {
+      try {
+        for (const f of fs.readdirSync(dfpPath))
+          if (f.toLowerCase().endsWith('.pdsc')) pdscPaths.push(path.join(dfpPath, f));
+      } catch {}
+    }
+    for (const p of extraPdscPaths) { if (p && fs.existsSync(p)) pdscPaths.push(p); }
+    for (const p of pdscPaths) {
+      const hit = searchPdsc(p);
+      if (hit) return hit;
+    }
+  }
+
+  // Bundled DFP — build cache on first call, O(1) thereafter
+  if (_svdBundledExtPath !== extPath) {
+    _svdDeviceCache.clear();
+    _svdPdscRawCache.clear();
+    _svdBundledExtPath = extPath;
+  }
+  if (!_svdDeviceCache.has(deviceName)) {
+    let found: string | undefined;
+    for (const pdscPath of getAllPdscPaths(extPath)) {
+      found = searchPdsc(pdscPath);
+      if (found) break;
+    }
+    _svdDeviceCache.set(deviceName, found);
+  }
+  return _svdDeviceCache.get(deviceName);
+}
+
+export function clearSvdCache(): void {
+  _svdPdscRawCache.clear();
+  _svdDeviceCache.clear();
+  _svdBundledExtPath = '';
+}
+
 export function parseUvmpw(uvmpwPath: string): UvmpwProject[] {
   const xml = fs.readFileSync(uvmpwPath, 'utf8');
   const parser = new XMLParser({
