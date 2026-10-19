@@ -1881,7 +1881,7 @@ function extractRomRamFromUvproj(first: any, extPath?: string, extraPdscPaths?: 
             if (rom) { romOrigin = rom[1]; romLength = rom[2]; }
           }
           if (!ramOrigin || isZeroSize(ramLength)) {
-            const ram = /<memory[^>]+id="IRAM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
+            const ram = /<memory[^>]+(?:id|name)="IRAM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
             if (ram) { ramOrigin = ram[1]; ramLength = ram[2]; }
           }
           break; // found in this PDSC, stop searching
@@ -2648,8 +2648,8 @@ export function lookupMemoryFromPdsc(deviceName: string, extPath: string, extraP
       const pdsc  = fs.readFileSync(pdscPath, 'utf8');
       const block = devRe.exec(pdsc)?.[1] ?? familyRe.exec(pdsc)?.[1];
       if (!block) continue;
-      const rom = /<memory[^>]+id="IROM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
-      const ram = /<memory[^>]+id="IRAM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
+      const rom = /<memory[^>]+(?:id|name)="IROM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
+      const ram = /<memory[^>]+(?:id|name)="IRAM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
       return {
         flashOrigin: rom?.[1], flashLength: rom?.[2],
         ramOrigin:   ram?.[1], ramLength:   ram?.[2],

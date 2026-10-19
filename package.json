@@ -730,10 +730,7 @@
     "compile": "tsc -p ./",
     "bundle": "esbuild src/ht32-project-assistant-for-vs-code.ts --bundle --outfile=out/ht32-project-assistant-for-vs-code.js --external:vscode --platform=node --target=node18 --minify",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package",
-    "test:mcu": "node test_scripts/test-mcu.js",
-    "test:create": "node test_scripts/test-create-project.js",
-    "test:compile": "node test_scripts/test-compile.js"
+    "package": "vsce package"
   },
   "dependencies": {
     "adm-zip": "^0.5.10",

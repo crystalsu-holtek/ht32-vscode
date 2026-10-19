@@ -2505,7 +2505,7 @@ function readPdscIram1(deviceName: string, extPath: string, extraPdscPaths?: str
         for (const src of [fam, ...(fam.subFamily ?? [])]) {
           for (const dev of (src.device ?? [])) {
             if (!matches(dev.Dname ?? '')) continue;
-            const iram1 = (dev.memory ?? []).find((m: any) => m.id === 'IRAM1');
+            const iram1 = (dev.memory ?? []).find((m: any) => (m.id ?? m.name) === 'IRAM1');
             if (!iram1) continue;
             const start = parseInt(iram1.start);
             const size  = parseInt(iram1.size);
