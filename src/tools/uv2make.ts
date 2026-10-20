@@ -3415,3 +3415,194 @@ export function parseUvmpw(uvmpwPath: string): UvmpwProject[] {
       isActive: p.NodeIsActive === 1 || p.NodeIsActive === '1'
     }));
 }
+
+// ── Project meta (project.meta.json) ─────────────────────────────────────────
+
+export type Meta = {
+  projectName: string;
+  targetName?: string;
+  groups: Record<string, string[]>;
+  linkerScripts?: string[];
+  isLibrary?: boolean;
+  metaVersion?: string;
+  fileOptions?: Record<string, FileOption>;
+};
+
+export function readProjectMeta(buildGenDir: string): Meta | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(buildGenDir, 'project.meta.json'), 'utf8')) as Meta;
+  } catch { return null; }
+}
+
+/**
+ * Update SRCS, per-file compile rules, flags, and compile_commands.json from meta.
+ * VS Code dependencies are injected via opts so this function can run outside the extension.
+ */
+export function refreshDerivedFiles(
+  buildGenDir: string,
+  meta: Meta,
+  opts?: {
+    skipElfInvalidation?: boolean;
+    gccPath?: string;
+    onWarn?: (msg: string) => void;
+  }
+): void {
+  const buildGenName = path.basename(buildGenDir);
+  const wsRoot      = path.dirname(path.dirname(buildGenDir));
+  const bgParentDir = path.dirname(buildGenDir);
+  const relUp  = path.relative(buildGenDir, wsRoot).replace(/\\/g, '/');
+  const allFiles: string[] = Object.values(meta.groups || {}).flat()
+    .filter(f => !meta.fileOptions?.[f]?.exclude);
+  const buildRelPaths = allFiles.flatMap(f => {
+    const n = f.replace(/\\/g, '/');
+    if (path.isAbsolute(f) || /^[A-Za-z]:\//.test(n)) {
+      return [path.relative(buildGenDir, f.replace(/\//g, path.sep)).replace(/\\/g, '/')];
+    }
+    const absResolved = path.resolve(wsRoot, f);
+    if (absResolved.startsWith(buildGenDir + path.sep) || absResolved === buildGenDir) {
+      const relToBg = path.relative(buildGenDir, absResolved).replace(/\\/g, '/');
+      return /\.(c|cpp|s|S)$/i.test(relToBg) ? [relToBg] : [];
+    }
+    if (absResolved.startsWith(bgParentDir + path.sep)) {
+      const relPath = path.relative(buildGenDir, absResolved).replace(/\\/g, '/');
+      return /\.(c|cpp|s|S|a)$/i.test(relPath) ? [relPath] : [];
+    }
+    return [relUp + '/' + n];
+  });
+
+  fs.writeFileSync(path.join(buildGenDir, 'sources.list'), buildRelPaths.join('\n'));
+
+  const makefilePath = path.join(buildGenDir, 'Makefile');
+  if (!fs.existsSync(makefilePath)) return;
+
+  const extraFlagsMap = new Map<string, string>();
+  const xoAbsPaths = new Set<string>();
+  if (meta.fileOptions) {
+    for (const [metaPath, fo] of Object.entries(meta.fileOptions)) {
+      if (!fo.xo) continue;
+      xoAbsPaths.add(path.resolve(wsRoot, metaPath.replace(/\\/g, path.sep)));
+    }
+  }
+  let stackAnalysisAbsPath: string | undefined;
+  let hasMiscOld = false;
+  for (const bp of buildRelPaths) {
+    const absPath = path.resolve(buildGenDir, bp);
+    if (xoAbsPaths.has(absPath)) extraFlagsMap.set(bp, '-mpure-code');
+    if (miscCNeedsRedefine(absPath)) { hasMiscOld = true; patchMiscCWeak(absPath); }
+    if (/ht32_stack_analysis\.c$/i.test(bp)) { stackAnalysisAbsPath = absPath; }
+  }
+  if (stackAnalysisAbsPath) {
+    if (hasMiscOld) ensureStackAnalysisStrong(stackAnalysisAbsPath);
+    else            ensureStackAnalysisWeak(stackAnalysisAbsPath);
+  }
+  const { srcsClean, objVarBlock, rulesBlock } = generateCompileRuleSection(buildRelPaths, extraFlagsMap);
+
+  let mk = fs.readFileSync(makefilePath, 'utf8');
+
+  mk = mk.replace(/^SRCS\s*:=.*$/m, `SRCS := ${srcsClean}`);
+
+  const libFiles = buildRelPaths.filter(s => /\.a$/i.test(s));
+  const libsLine = `LIBS := ${libFiles.join(' ')}`;
+  if (/^LIBS\s*:=/m.test(mk)) {
+    mk = mk.replace(/^LIBS\s*:=.*$/m, libsLine);
+  } else {
+    mk = mk.replace(/^(SRCS\s*:=.*)$/m, `$1\n${libsLine}`);
+    mk = mk.replace(
+      /^(\$\(BUILD\)\/\$\(TARGET\)\.elf:\s*\$\(OBJ\))\s*\|\s*\$\(BUILD\)\s*$/m,
+      '$(BUILD)/$(TARGET).elf: $(OBJ) $(LIBS) linker_script.ld | $(BUILD)'
+    );
+    mk = mk.replace(
+      /@"(\$\(LD\))" \$\(CFLAGS\) \$\(OBJ\) -o/,
+      '@"$1" $(CFLAGS) $(OBJ) $(LIBS) -o'
+    );
+  }
+
+  mk = mk.replace(/^# Space-path files[^\n]*\nOBJ_SPACED\s*:=[^\n]*\n/m, '');
+  mk = mk.replace(/^OBJ\s*:=.*$/m, objVarBlock);
+
+  const oldRulesMatch = mk.match(/(?:# ---- 為每個源文件生成專屬規則（避免 VPATH） ----|# ---- Per-source explicit rules \(avoids VPATH\) ----)[\s\S]*?(?=# ---- Dirs ----)/);
+  const newRulesSection = `# ---- Per-source explicit rules (avoids VPATH) ----\n${rulesBlock}\n`;
+  mk = mk.replace(
+    /(?:# ---- 為每個源文件生成專屬規則（避免 VPATH） ----|# ---- Per-source explicit rules \(avoids VPATH\) ----)[\s\S]*?(?=# ---- Dirs ----)/,
+    newRulesSection
+  );
+
+  if (!mk.includes('# ---- Dirs ----')) {
+    const warnMsg = `Makefile in "${buildGenName}" is outdated — compile rules may be incorrect. ` +
+      `Run "HT32: Regenerate Makefile" from the Command Palette.`;
+    (opts?.onWarn ?? logWarn)(warnMsg);
+    return;
+  }
+
+  fs.writeFileSync(makefilePath, mk);
+
+  if (oldRulesMatch && oldRulesMatch[0] !== newRulesSection) {
+    try { fs.writeFileSync(path.join(buildGenDir, '.needs-rebuild'), '', 'utf8'); } catch {}
+  }
+
+  const bgProjSettings = readProjectSettings(buildGenDir);
+  if (bgProjSettings.mcu) {
+    const bgBuildMeta = { mcu: bgProjSettings.mcu!, targetName: bgProjSettings.targetName ?? 'firmware' };
+    try {
+      regenerateMakefileFlags(buildGenDir, bgBuildMeta, {
+        optimizationLevel: bgProjSettings.optimizationLevel || undefined,
+        debugInfo:         bgProjSettings.debugInfo         || undefined,
+        useNano:           bgProjSettings.useNano,
+        useNosys:          bgProjSettings.useNosys,
+        fpu:               (bgProjSettings.fpu && bgProjSettings.fpu !== 'none') ? bgProjSettings.fpu : undefined,
+        floatAbi:          bgProjSettings.floatAbi as any   || undefined,
+        extraCFlags:       bgProjSettings.extraCFlags        || undefined,
+        extraLDFlags:      bgProjSettings.extraLDFlags       || undefined,
+        extraLibs:         (bgProjSettings.extraLibs         ?? []).filter(Boolean),
+        extraLibNames:     (bgProjSettings.extraLibNames     ?? []).filter(Boolean),
+        extraLibPaths:     (bgProjSettings.extraLibPaths     ?? []).filter(Boolean),
+        useLto:            bgProjSettings.useLto             ?? false,
+        printfFloat:       bgProjSettings.printfFloat        ?? false,
+        scanfFloat:        bgProjSettings.scanfFloat         ?? false,
+        gcSections:        bgProjSettings.gcSections,
+        includePaths:      bgProjSettings.includePaths       ?? [],
+        cDefs:             bgProjSettings.cDefs              ?? [],
+        aDefs:             bgProjSettings.aDefs              ?? [],
+        outputName:        bgProjSettings.outputName?.trim() || undefined,
+      });
+    } catch { /* Makefile might not exist for new projects mid-creation */ }
+  }
+
+  try {
+    writeCCDbFromLists(buildGenDir, {
+      armCore:     bgProjSettings.mcu || 'cortex-m0plus',
+      fpu:         (bgProjSettings.fpu && bgProjSettings.fpu !== 'none') ? bgProjSettings.fpu : undefined,
+      floatAbi:    bgProjSettings.floatAbi as any || undefined,
+      optimization: bgProjSettings.optimizationLevel || undefined,
+      debugInfo:   bgProjSettings.debugInfo || undefined,
+      gccFullPath: opts?.gccPath ?? undefined,
+      gcSections:  bgProjSettings.gcSections,
+    });
+  } catch (e) {
+    logWarn(`refreshDerivedFiles: compile_commands.json update failed: ${e}`);
+  }
+
+  if (meta.linkerScripts?.[0]) {
+    const ldPath = path.resolve(buildGenDir, meta.linkerScripts[0]);
+    try {
+      patchLinkerScriptRom(ldPath, meta.fileOptions);
+    } catch (e: any) {
+      logWarn(`refreshDerivedFiles: linker script ROM patch failed: ${e?.message ?? e}`);
+    }
+  }
+
+  if (!opts?.skipElfInvalidation) {
+    try {
+      const buildDir = path.join(buildGenDir, 'build');
+      if (fs.existsSync(buildDir)) {
+        for (const f of fs.readdirSync(buildDir)) {
+          if (/\.(elf|bin|hex|map)$/i.test(f)) {
+            fs.unlinkSync(path.join(buildDir, f));
+          }
+        }
+      }
+    } catch (e) {
+      logWarn(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
+    }
+  }
+}

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec as cpExec, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
-import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak } from './tools/uv2make';
+import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
 import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
@@ -118,7 +118,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   // Tree
   const tree = new ProjectTreeProvider();
   const treeView = vscode.window.createTreeView(PROJECT_VIEW_ID, { treeDataProvider: tree });
-  treeView.title = `PROJECT FILES (v${ctx.extension.packageJSON.version})`;
+  treeView.title = `PROJECTS`;
   ctx.subscriptions.push(treeView);
   ctx.subscriptions.push(treeView.onDidChangeSelection(e => {
     const item = e.selection[0];
@@ -1398,7 +1398,7 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<v
 
       // 2. 從 meta 更新 SRCS + sources.list + includes/defines/adefines.list + compile_commands.json
       //    （refreshDerivedFiles 內部已呼叫 regenerateMakefileFlags 寫三個 list 檔）
-      refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true });
+      refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, ..._vsOpts() });
 
       // 3. 以 locateArmGcc() 的完整路徑（含 auto-detect）重寫 compile_commands.json，
       //    確保 -isystem 指向正確的 gcc header 目錄（refreshDerivedFiles 內部只讀 VS Code config）
@@ -4405,7 +4405,7 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
       const meta = readProjectMeta(bgDir);
       if (meta) {
         // per-file rules (--redefine-sym, -mpure-code) + CFLAGS/LDFLAGS + CCDb in one pass
-        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true });
+        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, ..._vsOpts() });
         continue;
       }
       // fallback: no project.meta.json (very old projects), patch CFLAGS/LDFLAGS only
@@ -4464,8 +4464,6 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
 
 
 /** ====== Tree View ====== */
-type Meta = { projectName: string; groups: Record<string, string[]>; linkerScripts?: string[]; isLibrary?: boolean; metaVersion?: string; fileOptions?: Record<string, { exclude?: true; xo?: true; rom?: { origin: string; length: string } }> };
-
 interface ProjectEntry {
   buildGenDir: string;   // 絕對路徑，例如 D:/xxx/OIF_ELSFP/Project_iap
   dirName: string;       // 目錄名，例如 'Project' / 'Project_iap'
@@ -4480,209 +4478,13 @@ interface ProjectEntry {
  * TreeView edit helpers
  * ───────────────────────────────────────────── */
 
-/**
- * Regenerate all derived build files from the current meta + project.settings.json,
- * without touching project.meta.json.
- * Called by persistMeta (after writing meta) and by read-only paths (open project,
- * regenAllMakefileFlags) that need to refresh build files without modifying meta.
- */
-function refreshDerivedFiles(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidation?: boolean }): void {
+// refreshDerivedFiles and readProjectMeta are exported from ./tools/uv2make.
 
-  // meta.groups paths are relative to project root (grandparent of Project dir,
-  // same in both old layout .vscode/build-gen and new layout HT32_VSCode/Project).
-  // Convert to buildGenDir-relative paths.
-  const buildGenName = path.basename(buildGenDir); // e.g. 'Project'
-  // project root = parent of HT32_VSCode (or parent of .vscode) = grandparent of buildGenDir
-  const wsRoot     = path.dirname(path.dirname(buildGenDir));
-  const bgParentDir = path.dirname(buildGenDir);   // e.g. HT32_VSCode/ or .vscode/
-  const relUp  = path.relative(buildGenDir, wsRoot).replace(/\\/g, '/'); // '../..' in both layouts
-  const allFiles: string[] = Object.values(meta.groups || {}).flat()
-    .filter(f => !meta.fileOptions?.[f]?.exclude);
-  const buildRelPaths = allFiles.flatMap(f => {
-    const n = f.replace(/\\/g, '/');
-    // Absolute path (e.g. FWLib on same drive): compute bgDir-relative directly.
-    // This avoids the "../../E:/..." broken path that confuses Make's target parser.
-    if (path.isAbsolute(f) || /^[A-Za-z]:\//.test(n)) {
-      return [path.relative(buildGenDir, f.replace(/\//g, path.sep)).replace(/\\/g, '/')];
-    }
-    const absResolved = path.resolve(wsRoot, f);
-    // Files inside buildGenDir (startup .s, ht32_op.c, etc.): keep as plain filename.
-    // The extension filter is safe: converters only put compilable files here.
-    if (absResolved.startsWith(buildGenDir + path.sep) || absResolved === buildGenDir) {
-      const relToBg = path.relative(buildGenDir, absResolved).replace(/\\/g, '/');
-      return /\.(c|cpp|s|S)$/i.test(relToBg) ? [relToBg] : [];
-    }
-    // Files in bgParentDir siblings (e.g. HT32_VSCode/GNU_ARM/startup.s, retarget.c, etc.):
-    // compute bgDir-relative path directly (../GNU_ARM/<name> format).
-    // Only include compilable files and archives — skip .ld and other non-build files.
-    if (absResolved.startsWith(bgParentDir + path.sep)) {
-      const relPath = path.relative(buildGenDir, absResolved).replace(/\\/g, '/');
-      return /\.(c|cpp|s|S|a)$/i.test(relPath) ? [relPath] : [];
-    }
-    // workspace-root-relative (e.g. src/main.c, library files)
-    return [relUp + '/' + n];
-  });
-
-  fs.writeFileSync(path.join(buildGenDir, 'sources.list'), buildRelPaths.join('\n'));
-
-  const makefilePath = path.join(buildGenDir, 'Makefile');
-  if (!fs.existsSync(makefilePath)) return;
-
-  // Build per-file extra flags — resolve all paths to absolute first to avoid
-  // format mismatches between meta.groups keys and buildRelPaths entries.
-  const extraFlagsMap = new Map<string, string>();
-  const xoAbsPaths = new Set<string>();
-  if (meta.fileOptions) {
-    for (const [metaPath, fo] of Object.entries(meta.fileOptions)) {
-      if (!fo.xo) continue;
-      xoAbsPaths.add(path.resolve(wsRoot, metaPath.replace(/\\/g, path.sep)));
-    }
-  }
-  let stackAnalysisAbsPath: string | undefined;
-  let hasMiscOld = false;
-  for (const bp of buildRelPaths) {
-    const absPath = path.resolve(buildGenDir, bp);
-    if (xoAbsPaths.has(absPath)) extraFlagsMap.set(bp, '-mpure-code');
-    if (miscCNeedsRedefine(absPath)) { hasMiscOld = true; patchMiscCWeak(absPath); }
-    if (/ht32_stack_analysis\.c$/i.test(bp)) { stackAnalysisAbsPath = absPath; }
-  }
-  if (stackAnalysisAbsPath) {
-    if (hasMiscOld) ensureStackAnalysisStrong(stackAnalysisAbsPath);
-    else            ensureStackAnalysisWeak(stackAnalysisAbsPath);
-  }
-  const { srcsClean, objVarBlock, rulesBlock } = generateCompileRuleSection(buildRelPaths, extraFlagsMap);
-
-  let mk = fs.readFileSync(makefilePath, 'utf8');
-
-  // ── Unified Makefile format (SRCS :=, OBJ :=, 為每個源文件 section) ──────────
-  // All three converters (uv2make, createProject, ht32ide2make) now produce this format.
-  // Old-format Makefiles (OBJS :=) from pre-unification projects are no longer supported;
-  // re-convert the project to get the new format.
-
-  // 1. Replace SRCS line (compilable clean paths only)
-  mk = mk.replace(/^SRCS\s*:=.*$/m, `SRCS := ${srcsClean}`);
-
-  // 1b. Update LIBS line with .a archive paths; insert after SRCS if missing
-  const libFiles = buildRelPaths.filter(s => /\.a$/i.test(s));
-  const libsLine = `LIBS := ${libFiles.join(' ')}`;
-  if (/^LIBS\s*:=/m.test(mk)) {
-    mk = mk.replace(/^LIBS\s*:=.*$/m, libsLine);
-  } else {
-    mk = mk.replace(/^(SRCS\s*:=.*)$/m, `$1\n${libsLine}`);
-    mk = mk.replace(
-      /^(\$\(BUILD\)\/\$\(TARGET\)\.elf:\s*\$\(OBJ\))\s*\|\s*\$\(BUILD\)\s*$/m,
-      '$(BUILD)/$(TARGET).elf: $(OBJ) $(LIBS) linker_script.ld | $(BUILD)'
-    );
-    mk = mk.replace(
-      /@"(\$\(LD\))" \$\(CFLAGS\) \$\(OBJ\) -o/,
-      '@"$1" $(CFLAGS) $(OBJ) $(LIBS) -o'
-    );
-  }
-
-  // 2. Remove any existing "# Space-path..." comment + OBJ_SPACED line
-  mk = mk.replace(/^# Space-path files[^\n]*\nOBJ_SPACED\s*:=[^\n]*\n/m, '');
-
-  // 3. Replace OBJ := line (prepending OBJ_SPACED block if spaced paths exist)
-  mk = mk.replace(/^OBJ\s*:=.*$/m, objVarBlock);
-
-  // 4. Fully regenerate the explicit compile rules section
-  // Match both Chinese (legacy) and English section headers for backwards compatibility.
-  const oldRulesMatch = mk.match(/(?:# ---- \u70ba\u6bcf\u500b\u6e90\u6587\u4ef6\u751f\u6210\u5c08\u5c6c\u898f\u5247\uff08\u907f\u514d VPATH\uff09 ----|# ---- Per-source explicit rules \(avoids VPATH\) ----)[\s\S]*?(?=# ---- Dirs ----)/);
-  const newRulesSection = `# ---- Per-source explicit rules (avoids VPATH) ----\n${rulesBlock}\n`;
-  mk = mk.replace(
-    /(?:# ---- \u70ba\u6bcf\u500b\u6e90\u6587\u4ef6\u751f\u6210\u5c08\u5c6c\u898f\u5247\uff08\u907f\u514d VPATH\uff09 ----|# ---- Per-source explicit rules \(avoids VPATH\) ----)[\s\S]*?(?=# ---- Dirs ----)/,
-    newRulesSection
-  );
-
-  if (!mk.includes('# ---- Dirs ----')) {
-    vscode.window.showWarningMessage(
-      `Makefile in "${path.basename(buildGenDir)}" is outdated — compile rules may be incorrect. ` +
-      `Run "HT32: Regenerate Makefile" from the Command Palette.`
-    );
-    return;
-  }
-
-  fs.writeFileSync(makefilePath, mk);
-
-  if (oldRulesMatch && oldRulesMatch[0] !== newRulesSection) {
-    try { fs.writeFileSync(path.join(buildGenDir, '.needs-rebuild'), '', 'utf8'); } catch {}
-  }
-
-  // 5. Rebuild LDFLAGS + elf dependency from meta.linkerScripts[] via shared regenerate.
-  //    meta.json on disk is the authoritative source for linkerScripts[] here.
-  const bgProjSettings = readProjectSettings(buildGenDir);
-  if (bgProjSettings.mcu) {
-    const bgBuildMeta = { mcu: bgProjSettings.mcu!, targetName: bgProjSettings.targetName ?? 'firmware' };
-    try {
-      regenerateMakefileFlags(buildGenDir, bgBuildMeta, {
-        optimizationLevel: bgProjSettings.optimizationLevel || undefined,
-        debugInfo:         bgProjSettings.debugInfo         || undefined,
-        useNano:           bgProjSettings.useNano,
-        useNosys:          bgProjSettings.useNosys,
-        fpu:               (bgProjSettings.fpu && bgProjSettings.fpu !== 'none') ? bgProjSettings.fpu : undefined,
-        floatAbi:          bgProjSettings.floatAbi as any   || undefined,
-        extraCFlags:       bgProjSettings.extraCFlags        || undefined,
-        extraLDFlags:      bgProjSettings.extraLDFlags       || undefined,
-        extraLibs:         (bgProjSettings.extraLibs         ?? []).filter(Boolean),
-        extraLibNames:     (bgProjSettings.extraLibNames     ?? []).filter(Boolean),
-        extraLibPaths:     (bgProjSettings.extraLibPaths     ?? []).filter(Boolean),
-        useLto:            bgProjSettings.useLto             ?? false,
-        printfFloat:       bgProjSettings.printfFloat        ?? false,
-        scanfFloat:        bgProjSettings.scanfFloat         ?? false,
-        gcSections:        bgProjSettings.gcSections,
-        includePaths:      bgProjSettings.includePaths       ?? [],
-        cDefs:             bgProjSettings.cDefs              ?? [],
-        aDefs:             bgProjSettings.aDefs              ?? [],
-        outputName:        bgProjSettings.outputName?.trim() || undefined,
-      });
-    } catch { /* Makefile might not exist for new projects mid-creation */ }
-  }
-
-  // 5. Regenerate compile_commands.json so IntelliSense reflects the new file list
-  try {
-    const gccForCCDb = vscode.workspace.getConfiguration('ht32').get<string>('gccPath') || undefined;
-    writeCCDbFromLists(buildGenDir, {
-      armCore:     bgProjSettings.mcu || 'cortex-m0plus',
-      fpu:         (bgProjSettings.fpu && bgProjSettings.fpu !== 'none') ? bgProjSettings.fpu : undefined,
-      floatAbi:    bgProjSettings.floatAbi as any || undefined,
-      optimization: bgProjSettings.optimizationLevel || undefined,
-      debugInfo:   bgProjSettings.debugInfo || undefined,
-      gccFullPath: gccForCCDb ?? undefined,
-      gcSections:  bgProjSettings.gcSections,
-    });
-  } catch (e) {
-    logWarn(`refreshDerivedFiles: compile_commands.json update failed: ${e}`);
-  }
-
-  // 6. Patch linker script ROM regions for files with rom fileOption
-  if (meta.linkerScripts?.[0]) {
-    const ldPath = path.resolve(buildGenDir, meta.linkerScripts[0]);
-    try {
-      patchLinkerScriptRom(ldPath, meta.fileOptions);
-    } catch (e: any) {
-      logWarn(`refreshDerivedFiles: linker script ROM patch failed: ${e?.message ?? e}`);
-    }
-  }
-
-  // 7. Invalidate stale ELF/bin so Make is forced to re-link on next build.
-  //    Without this, Make sees all remaining .o files are newer than the ELF
-  //    and skips re-linking, leaving the old binary (with removed files still
-  //    linked in) intact.
-  //    Skipped on open-project (initProjectsFromMeta) where no files were added/removed.
-  if (!opts?.skipElfInvalidation) {
-    try {
-      const buildDir = path.join(buildGenDir, 'build');
-      if (fs.existsSync(buildDir)) {
-        for (const f of fs.readdirSync(buildDir)) {
-          if (/\.(elf|bin|hex|map)$/i.test(f)) {
-            fs.unlinkSync(path.join(buildDir, f));
-          }
-        }
-      }
-    } catch (e) {
-      logWarn(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
-    }
-  }
+function _vsOpts() {
+  return {
+    onWarn: (msg: string) => vscode.window.showWarningMessage(msg),
+    gccPath: vscode.workspace.getConfiguration('ht32').get<string>('gccPath') || undefined,
+  };
 }
 
 /**
@@ -4693,7 +4495,7 @@ function refreshDerivedFiles(buildGenDir: string, meta: Meta, opts?: { skipElfIn
 function persistMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidation?: boolean }): void {
   if (extensionVersion) { meta.metaVersion = extensionVersion; }
   fs.writeFileSync(path.join(buildGenDir, 'project.meta.json'), JSON.stringify(meta, null, 2));
-  refreshDerivedFiles(buildGenDir, meta, opts);
+  refreshDerivedFiles(buildGenDir, meta, { ...opts, ..._vsOpts() });
 }
 
 /** Parse file item id: "{buildGenDir}::{groupName}::{filePath}" */
@@ -4707,13 +4509,6 @@ function parseFileItemId(id: string): { buildGenDir: string; groupName: string; 
     groupName:   id.slice(sep1 + 2, sep2),
     filePath:    id.slice(sep2 + 2),
   };
-}
-
-/** Read project.meta.json; returns null if missing/invalid */
-function readProjectMeta(buildGenDir: string): Meta | null {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(buildGenDir, 'project.meta.json'), 'utf8')) as Meta;
-  } catch { return null; }
 }
 
 /** Validate project.meta.json and project.settings.json for a bgDir.

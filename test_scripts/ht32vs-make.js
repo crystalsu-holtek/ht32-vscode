@@ -50,7 +50,7 @@ if (!process.pkg && !fs.existsSync(path.join(__dirname, '../out/tools/uv2make.js
 }
 
 // String literal requires let pkg statically bundle ../out/tools/*.js into snapshot.
-const { regenerateMakefileFlags, writeCCDbFromLists } = require('../out/tools/uv2make.js');
+const { buildMakefileText, refreshDerivedFiles, readProjectMeta, writeCCDbFromLists } = require('../out/tools/uv2make.js');
 const { readProjectSettings } = require('../out/tools/settingsWebview.js');
 const { locateArmGcc }        = require('../out/tools/toolchain.js');
 
@@ -133,41 +133,48 @@ async function buildOne(bgDir, gcc) {
   }
 
   if (!noRegen) {
-    const meta = JSON.parse(fs.readFileSync(path.join(bgDir, 'project.meta.json'), 'utf8'));
+    const meta = readProjectMeta(bgDir);
+    if (!meta) {
+      log(`ERROR: ${bgDir}: project.meta.json missing or invalid`);
+      return false;
+    }
     const fpu      = (settings.fpu && settings.fpu !== 'none') ? settings.fpu : undefined;
     const floatAbi = settings.floatAbi || undefined;
-    const buildMeta = {
-      targetName: meta.targetName ?? settings.targetName ?? path.basename(bgDir),
-      mcu:        settings.mcu,
-      fpu,
-      floatAbi,
-      ramOrigin:  settings.ramOrigin,
-      ramLength:  settings.ramLength,
-      deviceName: settings.deviceName,
-    };
     try {
-      regenerateMakefileFlags(bgDir, buildMeta, {
-        optimizationLevel: settings.optimizationLevel  || undefined,
-        debugInfo:         settings.debugInfo          || undefined,
-        useNano:           settings.useNano,
-        useNosys:          settings.useNosys,
+      // 1. Generate full Makefile from scratch (same as Open Project / initProjectsFromMeta)
+      const makeText = buildMakefileText({
+        target:            settings.targetName ?? meta.targetName ?? path.basename(bgDir),
+        cc:                gcc,
+        mcu:               settings.mcu,
+        srcs:              [],
+        linkerScripts:     meta.linkerScripts ?? ['../GNU_ARM/linker.ld'],
+        isLibrary:         settings.outputType === 'lib',
         fpu,
         floatAbi,
-        extraCFlags:       settings.extraCFlags        || undefined,
-        extraLDFlags:      settings.extraLDFlags       || undefined,
-        extraLibs:         (settings.extraLibs         ?? []).filter(Boolean),
-        extraLibNames:     (settings.extraLibNames      ?? []).filter(Boolean),
-        extraLibPaths:     (settings.extraLibPaths      ?? []).filter(Boolean),
-        includePaths:      (settings.includePaths       ?? []).filter(Boolean),
-        useLto:            settings.useLto              ?? false,
-        printfFloat:       settings.printfFloat         ?? false,
-        scanfFloat:        settings.scanfFloat          ?? false,
+        optimizationLevel: settings.optimizationLevel,
+        debugInfo:         settings.debugInfo,
+        useNano:           settings.useNano,
+        useNosys:          settings.useNosys,
+        useLto:            settings.useLto,
+        printfFloat:       settings.printfFloat,
+        scanfFloat:        settings.scanfFloat,
         gcSections:        settings.gcSections,
-        cDefs:             settings.cDefs,
-        aDefs:             settings.aDefs,
-        outputName:        settings.outputName?.trim()  || undefined,
-        cc:                gcc,
+        extraCFlags:       settings.extraCFlags,
+        extraLDFlags:      settings.extraLDFlags,
+        extraLibs:         settings.extraLibs,
+        extraLibNames:     settings.extraLibNames,
+        extraLibPaths:     settings.extraLibPaths,
       });
+      fs.writeFileSync(path.join(bgDir, 'Makefile'), makeText);
+
+      // 2. Populate SRCS, compile rules, flags, compile_commands.json from meta
+      refreshDerivedFiles(bgDir, meta, {
+        skipElfInvalidation: true,
+        gccPath: gcc,
+        onWarn: msg => log(`WARN: ${msg}`),
+      });
+
+      // 3. Overwrite compile_commands.json with the resolved gcc path
       writeCCDbFromLists(bgDir, {
         armCore:      settings.mcu,
         fpu,
@@ -178,7 +185,7 @@ async function buildOne(bgDir, gcc) {
         gcSections:   settings.gcSections,
       });
     } catch (e) {
-      log(`ERROR: ${bgDir}: regenerateMakefileFlags failed: ${e.message}`);
+      log(`ERROR: ${bgDir}: Makefile generation failed: ${e.message}`);
       return false;
     }
   }
