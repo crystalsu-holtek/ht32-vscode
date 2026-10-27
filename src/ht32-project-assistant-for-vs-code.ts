@@ -8,7 +8,7 @@ import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSectio
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
 import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
-import { parseHt32IdeProject, generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, computeHt32IdeWsRoot, convertHt32IdeProject, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
+import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
 import { semverCmp, writeProjectLists } from './tools/utils';
 import { syncAfterBuildBats } from './tools/afterbuildSync';
@@ -427,7 +427,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`project.meta.json not found in ${result.chosen} — re-convert the project first.`);
         return;
       }
-      await initProjectsFromMeta([bgDir], root);
+      await initProjectsFromMeta([bgDir], root, { force: true });
       vscode.window.showInformationMessage(`Makefile regenerated: ${result.chosen}`);
     }),
     vscode.commands.registerCommand('ht32.build', () => smartRunTask('build')),
@@ -1345,7 +1345,7 @@ async function resolveToolchain(
 /** FWLib bat 產生的模板專案：有 project.meta.json 但無 Makefile，
  *  從 meta + settings 自動產生 Makefile / sources.list / includes.list / defines.list / adefines.list / compile_commands.json。
  *  .vscode/ 由呼叫端在此之後呼叫 generateTasksAndLaunchAndMakefile() 產出。 */
-async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<void> {
+async function initProjectsFromMeta(bgDirs: string[], wsRoot: string, opts?: { force?: boolean }): Promise<void> {
   const gccFound = await locateArmGcc();
   const gcc = gccFound ?? 'arm-none-eabi-gcc';
   for (const bgDir of bgDirs) {
@@ -1353,16 +1353,18 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string): Promise<v
       // skip if Makefile is newer than both input files (settings/meta unchanged since last open)
       // also require all derived list files to exist — missing lists (e.g. after git clean)
       // must trigger regeneration even when mtime check would otherwise pass
-      const makefilePath  = path.join(bgDir, 'Makefile');
-      const settingsPath  = path.join(bgDir, 'project.settings.json');
-      const metaPath      = path.join(bgDir, 'project.meta.json');
-      if (fs.existsSync(makefilePath) && fs.existsSync(settingsPath) && fs.existsSync(metaPath)) {
-        const makeMtime     = fs.statSync(makefilePath).mtimeMs;
-        const settingsMtime = fs.statSync(settingsPath).mtimeMs;
-        const metaMtime     = fs.statSync(metaPath).mtimeMs;
-        const allListsExist = ['sources.list', 'includes.list', 'defines.list', 'adefines.list', 'compile_commands.json']
-          .every(f => fs.existsSync(path.join(bgDir, f)));
-        if (allListsExist && makeMtime > settingsMtime && makeMtime > metaMtime) { continue; }
+      if (!opts?.force) {
+        const makefilePath  = path.join(bgDir, 'Makefile');
+        const settingsPath  = path.join(bgDir, 'project.settings.json');
+        const metaPath      = path.join(bgDir, 'project.meta.json');
+        if (fs.existsSync(makefilePath) && fs.existsSync(settingsPath) && fs.existsSync(metaPath)) {
+          const makeMtime     = fs.statSync(makefilePath).mtimeMs;
+          const settingsMtime = fs.statSync(settingsPath).mtimeMs;
+          const metaMtime     = fs.statSync(metaPath).mtimeMs;
+          const allListsExist = ['sources.list', 'includes.list', 'defines.list', 'adefines.list', 'compile_commands.json']
+            .every(f => fs.existsSync(path.join(bgDir, f)));
+          if (allListsExist && makeMtime > settingsMtime && makeMtime > metaMtime) { continue; }
+        }
       }
 
       const meta = readProjectMeta(bgDir);
@@ -2158,10 +2160,9 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     if (isHt32IdeProject(dir)) {
       if (!projectDirs.includes(dir)) { projectDirs.push(dir); }
     } else {
-      // Parent folder → collect all Project_* subdirs
+      // Parent folder → collect all subdirs that contain .project + .cproject
       try {
         fs.readdirSync(dir)
-          .filter(d => /^Project_/i.test(d))
           .map(d => path.join(dir, d))
           .filter(d => { try { return fs.statSync(d).isDirectory() && isHt32IdeProject(d); } catch { return false; } })
           .forEach(d => { if (!projectDirs.includes(d)) { projectDirs.push(d); } });
@@ -2172,7 +2173,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
   if (!projectDirs.length) {
     vscode.window.showErrorMessage(
-      'No HT32-IDE projects found. Select a Project_* folder or a folder containing Project_* subdirectories.'
+      'No HT32-IDE projects found. Select a folder containing .project/.cproject files, or a parent folder with such subfolders.'
     );
     return;
   }
@@ -2184,27 +2185,25 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     try {
       return fs.readdirSync(ht32ideDir).some(d =>
         d !== path.basename(projectDirs[0]) &&
-        /^Project_/i.test(d) &&
-        fs.statSync(path.join(ht32ideDir, d)).isDirectory()
+        isHt32IdeProject(path.join(ht32ideDir, d))
       );
     } catch { return false; }
   })();
 
-  // 若 HT32_VSCode 已存在，詢問是否覆蓋（以第一個 project 快速推算 wsRoot）
+  // 若 HT32_VSCode 已存在，在關閉編輯器之前詢問使用者（讓使用者可以無損取消）。
+  // 多個 projectDir 可能共用同一個 HT32_VSCode（AP + IAP），dedup 後只問一次。
   try {
-    const r0 = parseHt32IdeProject(projectDirs[0]);
-    const wsRoot0 = computeHt32IdeWsRoot(projectDirs[0], r0.sources);
-    const ht32vsDirIde = bgParent(computeWsOpenRoot(wsRoot0));
-    if (fs.existsSync(ht32vsDirIde)) {
+    const existingVsDirs = [...new Set(projectDirs.map(computeHt32IdeVsDir))].filter(d => fs.existsSync(d));
+    if (existingVsDirs.length > 0) {
       const answer = await vscode.window.showWarningMessage(
-        `"${ht32vsDirIde}" already exists. The folder will be deleted and recreated. Continue?`,
+        `"${existingVsDirs[0]}" already exists. The folder will be deleted and recreated. Continue?`,
         { modal: true },
         'Continue'
       );
       if (answer !== 'Continue') return;
-      fs.rmSync(ht32vsDirIde, { recursive: true, force: true });
+      for (const d of existingVsDirs) fs.rmSync(d, { recursive: true, force: true });
     }
-  } catch { /* 若 parse 失敗就跳過確認，讓後續 convert 正常報錯 */ }
+  } catch { /* 推算失敗就跳過確認，讓後續 convert 正常報錯 */ }
 
   await withProgress('Convert HT32-IDE (.project/.cproject)', async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
@@ -2220,7 +2219,8 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     const convResults: { bgDir: string; projectName: string }[] = [];
 
     for (const projectDir of projectDirs) {
-      const r = convertHt32IdeProject(projectDir, { extPath: extensionPath, gccPath });
+      const r = await convertHt32IdeProject(projectDir, { extPath: extensionPath, gccPath });
+      if (r.cancelled) return;
       ideConvertWarnings.push(...r.warnings);
       convResults.push({ bgDir: r.bgDir, projectName: r.projectName });
       persistMeta(r.bgDir, r.meta);
@@ -4405,7 +4405,7 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
       const meta = readProjectMeta(bgDir);
       if (meta) {
         // per-file rules (--redefine-sym, -mpure-code) + CFLAGS/LDFLAGS + CCDb in one pass
-        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, ..._vsOpts() });
+        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, gccPath: gccPathForCCDb ?? undefined, onWarn: (msg: string) => vscode.window.showWarningMessage(msg) });
         continue;
       }
       // fallback: no project.meta.json (very old projects), patch CFLAGS/LDFLAGS only

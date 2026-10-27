@@ -56,23 +56,14 @@ const DFP_STORAGE_PATH = path.join(_extInstallDir, _installed[_installed.length 
 // 載入編譯好的 extension 工具
 const {
   uv2make,
-  lookupSramFromSettings,
   regenerateMakefileFlags,
-  writeCCDbFromLists,
 } = require(path.join(EXT_ROOT, 'out/tools/uv2make.js'));
 
 const { locateArmGcc } = require(path.join(EXT_ROOT, 'out/tools/toolchain.js'));
 
-const { DEFAULT_PROJECT_SETTINGS } = require(path.join(EXT_ROOT, 'out/tools/settingsWebview.js'));
+const { DEFAULT_PROJECT_SETTINGS, readProjectSettings, writeProjectSettings } = require(path.join(EXT_ROOT, 'out/tools/settingsWebview.js'));
 
-const {
-  parseHt32IdeProject,
-  generateMakefile,
-  generateLinkerScript,
-  buildProjectMeta,
-  patchStartupFiles,
-  writeHt32IdeLists,
-} = require(path.join(EXT_ROOT, 'out/tools/ht32ide2make.js'));
+const { convertHt32IdeProject } = require(path.join(EXT_ROOT, 'out/tools/ht32ide2make.js'));
 
 // ── 2. Config ─────────────────────────────────────────────────────────────────
 const INI_FILE = path.join(__dirname, 'fwlib-paths.ini');
@@ -300,31 +291,6 @@ function checkThumbLsbInDir(dir) {
   return files.flatMap(f => checkThumbLsbFile(path.join(dir, f)));
 }
 
-/**
- * Check HT32-IDE startup .s files have "aw",%nobits on .heap/.stack sections.
- * Only checks files that actually contain these sections (no-op for 49x).
- * Heap_Size=0 is allowed (original project intent); printf(%f) warning is shown at conversion time.
- */
-function checkStartupSections(sources) {
-  const issues = [];
-  const startupSrcs = (sources || []).filter(s =>
-    /startup_/i.test(path.basename(s.absPath || '')) &&
-    (s.absPath || '').toLowerCase().endsWith('.s')
-  );
-  for (const src of startupSrcs) {
-    if (!fs.existsSync(src.absPath)) continue;
-    const content = fs.readFileSync(src.absPath, 'utf8');
-    if (!/\.section\s+["']?\.(heap|stack)["']?/i.test(content)) continue;
-    if (!/\.section\s+"\.heap"\s*,\s*"aw"\s*,\s*%nobits/.test(content)) {
-      issues.push(`${path.basename(src.absPath)}: .heap section missing "aw",%nobits`);
-    }
-    if (!/\.section\s+"\.stack"\s*,\s*"aw"\s*,\s*%nobits/.test(content)) {
-      issues.push(`${path.basename(src.absPath)}: .stack section missing "aw",%nobits`);
-    }
-  }
-  return issues;
-}
-
 /** Parse --print-memory-usage RAM value (bytes) from make output. Returns null if not found. */
 function parseRamFromMakeOutput(stdout, stderr) {
   const m = /^\s*RAM\s*:\s*(\d+)\s*B/m.exec((stdout || '') + (stderr || ''));
@@ -451,32 +417,6 @@ async function runMake(cwd) {
     cwd, env, stdio: 'pipe', timeout: 120_000,
   });
   return { ok: r.status === 0, stdout: r.stdout, stderr: r.stderr, error: r.error?.message };
-}
-
-/**
- * HT32-IDE wsRoot 計算（與 extension 的 computeHt32IdeWsRoot 相同邏輯）。
- * 找出所有 User group sources 的最近公共祖先，再往上到包含 projectDir 的那層。
- */
-function computeWsRoot(projectDir, sources) {
-  const sep = path.sep;
-  const userSrcs = sources.filter(s => /^user$/i.test(s.group));
-  const dirs = (userSrcs.length > 0 ? userSrcs : sources)
-    .map(s => path.dirname(s.absPath.replace(/\//g, sep)));
-  if (!dirs.length) return projectDir;
-
-  let common = dirs[0];
-  for (const d of dirs.slice(1)) {
-    while (d !== common && !d.startsWith(common + sep)) {
-      common = path.dirname(common);
-      if (common === path.dirname(common)) break;
-    }
-  }
-  let wsRoot = common;
-  while (wsRoot !== path.dirname(wsRoot)) {
-    if (projectDir === wsRoot || projectDir.startsWith(wsRoot + sep)) break;
-    wsRoot = path.dirname(wsRoot);
-  }
-  return wsRoot;
 }
 
 // ── cmdEnv(cwd) ───────────────────────────────────────────────────────────────
@@ -632,39 +572,71 @@ async function testUvision(exampleDir, uvprojxPath, code) {
   const bgId      = `uv-${code}`;
   const ht32VsDir = path.join(exampleDir, 'HT32_VSCode');
   const outDir    = path.join(ht32VsDir, `Project_${bgId}`);
-  // uv2make 把 linker / startup .s 寫到 GNU_ARM/（Project/ 的 sibling）
   const gnuArmDir = path.join(ht32VsDir, 'GNU_ARM');
   try {
     const uvResult = await uv2make({
-      uvprojx:       uvprojxPath,
+      uvprojx:        uvprojxPath,
       outDir,
-      workspaceRoot: ht32VsDir,
-      extPath:       EXT_PATH,
+      workspaceRoot:  ht32VsDir,
+      extPath:        EXT_PATH,
       dfpStoragePath: DFP_STORAGE_PATH,
-      cc:            GCC,
-      extraCFlags:   DEFAULT_PROJECT_SETTINGS.extraCFlags || undefined,
+      cc:             GCC,
+      extraCFlags:    DEFAULT_PROJECT_SETTINGS.extraCFlags || undefined,
     });
     if (uvResult.prebuiltWarnings?.length) {
       console.log(`  !! Prebuilt binaries skipped (Keil .o/.lib, not usable by GNU):`);
       for (const w of uvResult.prebuiltWarnings) console.log(`     ${w}`);
-      // Compile will fail due to missing symbols — skip it
       return { convert: 'OK', compile: 'SKIP', makeOut: undefined, heapIssues: [] };
     }
-    // linker script 放在 GNU_ARM/，bgDir-relative path 從 project.meta.json 的 linkerScripts[0] 取
-    let uvLdFile = 'linker_script.ld';
-    try { const uvMeta = JSON.parse(fs.readFileSync(path.join(outDir, 'project.meta.json'), 'utf8'));
-      const ld = (uvMeta.linkerScripts?.[0]) ?? uvMeta.ldFile ?? null;
-      if (ld) uvLdFile = ld; } catch {}
+
+    // 模擬 extension 的 convertUvision → writeProjectSettings（更新 fpu/floatAbi/includePaths/cDefs）
+    if (uvResult.includes) {
+      writeProjectSettings(outDir, {
+        ...readProjectSettings(outDir),
+        ...(uvResult.fpu      && uvResult.fpu !== 'none' ? { fpu:      uvResult.fpu      } : {}),
+        ...(uvResult.floatAbi                             ? { floatAbi: uvResult.floatAbi } : {}),
+        includePaths: ['../GNU_ARM', ...(uvResult.includes ?? [])],
+        ...(uvResult.defines?.length ? { cDefs: uvResult.defines } : {}),
+        ...(uvResult.hasCsrcs === false ? { useNano: false, useNosys: false } : {}),
+      });
+    }
+
+    // 模擬 extension 的 generateTasksAndLaunchAndMakefile → regenAllMakefileFlags
+    const s   = readProjectSettings(outDir);
+    const fpu = (s.fpu && s.fpu !== 'none') ? s.fpu : undefined;
+    regenerateMakefileFlags(
+      outDir,
+      { mcu: s.mcu, fpu, floatAbi: s.floatAbi || 'soft', targetName: s.targetName },
+      {
+        optimizationLevel: s.optimizationLevel,
+        useNano:           s.useNano,
+        useNosys:          s.useNosys,
+        printfFloat:       s.printfFloat,
+        scanfFloat:        s.scanfFloat,
+        useLto:            s.useLto,
+        extraCFlags:       s.extraCFlags,
+        cDefs:             s.cDefs ?? [],
+        aDefs:             s.aDefs ?? [],
+        cc:                GCC,
+      }
+    );
+
+    // Check LD + startup .s
+    const uvLdName = (() => {
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(outDir, 'project.meta.json'), 'utf8'));
+        const ld = m.linkerScripts?.[0] ?? m.ldFile ?? null;
+        return ld ? path.basename(ld) : 'linker_script.ld';
+      } catch { return 'linker_script.ld'; }
+    })();
     const uvStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
     const heapIssues = [
-      ...checkLinkerHeapStack(path.join(gnuArmDir, uvLdFile), gnuArmDir),
+      ...checkLinkerHeapStack(path.join(gnuArmDir, uvLdName), gnuArmDir),
       ...(uvStartupFiles.length ? [...checkStartupDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)] : ['startup .s not found in GNU_ARM/']),
     ];
     const make = await runMake(outDir);
-    // needs 3 (動態): 實際 RAM 值 ≥ startup heap + stack（heap/stack 有計入 RAM 才能成立）
-    // 只有 startup .s 有 .equ Heap_Size / Stack_Size（keil2gnu 轉換後）才做此檢查；
-    // 49x GCC startup 用 _estack（無 .section ".stack"），readStartupEquFromDir 會回傳 null，
-    // 此時不觸發警告（stack 在 RAM 頂端，設計正確，非問題）。
+    // needs 3 (動態): 只有 startup .s 有 .equ Heap_Size / Stack_Size（keil2gnu 轉換後）才做此檢查；
+    // 49x GCC startup 用 _estack（無 .section ".stack"），readStartupEquFromDir 回傳 null 時不觸發警告。
     if (make.ok && !make.skipped) {
       const ram     = parseRamFromMakeOutput(make.stdout, make.stderr);
       const heapSz  = readStartupEquFromDir(gnuArmDir, 'Heap_Size');
@@ -685,89 +657,52 @@ async function testUvision(exampleDir, uvprojxPath, code) {
 
 // ── 7. 測試 HT32-IDE 轉換 + 編譯 ─────────────────────────────────────────────
 async function testHt32Ide(exampleDir, projectDir, code) {
-  const bgId = `ide-${code}`;
   try {
-    const result = parseHt32IdeProject(projectDir);
+    // 直接呼叫 extension 的轉換函式（與 ht32.convertHt32Ide command 完全相同的路徑）
+    const r = await convertHt32IdeProject(projectDir, { extPath: EXT_PATH, gccPath: GCC });
+    const { bgDir } = r;
+    const gnuArmDir = path.join(path.dirname(bgDir), 'GNU_ARM');
 
-    // RAM override（與 extension convertHt32Ide 相同處理）
-    if (result.deviceName) {
-      const sramOverride = lookupSramFromSettings(result.deviceName, EXT_PATH);
-      if (sramOverride) result.ramLength = sramOverride;
-    }
-
-    const wsRoot    = computeWsRoot(projectDir, result.sources);
-    const bgDir     = path.join(wsRoot, 'HT32_VSCode', `Project_${bgId}`);
-    const gnuArmDir = path.join(wsRoot, 'HT32_VSCode', 'GNU_ARM');
-    ensureDir(path.join(bgDir, 'keep'));
-    fs.mkdirSync(gnuArmDir, { recursive: true });
-
-    // Linker script 放 GNU_ARM/（Makefile 引用 -T ../GNU_ARM/<file>）
-    const ideLdFile = result.linkerScript ? path.basename(result.linkerScript) : 'linker.ld';
-    fs.writeFileSync(path.join(gnuArmDir, ideLdFile), generateLinkerScript(result));
-
-    // extra linker scripts（e.g. calculate_symbol_GNU.ld）複製到 GNU_ARM/
-    for (const eld of result.extraLinkerScripts ?? []) {
-      if (fs.existsSync(eld)) fs.copyFileSync(eld, path.join(gnuArmDir, path.basename(eld)));
-      else console.log(`  !! Extra ld not found: ${eld}`);
-    }
-
-    // Patch startup .s files: "w" → "aw",%nobits → GNU_ARM/（Makefile 引用 ../GNU_ARM/<file>）
-    // Must be called before generateMakefile so the Makefile references the patched copies.
-    const patchedResult = patchStartupFiles(result, bgDir, gnuArmDir);
-
-    // Check LD + startup .s AFTER patchStartupFiles has copied startup files to gnuArmDir.
-    const ldIssues = checkLinkerHeapStack(path.join(gnuArmDir, ideLdFile), gnuArmDir);
-
-    writeHt32IdeLists(bgDir, patchedResult);
-    fs.writeFileSync(path.join(bgDir, 'Makefile'), generateMakefile(patchedResult, bgDir, GCC));
-    writeCCDbFromLists(bgDir, {
-      compiler: GCC,
-      armCore:  patchedResult.armCore,
-      fpu:      patchedResult.fpuName || undefined,
-      floatAbi: patchedResult.hardFloat ? 'hard' : 'soft',
-    });
-    // Build linkerScripts[] (bgDir-relative), matching convertHt32Ide behavior.
-    // regenerateMakefileFlags reads this from meta.json to generate all -T flags.
-    const allLdRelPaths = [];
-    if (!patchedResult.isLibrary) {
-      if (ideLdFile) allLdRelPaths.push(path.relative(bgDir, path.join(gnuArmDir, ideLdFile)).replace(/\\/g, '/'));
-      for (const eld of result.extraLinkerScripts ?? [])
-        allLdRelPaths.push(path.relative(bgDir, path.join(gnuArmDir, path.basename(eld))).replace(/\\/g, '/'));
-    }
-    fs.writeFileSync(
-      path.join(bgDir, 'project.meta.json'),
-      JSON.stringify({ ...buildProjectMeta(patchedResult, wsRoot), ...(allLdRelPaths.length ? { linkerScripts: allLdRelPaths } : {}) }, null, 2),
+    // 模擬 extension 的 generateTasksAndLaunchAndMakefile → regenAllMakefileFlags
+    // 直接從 project.settings.json（convertHt32IdeProject 剛寫入）讀取，確保和 extension 一致
+    const s = readProjectSettings(bgDir);
+    const fpu      = (s.fpu && s.fpu !== 'none') ? s.fpu : undefined;
+    const floatAbi = s.floatAbi || 'soft';
+    regenerateMakefileFlags(
+      bgDir,
+      { mcu: s.mcu, fpu, floatAbi, targetName: s.targetName },
+      {
+        optimizationLevel: s.optimizationLevel,
+        useNano:           s.useNano,
+        useNosys:          s.useNosys,
+        printfFloat:       s.printfFloat,
+        scanfFloat:        s.scanfFloat,
+        useLto:            s.useLto,
+        extraCFlags:       s.extraCFlags,
+        cDefs:             s.cDefs ?? [],
+        aDefs:             s.aDefs ?? [],
+        cc:                GCC,
+      }
     );
 
-    // Simulate the extension's refreshDerivedFiles → regenerateMakefileFlags call
-    // (called by generateTasksAndLaunchAndMakefile via regenAllMakefileFlags).
-    // cDefs/aDefs mirror what ht32ide2make stores in project.settings.json.
-    const meta = { mcu: patchedResult.armCore, fpu: patchedResult.fpuName || '', floatAbi: patchedResult.hardFloat ? 'hard' : 'soft',
-                   targetName: patchedResult.projectName, confHPath: null };
-    const _cDefsSet = new Set(patchedResult.defines ?? []);
-    regenerateMakefileFlags(bgDir, meta, { optimizationLevel: patchedResult.optimization, useNano: patchedResult.useNano ?? true, useNosys: patchedResult.useNosys ?? true,
-      printfFloat: patchedResult.printfFloat, scanfFloat: patchedResult.scanfFloat, useLto: patchedResult.useLto,
-      extraCFlags: DEFAULT_PROJECT_SETTINGS.extraCFlags || undefined,
-      cDefs: patchedResult.defines ?? [],
-      aDefs: (patchedResult.asmDefines ?? []).filter(d => !_cDefsSet.has(d)) });
+    // Check LD + startup .s
+    const ideLdName = r.meta.linkerScripts?.[0] ? path.basename(r.meta.linkerScripts[0]) : 'linker.ld';
+    const ldIssues  = checkLinkerHeapStack(path.join(gnuArmDir, ideLdName), gnuArmDir);
+    const ideStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
+    const startupIssues = ideStartupFiles.length
+      ? [...checkStartupDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)]
+      : ['startup .s not found in GNU_ARM/'];
+    const heapIssues = [...ldIssues, ...startupIssues];
 
-    // Always clean build/ before each example to prevent stale .o files from a previous
-    // example that shared the same bgDir (e.g. LIN_Master + LIN_Slave both resolve
-    // wsRoot to the FWLib root, giving the same bgDir for the same MCU code).
+    // Clean build/ before make（防止不同 example 共用同一 bgDir 時 .o 殘留）
     const buildOutDir = path.join(bgDir, 'build');
     if (fs.existsSync(buildOutDir)) fs.rmSync(buildOutDir, { recursive: true, force: true });
     fs.mkdirSync(buildOutDir, { recursive: true });
 
-    const ideStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
-    const startupIssues = ideStartupFiles.length
-      ? [...checkStartupSections(patchedResult.sources), ...checkThumbLsbInDir(gnuArmDir)]
-      : ['startup .s not found in GNU_ARM/'];
-    const heapIssues    = [...ldIssues, ...startupIssues];
     const make = await runMake(bgDir);
-    // needs 3 (動態): 實際 RAM 值 ≥ heap + stack（heap/stack 有計入 RAM 才能成立）
     if (make.ok && !make.skipped) {
-      const ram   = parseRamFromMakeOutput(make.stdout, make.stderr);
-      const { heap, stack } = readHeapStackSizes(gnuArmDir, path.join(gnuArmDir, ideLdFile));
+      const ram = parseRamFromMakeOutput(make.stdout, make.stderr);
+      const { heap, stack } = readHeapStackSizes(gnuArmDir, path.join(gnuArmDir, ideLdName));
       if (ram !== null && ram < heap + stack)
         heapIssues.push(`RAM=${ram}B < heap(${heap})+stack(${stack})=${heap+stack}B — heap/stack not counted in RAM`);
     }

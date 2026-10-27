@@ -1,6 +1,6 @@
 # 測試腳本（test_scripts/）
 
-現有腳本：`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`。
+現有腳本：`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`ht32vs-make.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`。
 
 FWLib 路徑清單共用同一個 ini：`test_scripts/fwlib-paths.ini`。所有腳本都需先 `npm run compile` 編譯 TypeScript。
 
@@ -37,6 +37,7 @@ node test_scripts/test-compile.js --lib 5xxxx
 | test-create-project.js | 中 | 需要 | 預設需要（`--no-compile` 跳過）| 修改 createProject.ts |
 | create-prj.js | 中 | 需要 | 不需要 | test-compile.js 前置：建立 STD example 專案 |
 | test-compile.js | 慢 | 需要 | 需要 | 修改 uv2make.ts / ht32ide2make.ts |
+| **ht32vs-make.js** | 慢 | 需要 | 需要 | 用 `.ht32vs` 批次 build 已存在的 VS Code 專案；完整走 Open Project 流程 |
 | batch-convert-htide.js | 中 | 需要 | 不需要 | 快速批次轉換 HT32-IDE，不編譯 |
 | clean-prj.js | 快 | 需要 | 不需要 | 測試前清場 |
 
@@ -194,6 +195,35 @@ node test_scripts/clean-prj.js --all          # 所有 FWLib
 node test_scripts/clean-prj.js --filter uart  # 只清名稱吻合的 examples
 node test_scripts/clean-prj.js --limit 5
 ```
+
+---
+
+## ht32vs-make.js — CLI 批次 build（Open Project 流程）
+
+讀取 `.ht32vs` 專案檔，對每個 build-gen 目錄走完整的 Open Project 三步驟，再執行 make。
+
+**三步驟與 `initProjectsFromMeta` 完全一致：**
+
+| 步驟 | 函式 | 說明 |
+|------|------|------|
+| 1 | `buildMakefileText(...)` | 從 `project.settings.json` 產生完整 Makefile skeleton |
+| 2 | `refreshDerivedFiles(bgDir, meta, { gccPath, onWarn })` | 寫 SRCS/rules/lists/compile_commands.json |
+| 3 | `writeCCDbFromLists(...)` | 以解析後的 GCC 路徑覆寫 compile_commands.json |
+
+> **重要**：所有邏輯使用 extension 自身匯出的函式，不另行實作。VS Code 的 `showWarningMessage` 與 `ht32.gccPath` 設定透過 `onWarn` / `gccPath` opts 注入，由 CLI 改為寫到 log。
+
+```bash
+# Usage
+ht32vs-make.exe <project.ht32vs> [options]
+
+# Options
+-o <file>      輸出 log 到檔案（同時印到 stdout）
+--no-regen     跳過 Makefile 重建（使用現有 Makefile）
+--no-compile   只重建 Makefile，不執行 make
+-j <n>         make 並行 jobs 數
+```
+
+**進入點**：`test_scripts/ht32vs-make.js`；以 `pkg` 打包成 `afterbuild/ht32vs-make.exe`（Windows x64）。
 
 ---
 

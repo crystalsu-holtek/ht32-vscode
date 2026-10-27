@@ -35,6 +35,18 @@ function execp(cmd: string, options: ExecOptions = {}): Promise<{ code: number; 
   });
 }
 
+/** 取得 arm-none-eabi-gcc 主版本號（例如 10、13），解析失敗回傳 undefined */
+async function getArmGccMajorVersion(exe: string): Promise<number | undefined> {
+  const cmd = process.platform === 'win32'
+    ? `cmd /c "${exe}" --version`
+    : `"${exe}" --version`;
+  const { code, stdout, stderr } = await execp(cmd);
+  if (code !== 0) return undefined;
+  const text = stdout + '\n' + stderr;
+  const m = text.match(/\)\s+(\d+)\.\d+\.\d+/);
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
 /** 驗證 exe 執行結果是否包含某些關鍵字（不拋錯） */
 async function verifyExe(exe: string, args: string[], mustIncludes: string[]): Promise<boolean> {
   const joined = args.join(' ');
@@ -207,32 +219,68 @@ function findArmGccShallow(roots: string[], maxDepth: number): string | undefine
 
 /** In-session cache：同一個 VS Code 視窗內只搜尋一次 */
 let _gccPathCache: string | null | undefined = undefined;  // undefined = not searched yet, null = searched but not found
+let _manualGccCache: { path: string; valid: boolean } | undefined;
+const _warnedGccPaths = new Set<string>();
+const _warnedInvalidGccPaths = new Set<string>();
 
 /** 尋找 arm-none-eabi-gcc（跨平台），永遠回傳絕對路徑或 undefined */
 export async function locateArmGcc(): Promise<string | undefined> {
+  const cfg = vscode.workspace.getConfiguration();
+
+  // 使用者設定優先；同一個路徑 cache verify 結果，避免每次都 spawn subprocess
+  const manual = cfg.get<string>('ht32.gccPath') || '';
+  if (manual) {
+    if (_manualGccCache?.path === manual && _manualGccCache.valid) {
+      return manual;  // 只有 valid=true 才 cache；invalid 路徑每次重試（讓使用者修好後不需重啟）
+    }
+    if (!fs.existsSync(manual)) {
+      if (!_warnedInvalidGccPaths.has(manual)) {
+        _warnedInvalidGccPaths.add(manual);
+        vscode.window.showWarningMessage(`ht32.gccPath "${manual}" does not exist — falling back to auto-detect.`);
+      }
+    } else if (await verifyExe(manual, ['--version'], ['arm-none-eabi-gcc'])) {
+      logInfo(`use user-configured arm gcc: ${manual}`);
+      await warnIfGccTooOld(manual);
+      _manualGccCache = { path: manual, valid: true };
+      return manual;
+    } else {
+      if (!_warnedInvalidGccPaths.has(manual)) {
+        _warnedInvalidGccPaths.add(manual);
+        vscode.window.showWarningMessage(`ht32.gccPath "${manual}" is not arm-none-eabi-gcc — falling back to auto-detect.`);
+      }
+    }
+  }
+
+  // auto-detect 才走 cache
   if (_gccPathCache !== undefined) {
     logInfo(`locateArmGcc: returning cached result: ${_gccPathCache ?? '(not found)'}`);
     return _gccPathCache ?? undefined;
   }
 
-  const cfg = vscode.workspace.getConfiguration();
   logInfo('======= locateArmGcc() START =======');
   logInfo(`platform = ${process.platform}`);
 
   const found = await _locateArmGccInner(cfg);
+  if (found) await warnIfGccTooOld(found);
   _gccPathCache = found ?? null;
   return found;
 }
 
-async function _locateArmGccInner(cfg: vscode.WorkspaceConfiguration): Promise<string | undefined> {
-  // 1) user 設定
-  const manual = cfg.get<string>('ht32.gccPath') || '';
-  if (manual && fs.existsSync(manual) && await verifyExe(manual, ['--version'], ['arm-none-eabi-gcc'])) {
-    logInfo(`use user-configured arm gcc: ${manual}`);
-    return manual;
+async function warnIfGccTooOld(exe: string): Promise<void> {
+  if (_warnedGccPaths.has(exe)) return;
+  _warnedGccPaths.add(exe);
+  const major = await getArmGccMajorVersion(exe);
+  if (major !== undefined && major < 8) {
+    logWarn(`arm-none-eabi-gcc version ${major} is too old (minimum required: 8). ` +
+      `Please upgrade to GCC 8 or later — the Makefile uses -ffile-prefix-map which requires GCC 8+.`);
+    vscode.window.showWarningMessage(
+      `GNU Arm GCC version ${major} is too old. Holtek HT32 VS Code Extension requires GCC 8 or later (-ffile-prefix-map).`
+    );
   }
+}
 
-  // 2) PATH：用 where/which 取得完整路徑（避免回傳裸名稱，讓呼叫端無法判斷是否真正找到）
+async function _locateArmGccInner(cfg: vscode.WorkspaceConfiguration): Promise<string | undefined> {
+  // 1) PATH：用 where/which 取得完整路徑（避免回傳裸名稱，讓呼叫端無法判斷是否真正找到）
   if (process.platform === 'win32') {
     const { code, stdout } = await execp('where arm-none-eabi-gcc');
     if (code === 0 && stdout.trim()) {

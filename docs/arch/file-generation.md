@@ -21,7 +21,17 @@
 
 ### `refreshDerivedFiles(bgDir, meta, opts?)`
 
+**所在模組：`src/tools/uv2make.ts`（已 export，供 extension 與 CLI 工具共用）**
+
 從現有的 `project.meta.json` + `project.settings.json` 重新產生所有衍生 build 檔案，**不寫 meta.json**。
+
+`opts` 選用欄位：
+
+| 欄位 | 說明 |
+|------|------|
+| `skipElfInvalidation` | `true` → 跳過刪除 stale ELF/bin/hex（CI / CLI 場景） |
+| `gccPath` | GCC 完整路徑，供 `writeCCDbFromLists` 使用；VS Code 環境由呼叫端透過 `_vsOpts()` 注入 `ht32.gccPath` 設定 |
+| `onWarn` | 警告回呼；VS Code 環境注入 `vscode.window.showWarningMessage`；CLI 環境寫到 log；省略時 fallback 至 output channel `logWarn` |
 
 產生順序：
 1. `sources.list`（從 `meta.groups` 展開）
@@ -35,6 +45,7 @@
 呼叫時機：
 - `initProjectsFromMeta`（open project，mtime check 後）
 - `regenAllMakefileFlags`（Settings Save / `generateTasksAndLaunchAndMakefile`）
+- `ht32vs-make.js` step 2（CLI build tool，見 [test-scripts.md](test-scripts.md)）
 
 ### `persistMeta(bgDir, meta, opts?)`
 

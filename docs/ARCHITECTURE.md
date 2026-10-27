@@ -160,12 +160,11 @@ ht32.vscode.solution/
 
 存放於 `HT32_VSCode/`（即 VS Code workspace root）。轉換或建立專案時自動產生，之後可透過 TreeView 右鍵 Add / Remove Project 維護。
 
-**HT32-IDE singleParentExpansion（選擇一個包含多個 `Project_*` 子目錄的上層資料夾）：**
-- 為每個子專案各自產生一個只含自身的 `.ht32vs`（例如 `Project_HT32F52352.ht32vs`）
-- 同時產生一個**合併的** `.ht32vs`，涵蓋所有子專案，檔名取自上層資料夾名稱（例如 `Template_USB.ht32vs`）
-- 合併的 `.ht32vs` 設為 `ht32.activeProjectFile`（TreeView 顯示全部子專案）
+**HT32-IDE 多專案 `.ht32vs` 產生規則（依 `convResults.length`）：**
+- **轉換結果 > 1**（多選或選上層資料夾，自動展開多個含 `.project`/`.cproject` 的子目錄）：為每個子專案各自產生一個只含自身的 `.ht32vs`，再產生一個涵蓋所有子專案的合併 `.ht32vs`
+- **轉換結果 = 1**（直接選一個含 `.project`/`.cproject` 的目錄）：只產生一個 `.ht32vs`
 
-其他情況（多選、直接選 `Project_*`）：只產生一個合併的 `.ht32vs`。
+合併的 `.ht32vs` 設為 `ht32.activeProjectFile`（TreeView 顯示全部子專案）。
 
 ### 雙擊開啟（Custom Editor 機制）
 
@@ -273,7 +272,7 @@ convertUvision()
   └── uv2make() → generateTasksAndLaunchAndMakefile(root, { elfPath, deviceName, mcu, ramOrigin, ramLength })
 
 convertHt32Ide()
-  └── ht32ide2make() → patchStartupFiles() → generateTasksAndLaunchAndMakefile(root)
+  └── convertHt32IdeProject() → persistMeta() → generateTasksAndLaunchAndMakefile(root)
 
 generateTasksAndLaunchAndMakefile()
   ├── 讀取 project.settings.json（per-project）+ machine settings（gcc/make/openocd path）

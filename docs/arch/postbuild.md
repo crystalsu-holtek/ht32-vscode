@@ -70,15 +70,23 @@ Keil 用此指令產生 `.bin`，GCC Makefile 已由 `arm-none-eabi-objcopy` 處
 | `${IC_NAME}` | icName（來自 `<ic name=…>`） |
 | `${ProjName}` | projectName |
 
-- 第一個 token（bat/exe）從 `projectDir`-relative 轉為絕對路徑
+第一個 token 的處理分兩種情況：
+
+| 情況 | 範例 | 處理 |
+|------|------|------|
+| 有路徑分隔符（相對路徑） | `..\..\afterbuild.bat` | `path.resolve(buildDir, rawPath)` → 絕對路徑 |
+| 無路徑分隔符（bare 命令） | `arm-none-eabi-objcopy.exe` | 原樣保留（不做 resolve） |
+
+**bare 命令不能做 `path.resolve`**：`buildDir = projectDir/HT32/`，resolve 後會得到 `…/HT32/arm-none-eabi-objcopy.exe`，接著 `resolveHt32IdePostBuildPath` 再轉成相對路徑 `..\HT32-IDE\Project_xx\HT32\arm-none-eabi-objcopy.exe`，導致 PowerShell 找不到該路徑。
+
 - `ht32ide` mode 替換為 `vsc`
 
 ### 路徑相對化（`resolveHt32IdePostBuildPath()`）
 
 轉換時 wsRoot（`HT32_VSCode/`）未知，分兩步：
 
-1. `buildHt32IdePostBuildCmd()` → 第一個 token 為**絕對路徑**
-2. 外層取得 wsRoot 後呼叫 `resolveHt32IdePostBuildPath()` → 轉為 wsRoot-relative
+1. `buildHt32IdePostBuildCmd()` → 有路徑的 token 已為**絕對路徑**；bare 命令原樣
+2. 外層取得 wsRoot 後呼叫 `resolveHt32IdePostBuildPath()` → 有路徑者轉為 wsRoot-relative；bare 命令直接回傳原字串（同樣以無路徑分隔符判斷）
 
 ---
 

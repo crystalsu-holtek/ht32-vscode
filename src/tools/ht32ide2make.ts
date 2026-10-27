@@ -541,17 +541,23 @@ function buildHt32IdePostBuildCmd(
     .replace(/\$\{IC_NAME\}/g, icName)
     .replace(/\$\{ProjName\}/g, projectName);
 
-  // Resolve first token (bat/exe path) from projectDir-relative to absolute
+  // Resolve first token (bat/exe path) from projectDir-relative to absolute.
+  // If rawPath has no separator (bare command name like "arm-none-eabi-objcopy.exe"),
+  // keep it as-is — path.resolve would wrongly anchor it to buildDir.
   const m = /^("(?:[^"\\]|\\.)*"|[^\s"]+)([\s\S]*)$/.exec(cmd.trim());
   if (!m) return cmd;
   const rawPathToken = m[1];
   const restArgs     = m[2];
   const rawPath = rawPathToken.startsWith('"') ? rawPathToken.slice(1, -1) : rawPathToken;
+  // Replace ht32ide mode with vsc so the bat uses HT32_VSCode\ cwd-relative paths
+  const newArgs = restArgs.trimStart().replace(/^ht32ide\b/, 'vsc');
+  const isPathLike = rawPath.includes('/') || rawPath.includes('\\') || rawPath.startsWith('.');
+  if (!isPathLike) {
+    return newArgs ? `${rawPath} ${newArgs}` : rawPath;
+  }
   const absPath = path.resolve(projectDir, rawPath.replace(/\//g, path.sep));
   // keep backslashes — cmd.exe needs them; resolveHt32IdePostBuildPath will relativize
   const pathToken = absPath.includes(' ') ? `"${absPath}"` : absPath;
-  // Replace ht32ide mode with vsc so the bat uses HT32_VSCode\ cwd-relative paths
-  const newArgs = restArgs.trimStart().replace(/^ht32ide\b/, 'vsc');
   return `${pathToken} ${newArgs}`;
 }
 
@@ -566,6 +572,10 @@ export function resolveHt32IdePostBuildPath(cmd: string, wsRoot: string, srcRoot
   const rawPathToken = m[1];
   const restArgs     = m[2];
   const rawPath = rawPathToken.startsWith('"') ? rawPathToken.slice(1, -1) : rawPathToken;
+  // Bare command (no path separator) — already a system command, nothing to relativize
+  if (!rawPath.includes('/') && !rawPath.includes('\\') && !rawPath.startsWith('.')) {
+    return cmd.trim();
+  }
   const batAbs     = rawPath.replace(/\//g, path.sep);
   const batDestAbs = srcRoot ? relocateBatToWsRoot(batAbs, srcRoot, wsRoot) : batAbs;
   const relPath    = path.relative(wsRoot, batDestAbs);  // keep backslashes
@@ -889,20 +899,33 @@ export function patchStartupFiles(result: Ht32IdeResult, bgDir: string, gnuArmDi
 
     // Resolve .include "..." paths: copy referenced .s files to dstDir and rewrite the path.
     // Files found in project sources are marked headerOnly to prevent standalone compilation.
+    // Fallback: if not in project sources, look for the file by basename adjacent to the startup
+    // (e.g. image_info.s lives beside startup.s in HT32-IDE/ but isn't listed in .project).
     INCLUDE_RE.lastIndex = 0;
     text = text.replace(INCLUDE_RE, (_match, prefix, incPath) => {
       const basename = path.basename(incPath).toLowerCase();
       const incSource = sourcesByBasename.get(basename);
+      let incSrcAbs: string | undefined;
       if (incSource) {
-        const incSrcAbs = incSource.absPath.replace(/\//g, path.sep);
-        if (fs.existsSync(incSrcAbs)) {
-          const dstFile = path.join(dstDir, path.basename(incSource.absPath));
-          if (path.resolve(incSrcAbs) !== path.resolve(dstFile)) {
-            fs.copyFileSync(incSrcAbs, dstFile);
-          }
+        const p = incSource.absPath.replace(/\//g, path.sep);
+        if (fs.existsSync(p)) {
+          incSrcAbs = p;
           includedAbsPaths.add(incSource.absPath);
-          return `${prefix}"${relToDst}/${path.basename(incSource.absPath)}"`;
         }
+      }
+      if (!incSrcAbs) {
+        // Not in project sources — check if copyIdeLocalFiles already placed it in dstDir
+        const inDst = path.join(dstDir, path.basename(incPath));
+        if (fs.existsSync(inDst)) {
+          return `${prefix}"${relToDst}/${path.basename(incPath)}"`;
+        }
+      }
+      if (incSrcAbs) {
+        const dstFile = path.join(dstDir, path.basename(incPath));
+        if (path.resolve(incSrcAbs) !== path.resolve(dstFile)) {
+          fs.copyFileSync(incSrcAbs, dstFile);
+        }
+        return `${prefix}"${relToDst}/${path.basename(incPath)}"`;
       }
       return _match; // can't resolve — leave as-is
     });
@@ -933,52 +956,35 @@ export function patchStartupFiles(result: Ht32IdeResult, bgDir: string, gnuArmDi
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HT32_VSCODE_DIRNAME = 'HT32_VSCode';
-const BG_BASE_IDE = 'Project';
 
 function bgParentIde(wsRoot: string): string {
   if (path.basename(wsRoot).toLowerCase() === HT32_VSCODE_DIRNAME.toLowerCase()) return wsRoot;
   return path.join(wsRoot, HT32_VSCODE_DIRNAME);
 }
 
+const LOCAL_IDE_EXTS = /\.(c|cpp|s|h|a|o)$/i;  // .S covered by i flag; .o for pre-compiled objects
+
 /**
- * Compute workspace root from HT32-IDE project dir + source list.
- * Mirrors the extension's computeHt32IdeWsRoot — only User-group sources are
- * considered to prevent library paths from pulling wsRoot up to the FWLib root.
+ * Copy all local project files (not from FWLib) from the HT32-IDE root directory
+ * to gnuArmDir.  Returns a map of normalised-slash old-abs → new-abs for updating
+ * result.sources / result.extraLibFiles after the call.
+ * Only scans maxdepth 1 (files directly in ht32IdeRoot, not sub-project subdirs).
  */
-export function computeHt32IdeWsRoot(projectDir: string, sources: { group: string; absPath: string }[]): string {
-  const ps = path.sep;
-  const projParts = projectDir.split(ps);
-
-  function commonPrefixLen(dir: string): number {
-    const parts = dir.split(ps);
-    let i = 0;
-    while (i < parts.length && i < projParts.length && parts[i] === projParts[i]) i++;
-    return i;
+function copyIdeLocalFiles(ht32IdeRoot: string, gnuArmDir: string): Map<string, string> {
+  const moved = new Map<string, string>();
+  let entries: string[];
+  try { entries = fs.readdirSync(ht32IdeRoot); } catch { return moved; }
+  for (const name of entries) {
+    if (!LOCAL_IDE_EXTS.test(name)) continue;
+    const src = path.join(ht32IdeRoot, name);
+    try { if (!fs.statSync(src).isFile()) continue; } catch { continue; }
+    const dst = path.join(gnuArmDir, name);
+    if (path.resolve(src) === path.resolve(dst)) continue;  // already in gnuArmDir
+    fs.copyFileSync(src, dst);
+    moved.set(src.replace(/\\/g, '/'), dst.replace(/\\/g, '/'));
+    logInfo(`HT32-IDE convert: copied local file to GNU_ARM/: ${name}`);
   }
-
-  const userSrcs = sources.filter(s => /^user$/i.test(s.group));
-  const allDirs = (userSrcs.length > 0 ? userSrcs : sources)
-    .map(s => path.dirname(s.absPath.replace(/\//g, ps)));
-
-  if (allDirs.length === 0) return projectDir;
-
-  const maxCommon = Math.max(...allDirs.map(commonPrefixLen));
-  const dirs = allDirs.filter(d => commonPrefixLen(d) >= maxCommon - 1);
-
-  let common = dirs[0];
-  for (const d of dirs.slice(1)) {
-    while (d !== common && !d.startsWith(common + ps)) {
-      common = path.dirname(common);
-      if (common === path.dirname(common)) break;
-    }
-  }
-
-  let wsRoot = common;
-  while (wsRoot !== path.dirname(wsRoot)) {
-    if (projectDir === wsRoot || projectDir.startsWith(wsRoot + ps)) break;
-    wsRoot = path.dirname(wsRoot);
-  }
-  return wsRoot;
+  return moved;
 }
 
 export interface Ht32IdeConvertProjectResult {
@@ -994,6 +1000,23 @@ export interface Ht32IdeConvertProjectResult {
   hardFloat?:  boolean;
   meta:        ReturnType<typeof buildProjectMeta> & { linkerScripts?: string[]; isLibrary?: boolean };
   warnings:    { message: string; file: string }[];
+  cancelled?:  true;
+}
+
+/**
+ * Compute the HT32_VSCode workspace root from a HT32-IDE project directory.
+ *   49x layout: .../calibration/HT32-IDE          → wsRoot = calibration/
+ *   STD layout: .../exDir/HT32-IDE/Project_xxx    → wsRoot = exDir/
+ */
+export function computeHt32IdeWsRoot(projectDir: string): string {
+  return /^ht32-?ide$/i.test(path.basename(projectDir))
+    ? path.dirname(projectDir)
+    : path.dirname(path.dirname(projectDir));
+}
+
+/** Returns the HT32_VSCode directory that convertHt32IdeProject will create for a given projectDir. */
+export function computeHt32IdeVsDir(projectDir: string): string {
+  return bgParentIde(computeHt32IdeWsRoot(projectDir));
 }
 
 /**
@@ -1001,24 +1024,35 @@ export interface Ht32IdeConvertProjectResult {
  * Does not call VS Code APIs — usable from CLI scripts.
  * Writes project.meta.json internally. Caller should call persistMeta(bgDir, result.meta)
  * to additionally refresh all derived build files (sources.list, Makefile SRCS, compile_commands.json).
+ *
+ * If confirmOverwrite is provided and HT32_VSCode already exists, it is called with the
+ * directory path. Return false to cancel; the function returns { cancelled: true }.
  */
-export function convertHt32IdeProject(
+export async function convertHt32IdeProject(
   projectDir: string,
-  opts: { extPath: string; gccPath: string }
-): Ht32IdeConvertProjectResult {
+  opts: { extPath: string; gccPath: string; confirmOverwrite?: (dir: string) => Promise<boolean> }
+): Promise<Ht32IdeConvertProjectResult> {
   const { extPath, gccPath } = opts;
   const warnings: { message: string; file: string }[] = [];
 
   const result = parseHt32IdeProject(projectDir);
   warnings.push(...result.warnings);
 
-  const wsRoot  = computeHt32IdeWsRoot(projectDir, result.sources);
+  const wsRoot = computeHt32IdeWsRoot(projectDir);
   logInfo(`HT32-IDE convert: ${result.projectName}, device=${result.deviceName}, core=${result.armCore}, wsRoot=${wsRoot}`);
 
-  const baseName  = path.basename(projectDir);
-  const dirName   = /^Project_/i.test(baseName) ? baseName : BG_BASE_IDE;
-  const bgDir     = path.join(bgParentIde(wsRoot), dirName);
-  const gnuArmDir = path.join(bgParentIde(wsRoot), 'GNU_ARM');
+  const ht32VsDir = bgParentIde(wsRoot);
+  if (opts.confirmOverwrite && fs.existsSync(ht32VsDir)) {
+    const confirmed = await opts.confirmOverwrite(ht32VsDir);
+    if (!confirmed) return { wsRoot, dirName: '', bgDir: '', projectName: result.projectName, meta: {} as any, warnings: [], cancelled: true };
+    fs.rmSync(ht32VsDir, { recursive: true, force: true });
+  }
+
+  const dirName   = /^ht32-?ide$/i.test(path.basename(projectDir))
+    ? 'Project'
+    : path.basename(projectDir);
+  const bgDir     = path.join(ht32VsDir, dirName);
+  const gnuArmDir = path.join(ht32VsDir, 'GNU_ARM');
 
   fs.mkdirSync(bgDir, { recursive: true });
   fs.mkdirSync(gnuArmDir, { recursive: true });
@@ -1035,6 +1069,18 @@ export function convertHt32IdeProject(
         warnings.push({ message: `Extra linker script not found: ${eld}`, file: path.join(projectDir, '.project') });
       }
     }
+  }
+
+  // Copy all local project files (non-FWLib) from the HT32-IDE root directory to GNU_ARM/.
+  // STD: local files sit in path.dirname(projectDir) (= the HT32-IDE/ dir itself).
+  // 49x: projectDir IS the HT32-IDE/ dir — local files sit directly in it.
+  const ht32IdeRoot = /^ht32-?ide$/i.test(path.basename(projectDir))
+    ? projectDir
+    : path.dirname(projectDir);
+  const localMoved = copyIdeLocalFiles(ht32IdeRoot, gnuArmDir);
+  if (localMoved.size > 0) {
+    result.sources     = result.sources.map(s => ({ ...s, absPath: localMoved.get(s.absPath) ?? s.absPath }));
+    result.extraLibFiles = result.extraLibFiles.map(f => localMoved.get(f.replace(/\\/g, '/')) ?? f);
   }
 
   const patchedResult = patchStartupFiles(result, bgDir, gnuArmDir);
@@ -1055,7 +1101,7 @@ export function convertHt32IdeProject(
     ? (result.hardFloat ? 'hard' : 'softfp')
     : (fpuFinal ? 'hard' : 'soft');
   const idePostBuildCmd = result.postBuildCmd
-    ? resolveHt32IdePostBuildPath(result.postBuildCmd, bgParentIde(wsRoot), path.dirname(projectDir))
+    ? resolveHt32IdePostBuildPath(result.postBuildCmd, ht32VsDir, path.dirname(projectDir))
     : undefined;
   const isFirstConvert = !fs.existsSync(path.join(bgDir, 'project.settings.json'));
   const _existingSettings = readProjectSettings(bgDir);

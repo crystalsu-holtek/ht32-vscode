@@ -30,7 +30,7 @@ Settings key：`ht32.gccPath`（VS Code User Settings，Global）
 | 3 | HT32-IDE xPack（Windows）：掃描 `C:\Program Files (x86)\Holtek HT32 Series\HT32-IDE\xPack\` 和 `C:\Program Files\Holtek...\xPack\`，找 `arm-gnu-toolchain*` 子目錄，**semver 排序取最新版** |
 | 4 | Arm 官方安裝程式（Windows）：`findArmGccShallow()` 掃描 4 個根目錄（`C:\Program Files\Arm`、`C:\Program Files (x86)\Arm`、`C:\Program Files\Arm GNU Toolchain`、`C:\Program Files (x86)\Arm GNU Toolchain`），深度 3，**版本號排序取最新** |
 | 5 | Unix 固定路徑：`/usr/bin/arm-none-eabi-gcc`、`/usr/local/bin/arm-none-eabi-gcc`、`/opt/arm-none-eabi/bin/arm-none-eabi-gcc` |
-| 找到後 | in-session memory cache（`_gccPathCache`）；同一 VS Code session 只搜尋一次 |
+| 找到後 | in-session memory cache（`_gccPathCache`）；auto-detect 結果 cache；user settings 路徑每次直接讀取，不走 cache |
 | 找不到 | `resolveToolchain` 顯示 warning 並提供 winget 安裝 `Arm.GnuArmEmbeddedToolchain`；`initProjectsFromMeta` 用裸名稱 `arm-none-eabi-gcc` fallback |
 
 ## GNU make 搜尋順序
@@ -93,7 +93,7 @@ openSettingsPanel()
        └─ HTML: placeholder="${detectedGccPath ?? 'Leave empty to auto-detect'}"
 ```
 
-`locateArmGcc()` 有 module-level cache（`_gccPathCache`），同一 VS Code session 只搜尋一次。
+`locateArmGcc()` 有 module-level cache（`_gccPathCache`），auto-detect 結果 cache 在 session 內只搜尋一次。若 `ht32.gccPath` 有值，每次呼叫都直接讀取 user settings，不走 cache（確保使用者改設定後立即生效）。
 
 ### 存檔行為（Settings Webview save）
 
@@ -112,6 +112,14 @@ await cfg.update('gccPath', s.gccPath || undefined, ConfigurationTarget.Global);
 `writeMakefileToolsSettings` 只在 make 有**完整絕對路徑**時才寫 `makefile.makePath`。
 找不到 make 時刪除此 key（讓 Makefile Tools extension 用它自己的預設值或顯示自己的錯誤）。
 永遠不寫入裸 `"make"`——那會讓 Makefile Tools 在沒有系統 make 的機器上靜默失敗。
+
+## GCC 版本警告
+
+`locateArmGcc()` 找到 gcc 後呼叫 `warnIfGccTooOld(exe)`：
+
+- 解析 `arm-none-eabi-gcc --version` 輸出，以 `) X.Y.Z` pattern 抓主版本號（fallback 到 `\b(\d+)\.\d+\.\d+\b`）
+- 主版本 < 8 時，output channel 顯示 `logWarn` 並彈出 `showWarningMessage`
+- `_warnedGccPaths`（`Set<string>`）記錄已警告過的路徑，同一路徑在 session 內只警告一次，避免每次 settings save 都重複彈出通知
 
 ## GCC / binutils 最低版本需求
 

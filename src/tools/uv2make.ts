@@ -2326,13 +2326,13 @@ ifeq ($(OS),Windows_NT)
   .SHELLFLAGS := /C
   RMDIR := rmdir /S /Q
   MKDIR_P = if not exist "$(subst /,\\\\,$1)" mkdir "$(subst /,\\\\,$1)" 2>NUL & ver>NUL
-  LD_NO_WARN = $(if $(shell "$(subst gcc,ld,$(CC))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)
+  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)
 else
   SHELL := /bin/sh
   .SHELLFLAGS := -c
   RMDIR := rm -rf
   MKDIR_P = mkdir -p "$1"
-  LD_NO_WARN = $(if $(shell "$(subst gcc,ld,$(CC))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)
+  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)
 endif
 
 # ---- Toolchain ----
@@ -3128,18 +3128,26 @@ export function regenerateMakefileFlags(
 
   const newLDFlags = `-Wl,${gcLDFlags}--print-memory-usage$(LD_NO_WARN),-Map,$(BUILD)/$(TARGET).map ${ldTFlags}${specsFlags(opts.useNano, opts.useNosys)}${extraLDF}${ltoFlag}${printfF}${scanfF}`;
 
-  // Upgrade old Makefiles that predate LD_NO_WARN dynamic detection.
+  // Upgrade old Makefiles that predate LD_NO_WARN dynamic detection, or that have the
+  // old formula "$(subst gcc,ld,$(CC))" which breaks when CC contains a path prefix.
   // Note: in the template, LD_NO_WARN is indented inside ifeq — must not anchor to ^.
+  const ldNoWarnBlock = [
+    `comma := ,`,
+    `ifeq ($(OS),Windows_NT)`,
+    `  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)`,
+    `else`,
+    `  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)`,
+    `endif`,
+  ].join('\n');
   if (!/LD_NO_WARN\s*[=:]/.test(content)) {
-    const ldNoWarnBlock = [
-      `comma := ,`,
-      `ifeq ($(OS),Windows_NT)`,
-      `  LD_NO_WARN = $(if $(shell "$(subst gcc,ld,$(CC))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)`,
-      `else`,
-      `  LD_NO_WARN = $(if $(shell "$(subst gcc,ld,$(CC))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)`,
-      `endif`,
-    ].join('\n');
     content = content.replace(/^(LDFLAGS\s*:=)/m, `${ldNoWarnBlock}\n$1`);
+  } else if (/\$\(subst gcc,ld,\$\(CC\)\)/.test(content)) {
+    // Replace the old 3-line ifeq block (comma + ifeq + Windows line + else + Linux line + endif)
+    // The old block may or may not include the "comma :=" line, so match broadly.
+    content = content.replace(
+      /(?:comma\s*:=\s*,\s*\r?\n)?ifeq\s*\(\$\(OS\),Windows_NT\)\s*\r?\n\s*LD_NO_WARN[^\r\n]*\$\(subst gcc,ld,\$\(CC\)\)[^\r\n]*\r?\n\s*else\s*\r?\n\s*LD_NO_WARN[^\r\n]*\$\(subst gcc,ld,\$\(CC\)\)[^\r\n]*\r?\n\s*endif/,
+      ldNoWarnBlock,
+    );
   }
 
   // Update CC / AR / OBJCOPY / OBJDUMP / SIZE when gcc path changed.
@@ -3501,7 +3509,7 @@ export function refreshDerivedFiles(
 
   mk = mk.replace(/^SRCS\s*:=.*$/m, `SRCS := ${srcsClean}`);
 
-  const libFiles = buildRelPaths.filter(s => /\.a$/i.test(s));
+  const libFiles = buildRelPaths.filter(s => /\.(a|o)$/i.test(s));
   const libsLine = `LIBS := ${libFiles.join(' ')}`;
   if (/^LIBS\s*:=/m.test(mk)) {
     mk = mk.replace(/^LIBS\s*:=.*$/m, libsLine);
@@ -3564,6 +3572,7 @@ export function refreshDerivedFiles(
         cDefs:             bgProjSettings.cDefs              ?? [],
         aDefs:             bgProjSettings.aDefs              ?? [],
         outputName:        bgProjSettings.outputName?.trim() || undefined,
+        cc:                opts?.gccPath || undefined,
       });
     } catch { /* Makefile might not exist for new projects mid-creation */ }
   }
@@ -3579,7 +3588,7 @@ export function refreshDerivedFiles(
       gcSections:  bgProjSettings.gcSections,
     });
   } catch (e) {
-    logWarn(`refreshDerivedFiles: compile_commands.json update failed: ${e}`);
+    (opts?.onWarn ?? logWarn)(`refreshDerivedFiles: compile_commands.json update failed: ${e}`);
   }
 
   if (meta.linkerScripts?.[0]) {
@@ -3587,7 +3596,7 @@ export function refreshDerivedFiles(
     try {
       patchLinkerScriptRom(ldPath, meta.fileOptions);
     } catch (e: any) {
-      logWarn(`refreshDerivedFiles: linker script ROM patch failed: ${e?.message ?? e}`);
+      (opts?.onWarn ?? logWarn)(`refreshDerivedFiles: linker script ROM patch failed: ${e?.message ?? e}`);
     }
   }
 
@@ -3602,7 +3611,7 @@ export function refreshDerivedFiles(
         }
       }
     } catch (e) {
-      logWarn(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
+      (opts?.onWarn ?? logWarn)(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
     }
   }
 }

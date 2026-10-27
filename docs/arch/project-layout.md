@@ -4,6 +4,26 @@
 
 所有 VS Code 相關產出集中在 `HT32_VSCode/` 子目錄，與 `MDK_ARMv5/`、`HT32-IDE/` 等並列。VS Code 以 `HT32_VSCode/` 作為 workspace root。
 
+## wsRoot 計算規則
+
+`HT32_VSCode/` 的位置（wsRoot）由轉換路徑決定：
+
+| 轉換路徑 | 判斷依據 | wsRoot |
+|---------|---------|--------|
+| Convert uVision | 若 `.uvprojx` 所在目錄名稱符合 `mdk*/keil/arm*` → 上一層；否則原目錄 | `.uvprojx` 所在目錄的上一層（`MDK_ARMv5` 或 `mdk_v5` 的父目錄） |
+| Convert HT32-IDE（STD） | `projectDir` 名稱不是 `HT32-IDE`（如 `Project_xxx`、`AP`）→ 上二層 | `projectDir` 的上二層（`HT32-IDE` 的父目錄） |
+| Convert HT32-IDE（49x） | `projectDir` 名稱本身是 `HT32-IDE` → 上一層 | `projectDir` 的上一層（`HT32-IDE` 的父目錄） |
+| Create Project / Open Project | 使用者選取的目錄 | 使用者指定 |
+
+兩種 HT32-IDE 情境實作（`ht32ide2make.ts`）：
+```typescript
+const wsRoot = /^ht32-?ide$/i.test(path.basename(projectDir))
+  ? path.dirname(projectDir)                 // 49x：HT32-IDE 的上一層
+  : path.dirname(path.dirname(projectDir));  // STD：HT32-IDE/Project_xxx 的上二層
+```
+
+---
+
 ```
 PROJECT_ROOT/
 ├── MDK_ARMv5/            ← Keil 專案
@@ -15,7 +35,7 @@ PROJECT_ROOT/
     │   └── settings.json
     ├── GNU_ARM/          ← startup .s 檔（來自 FWLib 複製 + patch）
     │   └── startup_ht32f5xxxx_gcc_01.s
-    └── Project/          ← 主 build 目錄（Project_iap/ 等為多專案）
+    └── {projectDirName}/ ← bgDir 名稱 = path.basename(projectDir)（如 Project_52352、AP、IAP）
         ├── Makefile
         ├── linker.ld     ← 實際保留原始檔名（e.g. HT32F12345_FLASH.ld）
         ├── sources.list

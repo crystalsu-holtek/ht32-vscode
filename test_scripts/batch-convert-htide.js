@@ -102,23 +102,24 @@ if (!examples.length) {
 console.log(`Found ${examples.length} examples under ${absTarget}\n`);
 
 let nOK = 0, nFail = 0;
-for (let i = 0; i < examples.length; i++) {
-  const { name, ideDir } = examples[i];
-  const prefix = `[${String(i + 1).padStart(3)}/${examples.length}] ${name}`;
-  try {
-    const r = convertHt32IdeProject(ideDir, { extPath: EXT_ROOT, gccPath });
-    if (r.warnings.length) {
-      console.log(`  WARN ${prefix}`);
-      for (const w of r.warnings) console.log(`       ! ${w.message}`);
-    } else {
-      console.log(`  OK   ${prefix}`);
+(async () => {
+  for (let i = 0; i < examples.length; i++) {
+    const { name, ideDir } = examples[i];
+    const prefix = `[${String(i + 1).padStart(3)}/${examples.length}] ${name}`;
+    try {
+      const r = await convertHt32IdeProject(ideDir, { extPath: EXT_ROOT, gccPath });
+      if (r.warnings.length) {
+        console.log(`  WARN ${prefix}`);
+        for (const w of r.warnings) console.log(`       ! ${w.message}`);
+      } else {
+        console.log(`  OK   ${prefix}`);
+      }
+      nOK++;
+    } catch (e) {
+      console.log(`  FAIL ${prefix}`);
+      console.log(`       ${String(e.message).slice(0, 120)}`);
+      nFail++;
     }
-    nOK++;
-  } catch (e) {
-    console.log(`  FAIL ${prefix}`);
-    console.log(`       ${String(e.message).slice(0, 120)}`);
-    nFail++;
   }
-}
-
-console.log(`\nDone. OK=${nOK} FAIL=${nFail}`);
+  console.log(`\nDone. OK=${nOK} FAIL=${nFail}`);
+})().catch(e => { console.error(e); process.exit(1); });
