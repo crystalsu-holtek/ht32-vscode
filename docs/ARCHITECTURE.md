@@ -33,7 +33,7 @@
 | [arch/toolchain.md](arch/toolchain.md) | Toolchain 搜尋策略：GCC / Make 搜尋順序、`findArmGccShallow()` shallow scan、`locateMake()` 設計、winget 安裝流程、tasks.json PATH 組成規則 |
 | [arch/postbuild.md](arch/postbuild.md) | Post-Build 完整架構：uVision（`extractUvAfterMakeCmd` / `translateKeilPostBuildCmd`）、HT32-IDE（CDT 變數替換 / `resolveHt32IdePostBuildPath`）、`--symdefs` 自動產 `gen_syms_ld.bat`、tasks.json Compile / Post-Build / Build compound 結構、`wrapPostBuildCmd` .bat → `cmd /c` |
 | [arch/PartialLock.md](arch/PartialLock.md) | FLASH Partial Lock — 雙專案 symdefs → .ld 轉換流程（IAP + AP 共用 Flash 分區設計） |
-| [arch/test-scripts.md](arch/test-scripts.md) | 測試腳本說明：`test-mcu.js`（MCU 靜態覆蓋率）、`test-create-project.js`（四層驗證）、`test-compile.js`（轉換+編譯）及其他輔助腳本 |
+| [arch/test-scripts.md](arch/test-scripts.md) | 測試腳本說明：`test-helpers.js`（共用驗證函式）、`test-mcu.js`（MCU 靜態覆蓋率）、`test-create-project.js`（四層驗證）、`test-compile.js`（轉換+編譯）及其他輔助腳本 |
 
 ---
 
@@ -86,6 +86,7 @@ ht32.vscode.solution/
 │   └── make.exe + libiconv2/libintl3 DLLs
 │
 ├── test_scripts/                    ← 開發用測試腳本（不打包進 .vsix）
+│   ├── test-helpers.js              ← 共用輸出驗證函式（被 test-compile/test-create-project import）
 │   ├── test-mcu.js                  ← MCU 靜態覆蓋率（cfg/HLM/WorkArea 是否齊全）
 │   ├── test-create-project.js       ← Create Project 四層驗證
 │   ├── test-compile.js              ← uVision/HT32-IDE 轉換 + 編譯

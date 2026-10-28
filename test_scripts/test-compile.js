@@ -57,6 +57,7 @@ const DFP_STORAGE_PATH = path.join(_extInstallDir, _installed[_installed.length 
 const {
   uv2make,
   regenerateMakefileFlags,
+  MIN_HEAP_SIZE,
 } = require(path.join(EXT_ROOT, 'out/tools/uv2make.js'));
 
 const { locateArmGcc } = require(path.join(EXT_ROOT, 'out/tools/toolchain.js'));
@@ -64,6 +65,18 @@ const { locateArmGcc } = require(path.join(EXT_ROOT, 'out/tools/toolchain.js'));
 const { DEFAULT_PROJECT_SETTINGS, readProjectSettings, writeProjectSettings } = require(path.join(EXT_ROOT, 'out/tools/settingsWebview.js'));
 
 const { convertHt32IdeProject } = require(path.join(EXT_ROOT, 'out/tools/ht32ide2make.js'));
+
+const {
+  checkThumbLsbFile,
+  checkThumbLsbInDir,
+  checkStartupSectionsInDir,
+  checkLinkerStd,
+  checkLinker49x,
+  checkLinker49xHeapSize,
+  parseRamFromMakeOutput,
+  readStartupEquFromDir,
+  readHeapStackSizes,
+} = require(path.join(__dirname, 'test-helpers.js'));
 
 // ── 2. Config ─────────────────────────────────────────────────────────────────
 const INI_FILE = path.join(__dirname, 'fwlib-paths.ini');
@@ -220,147 +233,22 @@ function ensureDir(d) { fs.mkdirSync(d, { recursive: true }); }
  * Returns array of issue strings (empty = OK).
  */
 function checkLinkerHeapStack(ldPath, startupDir) {
-  const issues = [];
-  if (!fs.existsSync(ldPath)) {
-    issues.push('linker_script.ld not found');
-    return issues;
-  }
+  if (!fs.existsSync(ldPath)) return ['linker_script.ld not found'];
   const ld = fs.readFileSync(ldPath, 'utf8');
-  const hasKeepHeap  = /KEEP\s*\(\s*\*\s*\(\s*\.heap\s*\)\s*\)/.test(ld);
-  const hasKeepStack = /KEEP\s*\(\s*\*\s*\(\s*\.stack\s*\)\s*\)/.test(ld);
-  const hasUserHpStk = /\._user_heap_stack/.test(ld);
-  const hasStackTop  = /__StackTop\s*[=:]/.test(ld);
-  const hasHtCheckSp = /__HT_check_sp\s*[=:]/.test(ld);
-  const startupText  = (() => {
-    if (!startupDir) return '';
-    try {
-      const files = fs.readdirSync(startupDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s'));
-      return files.map(f => fs.readFileSync(path.join(startupDir, f), 'utf8')).join('\n');
-    } catch { return ''; }
-  })();
-  if (!hasKeepHeap && !hasUserHpStk) {
-    issues.push('heap not in RAM (no KEEP(*(.heap)) and no ._user_heap_stack)');
+  if (/\._user_heap_stack/.test(ld)) {
+    // 49x series: delegate entirely to shared helpers
+    return [
+      ...checkLinker49x(ldPath),
+      ...checkLinker49xHeapSize(ldPath, MIN_HEAP_SIZE),
+    ];
   }
-  if (!hasKeepStack && !hasStackTop && !hasUserHpStk) {
-    issues.push('stack not in RAM (no KEEP(*(.stack)), __StackTop, or ._user_heap_stack)');
-  }
-  // needs 2: STD 系列（KEEP(*(.heap)) 模式）時，_Min_Heap_Size 必須為 0x0
-  // （startup .s 已透過 .space 分配 heap，LD 不應再額外分配）
-  // 49x 系列使用 ._user_heap_stack，_Min_Heap_Size > 0 是正確的（唯一的 heap 分配）
-  if (hasKeepHeap) {
-    const minHeapM = /_Min_Heap_Size\s*=\s*(0x[\da-fA-F]+|\d+)\s*;/i.exec(ld);
-    if (minHeapM) {
-      const v = minHeapM[1].startsWith('0x') ? parseInt(minHeapM[1], 16) : parseInt(minHeapM[1]);
-      if (v > 0) issues.push(`_Min_Heap_Size=${minHeapM[1]} > 0 — startup + LD double allocation`);
-    }
-  }
-  // Stack Usage Analysis panel symbols: accept in LD or startup .s (STD series uses .s).
-  if (!hasStackTop  && !/__StackTop\b/.test(startupText))
-    issues.push('__StackTop 缺失 — Stack Analysis 面板無法讀取 stack 頂端位址');
-  if (!hasHtCheckSp && !/__HT_check_sp\b/.test(startupText))
-    issues.push('__HT_check_sp 缺失 — Stack Analysis 面板無法取得 stack 底部');
-  return issues;
-}
-
-/**
- * Check Reset_Handler in a startup .s file has Thumb LSB marking.
- * Missing .type %function / .thumb_func → STT_NOTYPE → linker emits even address
- * in vector table → CPU enters ARM state → immediate HardFault.
- * Returns array of issue strings (empty = OK).
- */
-function checkThumbLsbFile(startupPath) {
-  const issues = [];
-  if (!fs.existsSync(startupPath)) return issues;
-  const text = fs.readFileSync(startupPath, 'utf8');
-  const labelIdx = text.search(/^Reset_Handler\s*:/m);
-  if (labelIdx < 0) return issues; // no Reset_Handler in this file
-  const preceding = text.slice(Math.max(0, labelIdx - 300), labelIdx);
-  const hasType      = /\.type\s+Reset_Handler\s*,\s*%function/.test(preceding);
-  const hasThumbFunc = /\.thumb_func/.test(preceding.split('\n').slice(-5).join('\n'));
-  if (!hasType && !hasThumbFunc) {
-    issues.push(`${path.basename(startupPath)}: Reset_Handler 缺 .type %function → Thumb LSB 未設 → HardFault`);
-  }
-  return issues;
-}
-
-/** Check all startup_*.s files in a directory for Thumb LSB. */
-function checkThumbLsbInDir(dir) {
-  let files = [];
-  try { files = fs.readdirSync(dir).filter(f => /^startup_/i.test(f) && f.toLowerCase().endsWith('.s')); }
-  catch {}
-  return files.flatMap(f => checkThumbLsbFile(path.join(dir, f)));
-}
-
-/** Parse --print-memory-usage RAM value (bytes) from make output. Returns null if not found. */
-function parseRamFromMakeOutput(stdout, stderr) {
-  const m = /^\s*RAM\s*:\s*(\d+)\s*B/m.exec((stdout || '') + (stderr || ''));
-  return m ? parseInt(m[1]) : null;
-}
-
-/** Read `sym = 0xVAL;` or `sym = VAL;` from LD content. Returns null if not found. */
-function readLdSym(ldContent, sym) {
-  const m = new RegExp(`\\b${sym}\\s*=\\s*(0x[\\da-fA-F]+|\\d+)\\s*;`).exec(ldContent);
-  if (!m) return null;
-  return /^0x/i.test(m[1]) ? parseInt(m[1], 16) : parseInt(m[1]);
-}
-
-/**
- * Read heap/stack sizes for dynamic RAM check.
- * STD style (KEEP(*(.heap))): read Heap_Size/Stack_Size from startup in dir.
- * 49x style (._user_heap_stack): read _Min_Heap_Size/_Min_Stack_Size from LD.
- * Returns { heap, stack } in bytes.
- */
-function readHeapStackSizes(dir, ldPath) {
-  let ldContent = '';
-  try { ldContent = fs.readFileSync(ldPath, 'utf8'); } catch {}
-  const isUserHeapStack = /\._user_heap_stack/.test(ldContent) &&
-                          !/KEEP\s*\(\s*\*\s*\(\s*\.heap/.test(ldContent);
-  if (isUserHeapStack) {
-    return {
-      heap:  readLdSym(ldContent, '_Min_Heap_Size')  ?? 256,
-      stack: readLdSym(ldContent, '_Min_Stack_Size') ?? 512,
-    };
-  }
-  return {
-    heap:  readStartupEquFromDir(dir, 'Heap_Size')  ?? 0,
-    stack: readStartupEquFromDir(dir, 'Stack_Size') ?? 512,
-  };
-}
-
-/** Read .equ SymName decimal value from startup_*.s in dir. Returns null if not found. */
-function readStartupEquFromDir(dir, sym) {
-  let files = [];
-  try { files = fs.readdirSync(dir).filter(f => /^startup_/i.test(f) && f.toLowerCase().endsWith('.s')); }
-  catch {}
-  for (const f of files) {
-    try {
-      const text = fs.readFileSync(path.join(dir, f), 'utf8');
-      const m = new RegExp(`\\.equ\\s+${sym}\\s*,\\s*(0x[\\da-fA-F]+|\\d+)`, 'i').exec(text);
-      if (m) return /^0x/i.test(m[1]) ? parseInt(m[1], 16) : parseInt(m[1]);
-    } catch {}
-  }
-  return null;
-}
-
-/**
- * Check startup_*.s files in dir have "aw",%nobits on .heap/.stack sections.
- * Used for uVision path (startup is in GNU_ARM/, not tracked via sources).
- * Heap_Size=0 is allowed (original Keil intent); printf(%f) warning is shown at conversion time.
- */
-function checkStartupDir(dir) {
-  const issues = [];
-  let files = [];
-  try { files = fs.readdirSync(dir).filter(f => /^startup_/i.test(f) && f.toLowerCase().endsWith('.s')); }
-  catch {}
-  for (const f of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, f), 'utf8');
-      if (!/\.section\s+["']?\.(heap|stack)["']?/i.test(content)) continue;
-      if (!/\.section\s+"\.heap"\s*,\s*"aw"\s*,\s*%nobits/.test(content))
-        issues.push(`${f}: .heap section missing "aw",%nobits`);
-      if (!/\.section\s+"\.stack"\s*,\s*"aw"\s*,\s*%nobits/.test(content))
-        issues.push(`${f}: .stack section missing "aw",%nobits`);
-    } catch {}
+  // STD series: delegate to shared helper + extra double-allocation guard
+  const issues = checkLinkerStd(ldPath, startupDir);
+  // _Min_Heap_Size must be 0 for STD (startup .s already allocates heap via .space)
+  const minHeapM = /_Min_Heap_Size\s*=\s*(0x[\da-fA-F]+|\d+)\s*;/i.exec(ld);
+  if (minHeapM) {
+    const v = /^0x/i.test(minHeapM[1]) ? parseInt(minHeapM[1], 16) : parseInt(minHeapM[1]);
+    if (v > 0) issues.push(`_Min_Heap_Size=${minHeapM[1]} > 0 — startup + LD double allocation`);
   }
   return issues;
 }
@@ -579,7 +467,6 @@ async function testUvision(exampleDir, uvprojxPath, code) {
       outDir,
       workspaceRoot:  ht32VsDir,
       extPath:        EXT_PATH,
-      dfpStoragePath: DFP_STORAGE_PATH,
       cc:             GCC,
       extraCFlags:    DEFAULT_PROJECT_SETTINGS.extraCFlags || undefined,
     });
@@ -609,12 +496,20 @@ async function testUvision(exampleDir, uvprojxPath, code) {
       { mcu: s.mcu, fpu, floatAbi: s.floatAbi || 'soft', targetName: s.targetName },
       {
         optimizationLevel: s.optimizationLevel,
+        debugInfo:         s.debugInfo         || undefined,
         useNano:           s.useNano,
         useNosys:          s.useNosys,
         printfFloat:       s.printfFloat,
         scanfFloat:        s.scanfFloat,
         useLto:            s.useLto,
-        extraCFlags:       s.extraCFlags,
+        extraCFlags:       s.extraCFlags        || undefined,
+        extraLDFlags:      s.extraLDFlags       || undefined,
+        extraLibs:         (s.extraLibs         ?? []).filter(Boolean),
+        extraLibNames:     (s.extraLibNames     ?? []).filter(Boolean),
+        extraLibPaths:     (s.extraLibPaths     ?? []).filter(Boolean),
+        includePaths:      (s.includePaths      ?? []).filter(Boolean),
+        gcSections:        s.gcSections,
+        outputName:        s.outputName?.trim() || undefined,
         cDefs:             s.cDefs ?? [],
         aDefs:             s.aDefs ?? [],
         cc:                GCC,
@@ -632,7 +527,7 @@ async function testUvision(exampleDir, uvprojxPath, code) {
     const uvStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
     const heapIssues = [
       ...checkLinkerHeapStack(path.join(gnuArmDir, uvLdName), gnuArmDir),
-      ...(uvStartupFiles.length ? [...checkStartupDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)] : ['startup .s not found in GNU_ARM/']),
+      ...(uvStartupFiles.length ? [...checkStartupSectionsInDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)] : ['startup .s not found in GNU_ARM/']),
     ];
     const make = await runMake(outDir);
     // needs 3 (動態): 只有 startup .s 有 .equ Heap_Size / Stack_Size（keil2gnu 轉換後）才做此檢查；
@@ -690,7 +585,7 @@ async function testHt32Ide(exampleDir, projectDir, code) {
     const ldIssues  = checkLinkerHeapStack(path.join(gnuArmDir, ideLdName), gnuArmDir);
     const ideStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
     const startupIssues = ideStartupFiles.length
-      ? [...checkStartupDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)]
+      ? [...checkStartupSectionsInDir(gnuArmDir), ...checkThumbLsbInDir(gnuArmDir)]
       : ['startup .s not found in GNU_ARM/'];
     const heapIssues = [...ldIssues, ...startupIssues];
 
@@ -903,6 +798,17 @@ function printSummary(allResults, nOK, nFail, nSkip, reportPath) {
       if (f.detail)  console.log(`        ${f.detail.slice(0, 120)}`);
       if (f.error)   console.log(`        convert err: ${f.error.slice(0, 120)}`);
       if (f.makeOut) console.log('        make: ' + f.makeOut.trim().split('\n').pop()?.slice(0, 120));
+    }
+  }
+
+  const skips = allResults.filter(r => r.status === 'SKIP');
+  if (skips.length) {
+    console.log('\n── SKIPPED ───────────────────────────────────────────────────────────');
+    for (const s of skips) {
+      const methodStr = s.method ?? s.step ?? '?';
+      const mcuStr    = s.mcu ?? '-';
+      console.log(`  SKIP  [${methodStr}] ${s.lib || ''}/${s.example}  MCU=${mcuStr}`);
+      if (s.error) console.log(`        convert err: ${s.error.slice(0, 120)}`);
     }
   }
 

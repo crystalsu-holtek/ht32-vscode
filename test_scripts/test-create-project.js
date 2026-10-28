@@ -68,8 +68,28 @@ const {
   generateProjectFiles,
 } = require(path.join(EXT_ROOT, 'out/tools/createProject.js'));
 
-const { MIN_HEAP_SIZE } = require(path.join(EXT_ROOT, 'out/tools/uv2make.js'));
-const { locateArmGcc }  = require(path.join(EXT_ROOT, 'out/tools/toolchain.js'));
+const {
+  MIN_HEAP_SIZE,
+  lookupSramFromSettings,
+  lookupMemoryFromPdsc: extLookupMemoryFromPdsc,
+} = require(path.join(EXT_ROOT, 'out/tools/uv2make.js'));
+
+const _pdscCache = new Map();
+function lookupMemoryFromPdscCached(deviceName) {
+  if (!_pdscCache.has(deviceName))
+    _pdscCache.set(deviceName, extLookupMemoryFromPdsc(deviceName, DFP_STORAGE_PATH));
+  return _pdscCache.get(deviceName);
+}
+const { locateArmGcc } = require(path.join(EXT_ROOT, 'out/tools/toolchain.js'));
+
+const {
+  checkThumbLsbFile,
+  checkStartupSections,
+  checkLinkerStd,
+  checkLinker49x,
+  checkLinker49xHeapSize,
+  parseRamFromMakeOutput,
+} = require(path.join(__dirname, 'test-helpers.js'));
 
 // ── 2. Config ─────────────────────────────────────────────────────────────────
 const INI_FILE  = path.join(__dirname, 'fwlib-paths.ini');
@@ -159,69 +179,6 @@ function findFwlibs() {
 
 // ── 4. 第一層：靜態資源存在性 ────────────────────────────────────────────────
 
-const SETTINGS_PATH = path.join(EXT_ROOT, 'conf/Settings.ini');
-let settingsRamMap = {};
-try {
-  const ini = fs.readFileSync(SETTINGS_PATH, 'utf8');
-  const sramBlock = /\[SRAM\]([\s\S]*?)(?:\[|$)/i.exec(ini)?.[1] ?? '';
-  for (const line of sramBlock.split('\n')) {
-    const m = /^\s*([\w]+)\s*=\s*(0x[\da-fA-F]+|\d+)/i.exec(line);
-    if (m) settingsRamMap[m[1].toUpperCase()] = m[2];
-  }
-} catch {}
-
-function getAllPdscTexts() {
-  const texts = [];
-  const holtekDir = path.join(DFP_STORAGE_PATH, 'dfp', 'Holtek');
-  try {
-    for (const dfpName of fs.readdirSync(holtekDir).sort()) {
-      const dfpPath = path.join(holtekDir, dfpName);
-      try {
-        const versions = fs.readdirSync(dfpPath).sort().reverse();
-        for (const ver of versions) {
-          const verPath = path.join(dfpPath, ver);
-          const pdscFile = fs.readdirSync(verPath).find(f => f.endsWith('.pdsc'));
-          if (pdscFile) texts.push(fs.readFileSync(path.join(verPath, pdscFile), 'utf8'));
-        }
-      } catch {}
-    }
-  } catch {}
-  if (!texts.length) { console.error('ERROR: no PDSC found under', holtekDir); process.exit(1); }
-  return texts;
-}
-const allPdscTexts = getAllPdscTexts();
-
-function lookupRamFromSettings(deviceName) {
-  const prefix = deviceName.toUpperCase();
-  for (const [key, val] of Object.entries(settingsRamMap)) {
-    if (key === prefix || key.startsWith(prefix + '_')) return val;
-  }
-  return undefined;
-}
-
-function lookupMemoryFromPdsc(deviceName, useMEMChip) {
-  const tryName = (name) => {
-    if (!name) return {};
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const devRe    = new RegExp(`<device\\s+Dname="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</device>`, 'i');
-    const familyRe = new RegExp(`<subFamily\\s+DsubFamily="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</subFamily>`, 'i');
-    for (const pdscText of allPdscTexts) {
-      try {
-        const block = devRe.exec(pdscText)?.[1] ?? familyRe.exec(pdscText)?.[1];
-        if (!block) continue;
-        const rom = /<memory[^>]+id="IROM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
-        const ram = /<memory[^>]+id="IRAM1"[^>]*start="([^"]+)"[^>]*size="([^"]+)"/i.exec(block);
-        if (!rom && !ram) continue;
-        return { flashOrigin: rom?.[1], flashLength: rom?.[2], ramOrigin: ram?.[1], ramLength: ram?.[2], foundAs: name };
-      } catch {}
-    }
-    return {};
-  };
-  const r1 = tryName(deviceName);
-  if (r1.ramLength || r1.flashLength) return r1;
-  return tryName(useMEMChip);
-}
-
 const PLACEHOLDER_1024K = 0x100000;
 function parseHexOrK(s) {
   if (!s) return 0;
@@ -244,8 +201,13 @@ function staticCheckStd(fwlibPath) {
     if (!fs.existsSync(mkPath)) errs.push(`mk missing: ${path.basename(mkPath)}`);
     if (!fs.existsSync(path.join(gnuDir, 'linker.ld'))) errs.push('linker.ld missing');
 
-    const settingsRam = lookupRamFromSettings(displayName);
-    const pdsc = !settingsRam ? lookupMemoryFromPdsc(displayName, undefined) : {};
+    const settingsRam = lookupSramFromSettings(displayName, EXT_ROOT)
+      ?? lookupSramFromSettings(displayName.split('_')[0], EXT_ROOT);
+    let pdsc = lookupMemoryFromPdscCached(displayName);
+    if (!pdsc.ramLength || !pdsc.flashLength) {
+      const base = lookupMemoryFromPdscCached(displayName.split('_')[0]);
+      pdsc = { ramLength: pdsc.ramLength ?? base.ramLength, flashLength: pdsc.flashLength ?? base.flashLength };
+    }
     const ramVal = settingsRam ?? pdsc.ramLength;
     const flashVal = pdsc.flashLength;
 
@@ -286,8 +248,13 @@ function staticCheck49x(fwlibPath) {
     }
     if (!startupExists) errs.push('startup .s missing');
 
-    const settingsRam = lookupRamFromSettings(displayName) ?? lookupRamFromSettings(displayName.split('_')[0]);
-    const pdsc = !settingsRam ? lookupMemoryFromPdsc(displayName, displayName.split('_')[0]) : {};
+    const settingsRam = lookupSramFromSettings(displayName, EXT_ROOT)
+      ?? lookupSramFromSettings(displayName.split('_')[0], EXT_ROOT);
+    let pdsc = lookupMemoryFromPdscCached(displayName);
+    if (!pdsc.ramLength || !pdsc.flashLength) {
+      const base = lookupMemoryFromPdscCached(displayName.split('_')[0]);
+      pdsc = { ramLength: pdsc.ramLength ?? base.ramLength, flashLength: pdsc.flashLength ?? base.flashLength };
+    }
     const ramVal = settingsRam ?? pdsc.ramLength;
     const flashVal = pdsc.flashLength;
     const ram   = ramVal   ? `RAM=${ramVal}`   : 'RAM=ld';
@@ -303,96 +270,28 @@ function staticCheck49x(fwlibPath) {
 
 // ── 5. 第二層：產生並驗證輸出 ────────────────────────────────────────────────
 
-// temp 目錄必須和 FWLib 同磁碟（generateProjectFiles 不允許跨磁碟 relative path）
 function getTempBase(fwlibPath) {
   const drive = path.resolve(fwlibPath).slice(0, 2); // e.g. "E:"
   return path.join(drive + path.sep, 'ht32-cp-test');
 }
 const TEMP_BASES_USED = new Set();
 
-/**
- * Check Reset_Handler in a startup .s file has Thumb LSB marking.
- * Missing .type %function / .thumb_func → STT_NOTYPE → linker emits even address
- * in vector table → CPU enters ARM state → immediate HardFault.
- */
-function checkThumbLsbFile(startupPath) {
-  const issues = [];
-  if (!fs.existsSync(startupPath)) return issues;
-  const text = fs.readFileSync(startupPath, 'utf8');
-  const labelIdx = text.search(/^Reset_Handler\s*:/m);
-  if (labelIdx < 0) return issues;
-  const preceding = text.slice(Math.max(0, labelIdx - 300), labelIdx);
-  const hasType      = /\.type\s+Reset_Handler\s*,\s*%function/.test(preceding);
-  const hasThumbFunc = /\.thumb_func/.test(preceding.split('\n').slice(-5).join('\n'));
-  if (!hasType && !hasThumbFunc) {
-    issues.push(`${path.basename(startupPath)}: Reset_Handler 缺 .type %function → Thumb LSB 未設 → HardFault`);
-  }
-  return issues;
-}
-
+/** STD startup check: "aw",%nobits + Heap_Size threshold + Thumb LSB */
 function checkStartupStd(startupPath) {
   const issues = [];
   let text;
   try { text = fs.readFileSync(startupPath, 'utf8'); }
   catch { issues.push(`startup not found: ${startupPath}`); return issues; }
-
-  if (!/\.section\s+"\.heap"\s*,\s*"aw"\s*,\s*%nobits/m.test(text))
-    issues.push('.heap section 缺少 "aw",%nobits（SHF_ALLOC 未設）');
-  if (!/\.section\s+"\.stack"\s*,\s*"aw"\s*,\s*%nobits/m.test(text))
-    issues.push('.stack section 缺少 "aw",%nobits（SHF_ALLOC 未設）');
-
-  // GNU AS：.equ Heap_Size, 0x100  或  ARM AS：Heap_Size EQU 0x100
+  issues.push(...checkStartupSections(startupPath, text));
   const heapM = /(?:\.equ\s+Heap_Size\s*,\s*|Heap_Size\s+EQU\s+)(0x[\da-fA-F]+|\d+)/i.exec(text);
-  if (!heapM) issues.push('找不到 Heap_Size（.equ 或 EQU）');
+  if (!heapM)
+    issues.push('找不到 Heap_Size（.equ 或 EQU）');
   else {
-    const sz = heapM[1].startsWith('0x') ? parseInt(heapM[1], 16) : parseInt(heapM[1]);
-    if (MIN_HEAP_SIZE > 0 && sz < MIN_HEAP_SIZE) issues.push(`Heap_Size=${heapM[1]} < ${MIN_HEAP_SIZE}（最小 heap 不足）`);
+    const sz = /^0x/i.test(heapM[1]) ? parseInt(heapM[1], 16) : parseInt(heapM[1]);
+    if (MIN_HEAP_SIZE > 0 && sz < MIN_HEAP_SIZE)
+      issues.push(`Heap_Size=${heapM[1]} < ${MIN_HEAP_SIZE}（最小 heap 不足）`);
   }
   issues.push(...checkThumbLsbFile(startupPath));
-  return issues;
-}
-
-function checkLinkerStd(ldPath, startupDir) {
-  const issues = [];
-  let text;
-  try { text = fs.readFileSync(ldPath, 'utf8'); }
-  catch { issues.push(`linker script not found: ${ldPath}`); return issues; }
-
-  if (!text.includes('KEEP(*(.heap))'))  issues.push('linker script 缺少 KEEP(*(.heap))');
-  if (!text.includes('KEEP(*(.stack))')) issues.push('linker script 缺少 KEEP(*(.stack))');
-
-  // __StackTop / __HT_check_sp: accept in LD or in startup .s (STD series uses .s)
-  const startupText = (() => {
-    if (!startupDir) return '';
-    try {
-      const files = fs.readdirSync(startupDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s'));
-      return files.map(f => fs.readFileSync(path.join(startupDir, f), 'utf8')).join('\n');
-    } catch { return ''; }
-  })();
-  if (!/__StackTop\s*[=:]/.test(text) && !/__StackTop\b/.test(startupText))
-    issues.push('__StackTop 缺失（LD 和 startup .s 都找不到）');
-  if (!/__HT_check_sp\s*[=:]/.test(text) && !/__HT_check_sp\b/.test(startupText))
-    issues.push('__HT_check_sp 缺失（LD 和 startup .s 都找不到）');
-  return issues;
-}
-
-// 49x startup 無 .heap/.stack section，heap/stack 由 LD 的 ._user_heap_stack 分配
-function checkLinker49x(ldPath) {
-  const issues = [];
-  let text;
-  try { text = fs.readFileSync(ldPath, 'utf8'); }
-  catch { issues.push(`linker script not found: ${ldPath}`); return issues; }
-
-  const heapM = /_Min_Heap_Size\s*=\s*(0x[\da-fA-F]+|\d+)/i.exec(text);
-  if (!heapM) issues.push('linker script 缺少 _Min_Heap_Size');
-  else {
-    const sz = heapM[1].startsWith('0x') ? parseInt(heapM[1], 16) : parseInt(heapM[1]);
-    if (MIN_HEAP_SIZE > 0 && sz < MIN_HEAP_SIZE) issues.push(`_Min_Heap_Size=${heapM[1]} < ${MIN_HEAP_SIZE}（最小 heap 不足）`);
-  }
-  if (!text.includes('._user_heap_stack'))
-    issues.push('linker script 缺少 ._user_heap_stack section（heap/stack 未計入 RAM）');
-  if (!/__StackTop\s*=/.test(text))   issues.push('linker script 缺少 __StackTop（Stack Analysis 面板必需）');
-  if (!/__HT_check_sp\s*=/.test(text)) issues.push('linker script 缺少 __HT_check_sp（Stack Analysis 面板必需）');
   return issues;
 }
 
@@ -454,13 +353,12 @@ const HS_HEAP_DELTA  = 256;
 async function buildAndGetRam(bgDir) {
   const env = { ...process.env, PATH: GCC_BIN + ';' + (process.env.PATH || '') };
   const r = await spawnAsync(MAKE_EXE, ['-B', '--no-print-directory'], { cwd: bgDir, env });
-  const out = (r.stdout || '') + (r.stderr || '');
-  const m = /^\s*RAM\s*:\s*(\d+)\s*B/m.exec(out);
-  if (!m) {
-    const tail = out.split('\n').slice(-6).join('\n');
+  const ram = parseRamFromMakeOutput(r.stdout, r.stderr);
+  if (ram === null) {
+    const tail = ((r.stdout || '') + (r.stderr || '')).split('\n').slice(-6).join('\n');
     return { ok: false, ram: 0, err: r.error ?? `make exit=${r.status}, no RAM line\n${tail}` };
   }
-  return { ok: true, ram: parseInt(m[1]) };
+  return { ok: true, ram };
 }
 
 /** 修改檔案中 .equ SymName, value（只改 .equ，不改 #define）*/
@@ -590,7 +488,7 @@ async function generateAndCheck(fwlibPath, series, chipSuffix, displayName) {
   };
 
   try {
-    await generateProjectFiles(wizardResult, EXT_ROOT, DFP_STORAGE_PATH);
+    await generateProjectFiles(wizardResult, EXT_ROOT);
   } catch (e) {
     return { status: 'ERROR', issues: [`generateProjectFiles 拋出例外: ${e.message}`], compile: 'SKIP' };
   }
@@ -651,8 +549,11 @@ async function generateAndCheck(fwlibPath, series, chipSuffix, displayName) {
   })();
   if (!ldPath) {
     issues.push(series.startsWith('49x') ? '*_FLASH.ld 未產生（GNU_ARM/）' : 'linker.ld 未產生（GNU_ARM/）');
+  } else if (series.startsWith('49x')) {
+    issues.push(...checkLinker49x(ldPath));
+    issues.push(...checkLinker49xHeapSize(ldPath, MIN_HEAP_SIZE));
   } else {
-    issues.push(...(series.startsWith('49x') ? checkLinker49x(ldPath) : checkLinkerStd(ldPath, gnuArmDir)));
+    issues.push(...checkLinkerStd(ldPath, gnuArmDir));
   }
 
   // 輸出驗證失敗時不再進行編譯
@@ -713,7 +614,7 @@ async function generateAndCheckLib(fwlibPath, series, chipSuffix, displayName) {
   };
 
   try {
-    await generateProjectFiles(wizardResult, EXT_ROOT, DFP_STORAGE_PATH);
+    await generateProjectFiles(wizardResult, EXT_ROOT);
   } catch (e) {
     return { status: 'ERROR', issues: [`generateProjectFiles 拋出例外: ${e.message}`], compile: 'SKIP' };
   }

@@ -1,6 +1,6 @@
 # 測試腳本（test_scripts/）
 
-現有腳本：`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`ht32vs-make.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`。
+現有腳本：`test-helpers.js`、`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`ht32vs-make.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`。
 
 FWLib 路徑清單共用同一個 ini：`test_scripts/fwlib-paths.ini`。所有腳本都需先 `npm run compile` 編譯 TypeScript。
 
@@ -33,6 +33,7 @@ node test_scripts/test-compile.js --lib 5xxxx
 
 | 腳本 | 速度 | 需要 FWLib | 需要 GCC | 適合時機 |
 |------|------|-----------|---------|---------|
+| test-helpers.js | — | — | — | 共用驗證函式庫（被 import，不直接執行）|
 | test-mcu.js | 快 | 不需要 | 不需要 | 修改 HLM/cfg/OpenOCD 相關 |
 | test-create-project.js | 中 | 需要 | 預設需要（`--no-compile` 跳過）| 修改 createProject.ts |
 | create-prj.js | 中 | 需要 | 不需要 | test-compile.js 前置：建立 STD example 專案 |
@@ -181,6 +182,28 @@ test_scripts\clean-vscode-templates.bat
 batch-convert-htide.js <dir>        ← 批次轉換，確認輸出正確
 clean-vscode-templates.bat          ← 清除產出，template 回到只剩兩個 JSON
 ```
+
+---
+
+## test-helpers.js — 共用輸出驗證函式庫
+
+供 `test-compile.js` 與 `test-create-project.js` 共用，**不可直接執行**。所有函式只讀取 extension 產生的檔案（startup .s、linker .ld）並回傳問題字串陣列，不重複 extension 的轉換邏輯。
+
+| 函式 | 說明 |
+|------|------|
+| `checkThumbLsbFile(path)` | startup .s 的 Reset_Handler 是否標記 `.type %function`（缺少→HardFault）|
+| `checkThumbLsbInDir(dir)` | 掃描目錄下所有 `startup_*.s` 的 Thumb LSB |
+| `checkStartupSections(path, content?)` | startup .s 的 `.heap`/`.stack` 區段是否有 `"aw",%nobits`；`content` 選填，避免重複讀檔 |
+| `checkStartupSectionsInDir(dir)` | 掃描目錄下所有 startup 的 `"aw",%nobits` |
+| `checkLinkerStd(ldPath, startupDir)` | STD linker：有無 `KEEP(*(.heap))`/`KEEP(*(.stack))`、`__StackTop`、`__HT_check_sp` |
+| `checkLinker49x(ldPath)` | 49x linker：有無 `._user_heap_stack`、`__StackTop`、`__HT_check_sp` |
+| `checkLinker49xHeapSize(ldPath, minHeapSize)` | 49x linker：`_Min_Heap_Size` 數值是否 ≥ 門檻（`minHeapSize=0` 表示跳過數值比對）|
+| `readLdSym(content, sym)` | 從 LD 文字讀取 `sym = val;`，回傳整數或 null |
+| `readStartupEquFromDir(dir, sym)` | 從 startup .s 的 `.equ` 讀取符號值 |
+| `readHeapStackSizes(dir, ldPath)` | 自動偵測 STD/49x，回傳 `{ heap, stack }` 位元組數（用於 RAM delta 驗證）|
+| `parseRamFromMakeOutput(stdout, stderr)` | 從 `--print-memory-usage` 輸出解析 RAM 位元組數 |
+
+**修改時機**：當 extension 改變 startup .s / linker 格式時，同步更新對應的 check 函式。
 
 ---
 
