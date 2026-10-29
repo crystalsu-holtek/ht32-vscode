@@ -375,7 +375,7 @@ async function runWingetWithProgress(
       title,
       cancellable: false,
     },
-    () =>
+    (progress) =>
       new Promise<boolean>((resolve) => {
         logInfo(`[winget] start: winget ${args.join(' ')}`);
         const child = spawn('winget', args, {
@@ -383,18 +383,25 @@ async function runWingetWithProgress(
           stdio: ['ignore', 'pipe', 'pipe'],
         });
 
+        // eslint-disable-next-line no-control-regex
+        const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+
         child.stdout.on('data', (chunk: Buffer) => {
-          const text = chunk.toString('utf8').replace(/\r/g, '').trim();
-          // 只挑幾行乾淨的 log，不把整個 TUI 丟出來
-          if (/Downloading|Installing|Verifying|Acquiring/i.test(text)) {
-            logInfo(`[winget] ${text}`);
+          for (const raw of chunk.toString('utf8').split(/\r\n|\r|\n/)) {
+            const clean = stripAnsi(raw).trim();
+            if (clean && /Downloading|Installing|Verifying|Acquiring/i.test(clean)) {
+              logInfo(`[winget] ${clean}`);
+              progress.report({ message: clean });
+            }
           }
         });
 
         child.stderr.on('data', (chunk: Buffer) => {
-          const text = chunk.toString('utf8').replace(/\r/g, '').trim();
-          if (text) {
-            logWarn(`[winget:stderr] ${text}`);
+          for (const raw of chunk.toString('utf8').split(/\r\n|\r|\n/)) {
+            const clean = stripAnsi(raw).trim();
+            if (clean) {
+              logWarn(`[winget:stderr] ${clean}`);
+            }
           }
         });
 
@@ -415,7 +422,6 @@ async function runWingetWithProgress(
  * 使用 winget 安裝工具
  * ────────────────────────────────────── */
 
-/** 使用 winget 安裝 MSYS2 + pacman make，然後再用 locateMake 找 */
 /** 使用 winget 安裝 LLVM-Mingw（內含 make.exe），然後再用 locateMake 找 */
 async function installMakeWithWinget(): Promise<string | undefined> {
   if (process.platform !== 'win32') {
@@ -428,6 +434,7 @@ async function installMakeWithWinget(): Promise<string | undefined> {
     [
       'install', '--id', 'MartinStorsjo.LLVM-MinGW.UCRT',
       '--source', 'winget',
+      '--disable-interactivity',
       '--accept-source-agreements',
       '--accept-package-agreements',
     ]
@@ -438,7 +445,6 @@ async function installMakeWithWinget(): Promise<string | undefined> {
     return undefined;
   }
 
-  // 安裝完之後，統一交給 locateMake() 做路徑搜尋
   const makePath = await locateMake();
   if (!makePath) {
     logWarn('After installing LLVM-Mingw, still cannot locate make.exe');
@@ -448,70 +454,6 @@ async function installMakeWithWinget(): Promise<string | undefined> {
   logInfo(`installMakeWithWinget: using make at ${makePath}`);
   return makePath;
 }
-
-/*async function installMakeWithWinget(): Promise<string | undefined> {
-  if (process.platform !== 'win32') {
-    logWarn('installMakeWithWinget: non-Windows platform, skip.');
-    return undefined;
-  }
-
-  // 安裝 msys2.msys2（你之前就用這個）
-  const okMsys = await runWingetWithProgress(
-    'Installing MSYS2 (for GNU make)...',
-    [
-      'install', '--id', 'msys2.msys2',
-      '--source', 'winget',
-      '--accept-source-agreements',
-      '--accept-package-agreements',
-    ]
-  );
-  if (!okMsys) {
-    logWarn('MSYS2 installation failed or skipped.');
-    return undefined;
-  }
-
-  // 安裝 make：透過 pacman
-  const bashPath = 'C:\\msys64\\usr\\bin\\bash.exe';
-  if (!fs.existsSync(bashPath)) {
-    logWarn(`Cannot find MSYS2 bash at ${bashPath}`);
-    return undefined;
-  }
-
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: 'Installing make via pacman (MSYS2)...',
-      cancellable: false,
-    },
-    () =>
-      new Promise<void>((resolve) => {
-        logInfo('[pacman] pacman -Sy --noconfirm make');
-        const child = spawn(bashPath, ['-lc', 'pacman -Sy --noconfirm make'], {
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-
-        child.stdout.on('data', (buf: Buffer) => {
-          const text = buf.toString('utf8').replace(/\r/g, '').trim();
-          if (text) logInfo(`[pacman] ${text}`);
-        });
-        child.stderr.on('data', (buf: Buffer) => {
-          const text = buf.toString('utf8').replace(/\r/g, '').trim();
-          if (text) logWarn(`[pacman:stderr] ${text}`);
-        });
-        child.on('exit', () => resolve());
-        child.on('error', () => resolve());
-      })
-  );
-
-  // 再 locate 一次
-  const makePath = await locateMake();
-  if (!makePath) {
-    logWarn('After MSYS2 pacman make, still cannot locate GNU make.');
-    return undefined;
-  }
-  return makePath;
-}*/
 
 
 
@@ -527,6 +469,7 @@ async function installArmGccWithWinget(): Promise<string | undefined> {
     [
       'install', '-e', '--id', 'Arm.GnuArmEmbeddedToolchain',
       '--source', 'winget',
+      '--disable-interactivity',
       '--accept-source-agreements',
       '--accept-package-agreements',
     ]
@@ -536,7 +479,8 @@ async function installArmGccWithWinget(): Promise<string | undefined> {
     return undefined;
   }
 
-  // 安裝完再找一次
+  // 重置 cache，讓 locateArmGcc() 重新搜尋剛安裝的工具
+  _gccPathCache = undefined;
   const gccPath = await locateArmGcc();
   if (!gccPath) {
     logWarn('After winget Arm.GnuArmEmbeddedToolchain, still cannot locate arm-none-eabi-gcc.');
@@ -629,6 +573,7 @@ export async function ensureToolchain(
   }
 
   // 如果沒有 gcc，試著用 winget 安裝
+  const hadGcc = !!gccPath;
   if (!gccPath && process.platform === 'win32') {
     gccPath   = await installArmGccWithWinget();
     installed = installed || !!gccPath;
@@ -645,8 +590,17 @@ export async function ensureToolchain(
   updateSettingsJson(rootFolder, makePath, gccPath);
 
   if (installed && onInstalled) {
-    vscode.window.showInformationMessage('Toolchain installed. Regenerating project files...');
+    logInfo('Toolchain installed. Regenerating project files...');
     await onInstalled(makePath, gccPath);
+  }
+
+  // restart clangd when gcc is newly available so --query-driver takes effect immediately
+  const gccJustInstalled = !hadGcc && !!gccPath;
+  if (gccJustInstalled) {
+    void vscode.commands.executeCommand('clangd.restart').then(
+      () => logInfo('clangd restarted after toolchain install.'),
+      (err) => logInfo(`clangd.restart not available or failed: ${err}`),
+    );
   }
 
   vscode.window.showInformationMessage('HT32 Toolchain check complete. Paths written to .vscode/settings.json.');
