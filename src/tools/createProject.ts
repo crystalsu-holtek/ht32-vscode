@@ -1534,7 +1534,7 @@ export async function generateProjectFiles(
   });
 
   // compile_commands.json — read from .list files (written above) to stay in sync
-  writeCCDbFromLists(bgDir, {
+  await writeCCDbFromLists(bgDir, {
     armCore,
     fpu:        hasFpuHw ? 'fpv4-sp-d16' : undefined,
     floatAbi:   hasFpuHw ? 'hard' : 'soft',

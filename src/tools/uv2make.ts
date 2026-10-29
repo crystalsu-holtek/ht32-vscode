@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { scatter2ld } from "./scatter2ld";
-import { semverCmp, writeProjectLists } from './utils';
+import { semverCmp, writeProjectLists, resolveInclude, parseIncludesList } from './utils';
 import { readProjectSettings, writeProjectSettings, ProjectSettings } from "./settingsWebview";
 
 /* ──────────────────────────────────────
@@ -668,7 +668,7 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
     isLibrary:     !!infoRaw.isLibrary,
     comment:       'Converted from Keil uVision.',
   }));
-  writeCompileCommands(outDirAbs, effectiveOpts, info);
+  await writeCompileCommands(outDirAbs, effectiveOpts, info);
 
   const metaGroups: Record<string, string[]> = {};
   if (infoRaw.groups) {
@@ -2489,7 +2489,7 @@ export interface CCEntry {
  * - All paths normalised to forward slashes
  * - Only .c / .cpp sources (skip .s / .h)
  */
-export function buildCCDb(opts: {
+export async function buildCCDb(opts: {
   bgDir:        string;
   compiler?:    string;    // default 'arm-none-eabi-gcc'
   armCore:      string;
@@ -2502,7 +2502,7 @@ export function buildCCDb(opts: {
   absSources:   string[];  // absolute paths — filtered to .c/.cpp internally
   isystemPaths?: string[]; // prepended as -isystem flags after --target=arm-none-eabi
   gcSections?:  boolean;
-}): CCEntry[] {
+}): Promise<CCEntry[]> {
   const compiler = opts.compiler || 'arm-none-eabi-gcc';
   const fwdDir   = opts.bgDir.replace(/\\/g, '/');
   const hasFpu   = opts.fpu && opts.fpu !== 'none';
@@ -2520,13 +2520,40 @@ export function buildCCDb(opts: {
   const incFlags = opts.includes.map(p => `-I${p.replace(/\\/g, '/')}`);
   const flags    = [...baseFlags, ...defFlags, ...incFlags];
 
-  return opts.absSources
-    .filter(s => /\.(c|cpp)$/i.test(s))
-    .map(s => {
-      const fwdFile = s.replace(/\\/g, '/');
-      const isystemFlags = (opts.isystemPaths ?? []).map(p => `-isystem${p}`);
-      return { directory: fwdDir, file: fwdFile, arguments: [compiler, '--target=arm-none-eabi', ...isystemFlags, ...flags, '-c', fwdFile] };
-    });
+  const allSources = await expandIncludedCFiles(opts.absSources.filter(s => /\.(c|cpp)$/i.test(s)), opts.includes);
+
+  return allSources.map(s => {
+    const fwdFile = s.replace(/\\/g, '/');
+    const isystemFlags = (opts.isystemPaths ?? []).map(p => `-isystem${p}`);
+    return { directory: fwdDir, file: fwdFile, arguments: [compiler, '--target=arm-none-eabi', ...isystemFlags, ...flags, '-c', fwdFile] };
+  });
+}
+
+async function expandIncludedCFiles(sources: string[], searchPaths: string[] = []): Promise<string[]> {
+  const seen = new Set(sources.map(s => s.replace(/\\/g, '/').toLowerCase()));
+  const result = [...sources];
+  let frontier = [...sources];
+  while (frontier.length) {
+    const contents = await Promise.all(frontier.map(src =>
+      fs.promises.readFile(src, 'utf8').catch(() => '')
+    ));
+    const next: string[] = [];
+    for (const [i, content] of contents.entries()) {
+      if (!content) continue;
+      for (const m of content.matchAll(/#include\s+"([^"]+\.c)"/gi)) {
+        const abs = resolveInclude(m[1], path.dirname(frontier[i]), searchPaths);
+        if (!abs) continue;
+        const key = abs.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          result.push(abs);
+          next.push(abs);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return result;
 }
 
 /**
@@ -2534,7 +2561,7 @@ export function buildCCDb(opts: {
  * Single source of truth: all conversion paths write .list files first, then call this.
  * The Settings Webview regeneration command uses the same function.
  */
-export function writeCCDbFromLists(bgDir: string, opts: {
+export async function writeCCDbFromLists(bgDir: string, opts: {
   compiler?:    string;
   armCore:      string;
   fpu?:         string;
@@ -2543,14 +2570,13 @@ export function writeCCDbFromLists(bgDir: string, opts: {
   debugInfo?:   string;
   gccFullPath?: string;
   gcSections?:  boolean;
-}): void {
+}): Promise<void> {
   const gccFull = opts.gccFullPath?.replace(/\\/g, '/');
   const compiler = gccFull ?? opts.compiler;
   const isystemPaths = gccFull ? computeIsystemPaths(gccFull) : undefined;
   const read = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 
-  const includes = [...read(path.join(bgDir, 'includes.list')).matchAll(/-I(?:"([^"]+)"|(\S+))/g)]
-    .map(m => path.resolve(bgDir, m[1] ?? m[2]).replace(/\\/g, '/'));
+  const includes = parseIncludesList(bgDir, read(path.join(bgDir, 'includes.list')));
   const defines  = [
     ...[...read(path.join(bgDir, 'defines.list')).matchAll(/-D([^\s]+)/g)].map(m => m[1]),
     ...[...read(path.join(bgDir, 'adefines.list')).matchAll(/-D([^\s]+)/g)].map(m => m[1]),
@@ -2559,7 +2585,7 @@ export function writeCCDbFromLists(bgDir: string, opts: {
     .split('\n').map(l => l.trim()).filter(Boolean)
     .map(rel => path.resolve(bgDir, rel));
 
-  const ccdb = buildCCDb({
+  const ccdb = await buildCCDb({
     bgDir, compiler,
     armCore:      opts.armCore,
     fpu:          opts.fpu,
@@ -2574,9 +2600,9 @@ export function writeCCDbFromLists(bgDir: string, opts: {
   fs.writeFileSync(path.join(bgDir, 'compile_commands.json'), JSON.stringify(ccdb, null, 2));
 }
 
-function writeCompileCommands(outDir: string, opts: { cc?: string; mcu?: string; fpu?: string; floatAbi?: string }, _info?: Extracted) {
+async function writeCompileCommands(outDir: string, opts: { cc?: string; mcu?: string; fpu?: string; floatAbi?: string }, _info?: Extracted) {
   const s = readProjectSettings(outDir);
-  writeCCDbFromLists(outDir, {
+  await writeCCDbFromLists(outDir, {
     compiler:     opts.cc,
     armCore:      opts.mcu ?? 'cortex-m0plus',
     fpu:          (opts.fpu && opts.fpu !== 'none') ? opts.fpu : undefined,
@@ -3446,7 +3472,7 @@ export function readProjectMeta(buildGenDir: string): Meta | null {
  * Update SRCS, per-file compile rules, flags, and compile_commands.json from meta.
  * VS Code dependencies are injected via opts so this function can run outside the extension.
  */
-export function refreshDerivedFiles(
+export async function refreshDerivedFiles(
   buildGenDir: string,
   meta: Meta,
   opts?: {
@@ -3454,7 +3480,7 @@ export function refreshDerivedFiles(
     gccPath?: string;
     onWarn?: (msg: string) => void;
   }
-): void {
+): Promise<void> {
   const buildGenName = path.basename(buildGenDir);
   const wsRoot      = path.dirname(path.dirname(buildGenDir));
   const bgParentDir = path.dirname(buildGenDir);
@@ -3578,7 +3604,7 @@ export function refreshDerivedFiles(
   }
 
   try {
-    writeCCDbFromLists(buildGenDir, {
+    await writeCCDbFromLists(buildGenDir, {
       armCore:     bgProjSettings.mcu || 'cortex-m0plus',
       fpu:         (bgProjSettings.fpu && bgProjSettings.fpu !== 'none') ? bgProjSettings.fpu : undefined,
       floatAbi:    bgProjSettings.floatAbi as any || undefined,

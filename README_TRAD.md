@@ -581,8 +581,8 @@ int main(void) {
 | `HT32: Clean` | 清除編譯輸出 |
 | `HT32: Open Settings` | 開啟專案設定 |
 | `HT32: Generate Build & Debug Config` | 重新產生 `tasks.json` 與 `launch.json` |
-| `HT32: Regenerate compile_commands.json` | 重新產生供 clangd 使用的 `compile_commands.json` |
-| `HT32: Regenerate Makefile` | 從 `project.meta.json` 重新產生 `Makefile`；用於 Makefile 遺失或格式過舊時復原 |
+| `HT32: Regenerate compile_commands.json` | 重新產生供 clangd 使用的 `compile_commands.json`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
+| `HT32: Regenerate Makefile` | 從 `project.meta.json` 重新產生 `Makefile`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
 | `HT32: Close Project` | 關閉目前載入的專案 |
 | `HT32: Clear Recent Projects` | 清除最近開啟清單 |
 | `HT32: Refresh Stack Usage` | 手動刷新 Stack Usage Analysis 面板 |

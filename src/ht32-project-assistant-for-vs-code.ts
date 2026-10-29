@@ -10,7 +10,7 @@ import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSe
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
 import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
-import { semverCmp, writeProjectLists } from './tools/utils';
+import { semverCmp, writeProjectLists, resolveInclude, parseIncludesList } from './tools/utils';
 import { syncAfterBuildBats } from './tools/afterbuildSync';
 import * as https from 'https';
 import AdmZip = require('adm-zip');
@@ -420,15 +420,17 @@ export async function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ht32.regenerateMakefile', async () => {
       const root = currentWsRoot();
       if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
-      const result = await pickBgDir(root, { placeHolder: 'Select project to regenerate' });
+      const result = await pickBgDirs(root, { allowAll: true, placeHolder: 'Select project to regenerate Makefile' });
       if (!result) return;
-      const bgDir = path.join(result.parent, result.chosen);
-      if (!readProjectMeta(bgDir)) {
-        vscode.window.showErrorMessage(`project.meta.json not found in ${result.chosen} — re-convert the project first.`);
-        return;
+      const { parent, targets, allBgDirs } = result;
+      const valid: string[] = [], missing: string[] = [];
+      for (const d of targets) {
+        (readProjectMeta(path.join(parent, d)) ? valid : missing).push(d);
       }
-      await initProjectsFromMeta([bgDir], root, { force: true });
-      vscode.window.showInformationMessage(`Makefile regenerated: ${result.chosen}`);
+      if (missing.length) vscode.window.showWarningMessage(`Skipped (no project.meta.json): ${missing.join(', ')}`);
+      if (!valid.length) return;
+      await initProjectsFromMeta(valid.map(d => path.join(parent, d)), root, { force: true });
+      vscode.window.showInformationMessage(`Makefile regenerated: ${formatTargetLabel(valid, allBgDirs)}`);
     }),
     vscode.commands.registerCommand('ht32.build', () => smartRunTask('build')),
     vscode.commands.registerCommand('ht32.runClean', () => smartRunTask('clean')),
@@ -1400,11 +1402,11 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string, opts?: { f
 
       // 2. 從 meta 更新 SRCS + sources.list + includes/defines/adefines.list + compile_commands.json
       //    （refreshDerivedFiles 內部已呼叫 regenerateMakefileFlags 寫三個 list 檔）
-      refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, ..._vsOpts() });
+      await refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, ..._vsOpts() });
 
       // 3. 以 locateArmGcc() 的完整路徑（含 auto-detect）重寫 compile_commands.json，
       //    確保 -isystem 指向正確的 gcc header 目錄（refreshDerivedFiles 內部只讀 VS Code config）
-      writeCCDbFromLists(bgDir, {
+      await writeCCDbFromLists(bgDir, {
         gccFullPath: gcc ?? undefined,
         armCore:     s.mcu ?? 'cortex-m3',
         fpu:         s.fpu,
@@ -2381,63 +2383,84 @@ async function generateTasksLaunchCommand(ctx: vscode.ExtensionContext) {
   }
 }
 
-/** bgDirs 掃描 + QuickPick 共用 helper（regenerateMakefile / regenerateCompileCommands 共用） */
-async function pickBgDir(
+/**
+ * bgDirs 掃描 + QuickPick 共用 helper。
+ * 單一專案直接回傳，多專案顯示 QuickPick；allowAll=true 時在最上方加「All Projects」選項。
+ * 回傳 targets（使用者選取的 dir 名稱陣列）和 allBgDirs（全部，供 writeMakefileToolsSettings 用）。
+ */
+async function pickBgDirs(
   root: string,
-  opts: { requireMakefile?: boolean; placeHolder?: string } = {}
-): Promise<{ parent: string; chosen: string; bgDirs: string[] } | undefined> {
+  opts: { requireMakefile?: boolean; allowAll?: boolean; placeHolder?: string } = {}
+): Promise<{ parent: string; targets: string[]; allBgDirs: string[] } | undefined> {
   const parent = bgParent(root);
   const projectOrder = readProjectOrder(parent);
   const allowedBgs = projectOrder ? new Set(projectOrder) : undefined;
-  let bgDirs: string[] = [];
+  let allBgDirs: string[] = [];
   try {
-    bgDirs = fs.readdirSync(parent)
+    allBgDirs = fs.readdirSync(parent)
       .filter(d => isBgDir(parent, d)
                 && (!opts.requireMakefile || fs.existsSync(path.join(parent, d, 'Makefile')))
                 && (!allowedBgs || allowedBgs.has(d)));
     const orderMap = projectOrder ? new Map(projectOrder.map((p, i) => [p, i])) : undefined;
-    bgDirs.sort((a, b) => ((orderMap?.get(a) ?? 9999) - (orderMap?.get(b) ?? 9999)) || a.localeCompare(b));
+    allBgDirs.sort((a, b) => ((orderMap?.get(a) ?? 9999) - (orderMap?.get(b) ?? 9999)) || a.localeCompare(b));
   } catch {}
-  if (bgDirs.length === 0) { vscode.window.showErrorMessage('No Project directory found.'); return undefined; }
-  let chosen = bgDirs[0];
-  if (bgDirs.length > 1) {
-    const picked = await vscode.window.showQuickPick(bgDirs, { placeHolder: opts.placeHolder ?? 'Select project' });
-    if (!picked) return undefined;
-    chosen = picked;
-  }
-  return { parent, chosen, bgDirs };
+  if (allBgDirs.length === 0) { vscode.window.showErrorMessage('No Project directory found.'); return undefined; }
+
+  if (allBgDirs.length === 1) return { parent, targets: allBgDirs, allBgDirs };
+
+  const ALL = '$(checklist) All Projects';
+  const items = opts.allowAll ? [ALL, ...allBgDirs] : allBgDirs;
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: opts.placeHolder ?? 'Select project' });
+  if (!picked) return undefined;
+  const targets = picked === ALL ? allBgDirs : [picked];
+  return { parent, targets, allBgDirs };
+}
+
+/** Format "all projects" / "N projects" / single-project label for regeneration messages. */
+function formatTargetLabel(targets: string[], allBgDirs: string[]): string {
+  if (targets.length === 1) return targets[0];
+  if (targets.length === allBgDirs.length) return 'all projects';
+  return `${targets.length} projects`;
 }
 
 /** Regenerate compile_commands.json from sources.list / includes.list / defines.list */
 async function regenerateCompileCommandsCommand() {
   const root = currentWsRoot();
   if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
-
-  const result = await pickBgDir(root, { requireMakefile: true, placeHolder: 'Select project to regenerate' });
+  const result = await pickBgDirs(root, { requireMakefile: true, allowAll: true, placeHolder: 'Select project to regenerate compile_commands.json' });
   if (!result) return;
-  const { parent, chosen, bgDirs } = result;
-
-  const bgDir = path.join(parent, chosen);
+  const { parent, targets, allBgDirs } = result;
 
   await withProgress('Regenerate compile_commands.json', async () => {
-    const ps = readProjectSettings(bgDir);
-    if (!ps.mcu) {
-      vscode.window.showErrorMessage('MCU not set in project settings. Please configure the project first.'); return;
-    }
-
     const gccPath = await locateArmGcc();
-    writeCCDbFromLists(bgDir, {
-      armCore:  ps.mcu,
-      fpu:      ps.fpu || undefined,
-      floatAbi: ps.floatAbi as any || undefined,
-      optimization: 'Os',
-      gccFullPath: gccPath ?? undefined,
-      gcSections:  ps.gcSections,
-    });
-
-    writeMakefileToolsSettings(root, bgDirs, gccPath ?? undefined);
-
-    vscode.window.showInformationMessage(`compile_commands.json regenerated for ${chosen}.`);
+    const failed: string[] = [];
+    for (const chosen of targets) {
+      const bgDir = path.join(parent, chosen);
+      const ps = readProjectSettings(bgDir);
+      if (!ps.mcu) { failed.push(chosen); continue; }
+      await writeCCDbFromLists(bgDir, {
+        armCore:     ps.mcu,
+        fpu:         ps.fpu || undefined,
+        floatAbi:    ps.floatAbi as any || undefined,
+        optimization: ps.optimizationLevel || undefined,
+        gccFullPath: gccPath ?? undefined,
+        gcSections:  ps.gcSections,
+      });
+    }
+    const ok = targets.filter(t => !failed.includes(t));
+    if (ok.length) {
+      writeMakefileToolsSettings(root, allBgDirs, gccPath ?? undefined);
+    }
+    if (failed.length) {
+      if (ok.length === 0 && targets.length === 1) {
+        vscode.window.showErrorMessage(`MCU not set in ${failed[0]} — configure the project first.`);
+      } else {
+        vscode.window.showWarningMessage(`MCU not set, skipped: ${failed.join(', ')}`);
+      }
+    }
+    if (ok.length) {
+      vscode.window.showInformationMessage(`compile_commands.json regenerated for ${formatTargetLabel(ok, allBgDirs)}.`);
+    }
   });
 }
 
@@ -4405,7 +4428,7 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
       const meta = readProjectMeta(bgDir);
       if (meta) {
         // per-file rules (--redefine-sym, -mpure-code) + CFLAGS/LDFLAGS + CCDb in one pass
-        refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, gccPath: gccPathForCCDb ?? undefined, onWarn: (msg: string) => vscode.window.showWarningMessage(msg) });
+        await refreshDerivedFiles(bgDir, meta, { skipElfInvalidation: true, gccPath: gccPathForCCDb ?? undefined, onWarn: (msg: string) => vscode.window.showWarningMessage(msg) });
         continue;
       }
       // fallback: no project.meta.json (very old projects), patch CFLAGS/LDFLAGS only
@@ -4442,7 +4465,7 @@ async function regenAllMakefileFlags(root: string, limitToBgs?: Array<{name: str
         outputName:      bgProjSettings.outputName?.trim() || undefined,
         cc:              gccPathForCCDb || undefined,
       });
-      writeCCDbFromLists(bgDir, {
+      await writeCCDbFromLists(bgDir, {
         armCore:      bgProjSettings.mcu,
         fpu:          explicitFpu,
         floatAbi:     explicitFloatAbi as any || undefined,
@@ -4905,6 +4928,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private projects: ProjectEntry[] = [];
   private _clangdActiveBgDir = '';
   private _loading = false;
+  private readonly _includesListCache = new Map<string, Promise<string[]>>();
 
   setRoot(r: string | undefined) {
     this.root = r;
@@ -4936,6 +4960,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
   refresh() {
     this._loading = false;
+    this._includesListCache.clear();
     if (!this.root) { this._em.fire(); return; }
     this.projects = this.scanProjects(this.root);
     this._em.fire();
@@ -5035,14 +5060,14 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
   getTreeItem(el: vscode.TreeItem) { return el; }
 
-  getChildren(el?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
+  async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (!this.root) {
       if (this._loading && !el) {
         const item = new vscode.TreeItem('Loading project...', vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('loading~spin');
-        return Promise.resolve([item]);
+        return [item];
       }
-      return Promise.resolve([]);
+      return [];
     }
 
     // 根層：.vscode 節點（顯示 .ht32vs 檔名）+ 每個 build-gen*/ 專案節點
@@ -5070,7 +5095,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         item.tooltip = proj.buildGenDir + (isClangdActive ? '\n● clangd active' : '');
         return item;
       }));
-      return Promise.resolve(items);
+      return items;
     }
 
     // .vscode 節點 → 直接子 .json 檔
@@ -5091,36 +5116,39 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
             return it;
           });
       } catch {}
-      return Promise.resolve(jsonItems);
+      return jsonItems;
     }
 
-    if (this.projects.length === 0) return Promise.resolve([]);
+    if (this.projects.length === 0) return [];
 
     // 專案節點 → group 節點
     if ((el as any).contextValue === 'project') {
       const proj = this.projects.find(p => p.buildGenDir === el.id);
-      if (!proj) return Promise.resolve([]);
-      return Promise.resolve(this.buildGroupItems(proj));
+      if (!proj) return [];
+      return this.buildGroupItems(proj);
     }
 
     // group 節點 → file 節點（id 格式：'buildGenDir::groupName'）
     if ((el as any).contextValue === 'group') {
       const sep = (el.id || '').indexOf('::');
-      if (sep < 0) return Promise.resolve([]);
+      if (sep < 0) return [];
       const buildGenDir = el.id!.slice(0, sep);
       const groupName   = el.id!.slice(sep + 2);
       const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
-      if (!proj) return Promise.resolve([]);
+      if (!proj) return [];
       const files = this.getFilesOfGroup(proj, groupName);
       // meta.groups paths are relative to project root (grandparent of build-gen dir),
       // which is always path.dirname(path.dirname(buildGenDir)) in both old and new layout.
       const fileBase = path.dirname(path.dirname(buildGenDir));
-      return Promise.resolve(files.map(f => {
-        const it = new vscode.TreeItem(path.basename(f), vscode.TreeItemCollapsibleState.None);
+      return files.map(f => {
+        const absFile = path.resolve(fileBase, f);
+        const isCSrc  = /\.(c|cpp)$/i.test(f);
+        const collState = isCSrc ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+        const it = new vscode.TreeItem(path.basename(f), collState);
         it.id           = `${buildGenDir}::${groupName}::${f}`;
-        it.contextValue = f.toLowerCase().endsWith('.ld') ? 'linkerFile' : 'file';
-        it.resourceUri  = vscode.Uri.file(path.resolve(fileBase, f));
-        it.tooltip      = path.resolve(fileBase, f);
+        it.contextValue = f.toLowerCase().endsWith('.ld') ? 'linkerFile' : (isCSrc ? 'sourceFile' : 'file');
+        it.resourceUri  = vscode.Uri.file(absFile);
+        it.tooltip      = absFile;
         const descParts: string[] = [];
 
         const fo = proj.meta?.fileOptions?.[f];
@@ -5139,10 +5167,73 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           it.command = { command: 'vscode.open', title: 'Open', arguments: [it.resourceUri] };
         }
         return it;
-      }));
+      });
     }
 
-    return Promise.resolve([]);
+    // sourceFile 節點 → include 子節點（#include "..." 的本地 header）
+    if ((el as any).contextValue === 'sourceFile') {
+      return this._getIncludeChildren(el);
+    }
+
+    return [];
+  }
+
+  private async _getIncludeChildren(el: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    const parsed = parseFileItemId(el.id || '');
+    if (!parsed) return [];
+    const { buildGenDir, filePath } = parsed;
+    const fileBase    = path.dirname(path.dirname(buildGenDir));
+    const absFilePath = path.resolve(fileBase, filePath);
+
+    // cache 存 Promise 避免並發展開時重複讀檔
+    let p = this._includesListCache.get(buildGenDir);
+    if (!p) {
+      p = fs.promises.readFile(path.join(buildGenDir, 'includes.list'), 'utf8')
+        .then(content => parseIncludesList(buildGenDir, content))
+        .catch(() => [] as string[]);
+      this._includesListCache.set(buildGenDir, p);
+    }
+    const searchPaths = await p;
+
+    const items: vscode.TreeItem[] = [];
+    const seen = new Set<string>();
+    try {
+      const content = await fs.promises.readFile(absFilePath, 'utf8');
+      const srcDir  = path.dirname(absFilePath);
+      for (const m of content.matchAll(/#include\s+"([^"]+)"/g)) {
+        const rel = m[1];
+        const abs = resolveInclude(rel, srcDir, searchPaths);
+        if (!abs) {
+          const missingKey = rel.toLowerCase();
+          if (seen.has(`?${missingKey}`)) continue;
+          seen.add(`?${missingKey}`);
+          const it = new vscode.TreeItem(rel, vscode.TreeItemCollapsibleState.None);
+          it.id          = `${el.id}\x00MISS\x00${rel}`;
+          it.contextValue = 'includeFileMissing';
+          it.tooltip     = `Include not found: ${rel}`;
+          it.iconPath    = new vscode.ThemeIcon('question', new vscode.ThemeColor('disabledForeground'));
+          items.push(it);
+          continue;
+        }
+        const key = abs.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const uri  = vscode.Uri.file(abs);
+        const ext  = path.extname(abs).toLowerCase();
+        const isHdr = /^\.(h|hpp|hh|hxx)$/.test(ext);
+        const it   = new vscode.TreeItem(path.basename(abs), vscode.TreeItemCollapsibleState.None);
+        it.id          = `${el.id}\x00INC\x00${abs}`;
+        it.contextValue = 'includeFile';
+        it.resourceUri  = uri;
+        it.tooltip      = abs;
+        it.iconPath     = isHdr
+          ? new vscode.ThemeIcon('symbol-file', new vscode.ThemeColor('symbolIcon.namespaceForeground'))
+          : new vscode.ThemeIcon('file-code');
+        it.command     = { command: 'vscode.open', title: 'Open', arguments: [uri] };
+        items.push(it);
+      }
+    } catch {}
+    return items;
   }
 
   private buildGroupItems(proj: ProjectEntry): vscode.TreeItem[] {

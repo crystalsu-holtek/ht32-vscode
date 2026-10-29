@@ -36,6 +36,32 @@ export function newestVersion(versions: string[]): string | undefined {
   return [...versions].sort(semverCmp)[versions.length - 1];
 }
 
+/**
+ * Parse an includes.list file content and return absolute resolved paths.
+ * Handles both quoted `-I"path"` and unquoted `-Ipath` forms.
+ */
+export function parseIncludesList(baseDir: string, content: string): string[] {
+  const paths: string[] = [];
+  for (const m of content.matchAll(/-I(?:"([^"]+)"|(\S+))/g)) {
+    const p = m[1] ?? m[2];
+    if (p) paths.push(path.resolve(baseDir, p).replace(/\\/g, '/'));
+  }
+  return paths;
+}
+
+/**
+ * Resolve a `#include "rel"` path to an absolute path.
+ * Tries `srcDir` first, then each entry in `searchPaths` in order.
+ * Returns the first existing path, or `undefined` if none found.
+ */
+export function resolveInclude(rel: string, srcDir: string, searchPaths: string[] = []): string | undefined {
+  for (const base of [srcDir, ...searchPaths]) {
+    const candidate = path.resolve(base, rel).replace(/\\/g, '/');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 /** Write includes.list / defines.list / adefines.list (pre-formatted strings). */
 export function writeProjectLists(dir: string, lists: {
   includes: string;

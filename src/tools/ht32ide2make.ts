@@ -1145,7 +1145,7 @@ export async function convertHt32IdeProject(
   fs.writeFileSync(path.join(bgDir, 'Makefile'), generateMakefile(patchedResult, bgDir, gccPath, effectiveExtraCFlags, gcSections));
   writeHt32IdeLists(bgDir, patchedResult);
 
-  writeCCDbFromLists(bgDir, {
+  await writeCCDbFromLists(bgDir, {
     armCore:      patchedResult.armCore,
     fpu:          fpuFinal || undefined,
     floatAbi:     floatAbiFinal,

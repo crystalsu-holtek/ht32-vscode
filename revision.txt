@@ -2,6 +2,28 @@
 Holtek HT32 VS Code Extension — Revision History
 ================================================================================
 
+v0.3.2  (from v0.3.1)
+--------------------------------------------------------------------------------
+
+新功能
+- TreeView 檔案節點展開 include 子樹：
+  .c / .cpp 檔案若含有 `#include "..."` 本地 include，節點改為可展開（Collapsed），
+  展開後列出所有本地 include 檔案，點擊可直接開啟；
+  找不到對應檔案時顯示 (not found) 提示。
+  只顯示 `"..."` 的本地 header，不顯示 `<...>` 系統 header（減少雜訊）。
+  僅一層深度，與 Visual Studio / Eclipse CDT 行為一致。
+
+修正
+- compile_commands.json 新增 `#include "*.c"` 展開（clangd F12 跳轉修正）：
+  buildCCDb 新增 expandIncludedCFiles() 前處理，掃描每個 source 檔案內的
+  `#include "xxx.c"` pattern，將找到的 .c 檔以相同編譯 flags 加入 compile_commands.json；
+  遞迴處理直到無新檔案為止，並以大小寫不敏感的方式去重（Windows 相容）。
+  修正：utilities/ht32_board.c 以 `#include "HT32_Board/ht32f5xxxx_board_01.c"` 引入
+  board 實作，clangd 無法索引其中的符號（如 HT32F_DVB_LEDToggle）導致 F12 只跳至 .h；
+  修正後該 .c 出現在 compile_commands.json，clangd background index 可正確建立 cross-TU 索引。
+
+================================================================================
+
 v0.3.1  (from v0.3.0)
 --------------------------------------------------------------------------------
 

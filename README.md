@@ -570,8 +570,8 @@ After conversion or project creation, the extension auto-generates `.clangd` and
 | `HT32: Clean` | Clean build output |
 | `HT32: Open Settings` | Open Project Settings |
 | `HT32: Generate Build & Debug Config` | Regenerate `tasks.json` and `launch.json` |
-| `HT32: Regenerate compile_commands.json` | Regenerate `compile_commands.json` for clangd |
-| `HT32: Regenerate Makefile` | Regenerate `Makefile` from `project.meta.json`; use when the Makefile is missing or outdated |
+| `HT32: Regenerate compile_commands.json` | Regenerate `compile_commands.json` for clangd; in multi-project workspaces shows a QuickPick to select one project or **All Projects** |
+| `HT32: Regenerate Makefile` | Regenerate `Makefile` from `project.meta.json`; in multi-project workspaces shows a QuickPick to select one project or **All Projects** |
 | `HT32: Close Project` | Close the currently loaded project |
 | `HT32: Clear Recent Projects` | Clear the Recent Projects list |
 | `HT32: Refresh Stack Usage` | Manually refresh the Stack Usage Analysis panel |

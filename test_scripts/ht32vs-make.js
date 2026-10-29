@@ -168,14 +168,14 @@ async function buildOne(bgDir, gcc) {
       fs.writeFileSync(path.join(bgDir, 'Makefile'), makeText);
 
       // 2. Populate SRCS, compile rules, flags, compile_commands.json from meta
-      refreshDerivedFiles(bgDir, meta, {
+      await refreshDerivedFiles(bgDir, meta, {
         skipElfInvalidation: true,
         gccPath: gcc,
         onWarn: msg => log(`WARN: ${msg}`),
       });
 
       // 3. Overwrite compile_commands.json with the resolved gcc path
-      writeCCDbFromLists(bgDir, {
+      await writeCCDbFromLists(bgDir, {
         armCore:      settings.mcu,
         fpu,
         floatAbi,
