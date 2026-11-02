@@ -3627,17 +3627,15 @@ export async function refreshDerivedFiles(
   }
 
   if (!opts?.skipElfInvalidation) {
-    try {
-      const buildDir = path.join(buildGenDir, 'build');
-      if (fs.existsSync(buildDir)) {
-        for (const f of fs.readdirSync(buildDir)) {
-          if (/\.(elf|bin|hex|map)$/i.test(f)) {
-            fs.unlinkSync(path.join(buildDir, f));
-          }
-        }
+    const buildDir = path.join(buildGenDir, 'build');
+    let files: string[];
+    try { files = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : []; }
+    catch { files = []; }
+    for (const f of files) {
+      if (/\.(elf|bin|hex|map)$/i.test(f)) {
+        try { fs.unlinkSync(path.join(buildDir, f)); }
+        catch { /* skip locked files (e.g. EBUSY during debug session) */ }
       }
-    } catch (e) {
-      (opts?.onWarn ?? logWarn)(`refreshDerivedFiles: stale ELF cleanup failed: ${e}`);
     }
   }
 }

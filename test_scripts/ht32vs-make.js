@@ -25,40 +25,15 @@ const path   = require('path');
 const fs     = require('fs');
 const os     = require('os');
 const { spawn } = require('child_process');
+const { resolveInstalledExt } = require('./test-helpers');
 
-// ── locate make.exe ───────────────────────────────────────────────────────────
-// make.exe must be on real filesystem (cannot run from pkg snapshot).
-//   pkg exe:     process.pkg === true; process.execPath = real path of ht32vs-make.exe
-//   node script: __dirname = test_scripts/ (real filesystem)
-const _realExeDir = process.pkg ? path.dirname(process.execPath) : __dirname;
-
-// Find make.exe from installed extension: ~/.vscode/extensions/holtek.ht32-vscode-*/bin/win32-x64/make.exe
-const _extInstallDir = path.join(os.homedir(), '.vscode', 'extensions');
-const _installed = fs.existsSync(_extInstallDir)
-  ? fs.readdirSync(_extInstallDir).filter(d => d.startsWith('holtek.ht32-vscode-')).sort()
-  : [];
-if (!_installed.length) {
-  console.error(`ERROR: Holtek HT32 VS Code Extension not installed under ${_extInstallDir}`);
-  process.exit(2);
-}
-const _extDir  = path.join(_extInstallDir, _installed[_installed.length - 1]);
-const MAKE_EXE = path.join(_extDir, 'bin', 'win32-x64', 'make.exe');
-
-if (!process.pkg && !fs.existsSync(path.join(__dirname, '../out/tools/uv2make.js'))) {
-  console.error(`ERROR: ../out/tools/uv2make.js not found — run "npm run compile" first`);
-  process.exit(2);
-}
-
-// String literal requires let pkg statically bundle ../out/tools/*.js into snapshot.
-const { buildMakefileText, refreshDerivedFiles, readProjectMeta, writeCCDbFromLists } = require('../out/tools/uv2make.js');
-const { readProjectSettings } = require('../out/tools/settingsWebview.js');
-const { locateArmGcc }        = require('../out/tools/toolchain.js');
-
-// ── CLI args ──────────────────────────────────────────────────────────────────
+// ── CLI args (parsed before any I/O) ─────────────────────────────────────────
 const args = process.argv.slice(2);
 
-if (!args.length || args.includes('--help') || args.includes('-h')) {
+function printHelp(version = 'unknown') {
   console.log([
+    `ht32vs-make (based on Holtek HT32 VS Code Extension v${version})`,
+    '',
     'Usage:',
     '  ht32vs-make.exe <project.ht32vs> [options]',
     '',
@@ -70,9 +45,33 @@ if (!args.length || args.includes('--help') || args.includes('-h')) {
     '  --no-regen     Skip regenerateMakefileFlags (use existing Makefile as-is)',
     '  --no-compile   Regenerate flags only, do not run make',
     '  -j <n>         Parallel make jobs (default: auto)',
+    '  -h, --help     Show this help',
   ].join('\n'));
+}
+
+const _ext = resolveInstalledExt();
+
+if (!args.length || args.includes('--help') || args.includes('-h')) {
+  printHelp(_ext ? _ext.extVersion : 'unknown');
   process.exit(0);
 }
+
+if (!process.pkg && !fs.existsSync(path.join(__dirname, '../out/tools/uv2make.js'))) {
+  console.error(`ERROR: ../out/tools/uv2make.js not found — run "npm run compile" first`);
+  process.exit(2);
+}
+
+// String literal requires let pkg statically bundle ../out/tools/*.js into snapshot.
+const { buildMakefileText, refreshDerivedFiles, readProjectMeta, writeCCDbFromLists } = require('../out/tools/uv2make.js');
+const { readProjectSettings } = require('../out/tools/settingsWebview.js');
+const { locateArmGcc }        = require('../out/tools/toolchain.js');
+
+// ── locate extension (make.exe lives in bin/win32-x64/ inside installed ext) ─
+if (!_ext) {
+  console.error(`ERROR: Holtek HT32 VS Code Extension not installed under ${path.join(os.homedir(), '.vscode', 'extensions')}`);
+  process.exit(2);
+}
+const MAKE_EXE = path.join(_ext.extDir, 'bin', 'win32-x64', 'make.exe');
 
 const ht32vsFile = path.resolve(args[0]);
 const logFile    = (() => { const i = args.indexOf('-o'); return i >= 0 ? args[i + 1] : null; })();
@@ -108,8 +107,10 @@ function exitErr(msg, code = 2) {
 // ── parse .ht32vs → bgDirs ────────────────────────────────────────────────────
 if (!fs.existsSync(ht32vsFile))
   exitErr(`project file not found: ${ht32vsFile}`);
-if (!ht32vsFile.toLowerCase().endsWith('.ht32vs'))
+if (!ht32vsFile.toLowerCase().endsWith('.ht32vs')) {
+  printHelp(_ext.extVersion);
   exitErr(`not a .ht32vs file: ${ht32vsFile}`);
+}
 
 let projects;
 try {

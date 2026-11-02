@@ -132,6 +132,37 @@ function syncOneBat(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TPMaker directory sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Copy files from bundled afterbuild/TPMaker/ into batDir/TPMaker/.
+ * Existing files are never overwritten (user may have customised setting_template.ini).
+ */
+function syncTPMakerDir(batDir: string, afterbuildDir: string): void {
+  const srcDir  = path.join(afterbuildDir, 'TPMaker');
+  const destDir = path.join(batDir, 'TPMaker');
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(srcDir);
+  } catch { return; }
+
+  try {
+    fs.mkdirSync(destDir, { recursive: true });
+  } catch { return; }
+
+  for (const file of files) {
+    const dest = path.join(destDir, file);
+    if (!fs.existsSync(dest)) {
+      try {
+        fs.copyFileSync(path.join(srcDir, file), dest);
+      } catch { /* skip this file */ }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -155,7 +186,7 @@ export function syncAfterBuildBats(
   const batToken = parseBatPath(postBuildCmd);
   if (!batToken) return [];
 
-  const batAbs       = path.isAbsolute(batToken) ? batToken : path.resolve(wsRoot, batToken);
+  const batAbs        = path.isAbsolute(batToken) ? batToken : path.resolve(wsRoot, batToken);
   const afterbuildDir = path.join(extensionPath, 'afterbuild');
 
   const results: AfterBuildSyncResult[] = [];
@@ -190,6 +221,13 @@ export function syncAfterBuildBats(
     handled.add(sibAbs.toLowerCase());
     const r = syncOneBat(sibAbs, afterbuildDir);
     if (r) results.push(r);
+  }
+
+  // srec_make_combo.bat needs TPMaker/setting_template.ini at runtime.
+  // Sync whenever srec bat is present (even if skipped) and TPMaker dir is missing.
+  const srecPresent = results.some(r => r.batPath.toLowerCase().endsWith('srec_make_combo.bat'));
+  if (srecPresent && !fs.existsSync(path.join(batDir, 'TPMaker'))) {
+    syncTPMakerDir(batDir, afterbuildDir);
   }
 
   return results;

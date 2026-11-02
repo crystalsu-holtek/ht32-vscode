@@ -399,9 +399,7 @@ async function runWingetWithProgress(
         child.stderr.on('data', (chunk: Buffer) => {
           for (const raw of chunk.toString('utf8').split(/\r\n|\r|\n/)) {
             const clean = stripAnsi(raw).trim();
-            if (clean) {
-              logWarn(`[winget:stderr] ${clean}`);
-            }
+            if (clean) logWarn(`[winget:stderr] ${clean}`);
           }
         });
 

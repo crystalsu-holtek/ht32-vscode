@@ -33,12 +33,10 @@ const { XMLParser } = require('fast-xml-parser');
 const EXT_ROOT = path.resolve(__dirname, '..');
 const { findSvdFile: _findSvdFile } = require(path.join(EXT_ROOT, 'out/tools/uv2make.js'));
 
-const _extInstallDir = path.join(require('os').homedir(), '.vscode', 'extensions');
-const _installed = fs.existsSync(_extInstallDir)
-  ? fs.readdirSync(_extInstallDir).filter(d => d.startsWith('holtek.ht32-vscode-')).sort()
-  : [];
-if (!_installed.length) throw new Error(`ERROR: no installed holtek.ht32-vscode-* found under ${_extInstallDir}`);
-const EXT = path.join(_extInstallDir, _installed[_installed.length - 1]);
+const { resolveInstalledExt } = require('./test-helpers');
+const _extResult = resolveInstalledExt();
+if (!_extResult) throw new Error(`ERROR: no installed holtek.ht32-vscode-* found under ${path.join(require('os').homedir(), '.vscode', 'extensions')}`);
+const EXT = _extResult.extDir;
 
 // ── Module-level PDSC raw cache (avoid re-reading files) ─────────────────────
 const _pdscRawCache = new Map();

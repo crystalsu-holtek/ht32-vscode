@@ -359,17 +359,17 @@
         },
         {
           "command": "ht32.treeFileSettings",
-          "when": "view == ht32ProjectView && viewItem == file",
+          "when": "view == ht32ProjectView && (viewItem == file || viewItem == sourceFile)",
           "group": "1_edit@0"
         },
         {
           "command": "ht32.treeRemoveFile",
-          "when": "view == ht32ProjectView && viewItem == file",
+          "when": "view == ht32ProjectView && (viewItem == file || viewItem == sourceFile)",
           "group": "1_edit@1"
         },
         {
           "command": "ht32.treeDeleteFile",
-          "when": "view == ht32ProjectView && viewItem == file",
+          "when": "view == ht32ProjectView && (viewItem == file || viewItem == sourceFile)",
           "group": "1_edit@2"
         },
         {

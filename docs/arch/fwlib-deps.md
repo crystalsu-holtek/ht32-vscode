@@ -231,7 +231,25 @@ FWLib 前綴從 `library/HT32*_Driver` 目錄名推算：`HT32F5xxxx_Driver` →
 
 ## afterbuild.bat 自動同步
 
-Extension 的 `afterbuild/` 目錄內附帶最新版的 Post-Build 腳本（`afterbuild.bat`、`afterbuild_ap.bat`、`afterbuild_iap.bat`、`dfumaker_combo.bat`、`srec_make_combo.bat`）。
+### Bundled 檔案清單
+
+Extension 的 `afterbuild/` 目錄內附帶以下檔案，**這些檔案來自 Holtek IAP 範例專案，由 VS Code Extension 負責 bundle 並在必要時同步到使用者的專案目錄**：
+
+| 檔案 | 類型 | MAX_REPLACEABLE_REV | 說明 |
+|---|---|---|---|
+| `afterbuild.bat` | bat | 435 | 標準應用程式 post-build 腳本 |
+| `afterbuild_ap.bat` | bat | 437 | IAP AP post-build 腳本 |
+| `afterbuild_iap.bat` | bat | 358 | IAP boot post-build 腳本 |
+| `DFUmaker_combo.bat` | bat | 359 | DFU 封包製作，由 afterbuild 間接呼叫 |
+| `srec_make_combo.bat` | bat | 527 | combo bin 製作與 CRC，由 afterbuild 間接呼叫 |
+| `TPMaker/setting_template.ini` | ini | — | TPMaker 設定樣板，由 `srec_make_combo.bat` 執行時複製為 `setting.ini`；無版本比對，以不覆蓋方式同步 |
+
+`MAX_REPLACEABLE_REV` = extension 允許自動取代的最高 `$Rev::` 號碼（含）。磁碟上的 bat 若 `$Rev` 高於此值，視為使用者已升版，extension 不覆蓋。  
+> **維護注意**：上述任何一個 bat 在 IAP 範例專案中更新時，**必須通知 VS Code Extension 開發人員**一併更新 `afterbuild/` 的 bundled 版本，並將該 bat 的 `MAX_REPLACEABLE_REV` 調高至新 `$Rev` 號碼。
+
+---
+
+### 觸發時機與版本比對規則
 
 **觸發時機**：Save Settings 時，若 `postBuildCmd` 指向上述清單內的 bat。
 
@@ -244,7 +262,9 @@ Extension 的 `afterbuild/` 目錄內附帶最新版的 Post-Build 腳本（`aft
 | `$Rev` > 上限 | 跳過（視為使用者已自訂，不覆蓋） |
 | bat 名稱不在清單內 | 完全不處理 |
 
-Primary bat 的同層目錄也會被掃描——`dfumaker_combo.bat` 等常與 `afterbuild_ap.bat` 同放的兄弟 bat，若名稱在清單內，套用相同規則。
+Primary bat 的同層目錄也會被掃描——`DFUmaker_combo.bat` 等常與 `afterbuild_ap.bat` 同放的兄弟 bat，若名稱在清單內，套用相同規則。
+
+**TPMaker 目錄同步**：`srec_make_combo.bat` 出現在處理結果中（無論 copied/updated/skipped）且 bat 同層的 `TPMaker/` 目錄不存在時，`afterbuild/TPMaker/` 內的檔案會補齊到該目錄，**已存在的檔案不覆蓋**（保留使用者自訂的 `setting_template.ini`）。
 
 **取代時的 key 同步**：備份 + 取代（`$Rev` ≤ 上限）時，會從舊 bat 中尋找以下 key，若找到則將其值同步到新 bat，找不到則略過（不限定 bat 檔名，但這些 key 目前只出現在 `srec_make_combo.bat`）：
 

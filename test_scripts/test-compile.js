@@ -46,12 +46,10 @@ const os            = require('os');
 const { spawn }     = require('child_process');
 
 const EXT_ROOT = path.resolve(__dirname, '..');
-const _extInstallDir = path.join(os.homedir(), '.vscode', 'extensions');
-const _installed = fs.existsSync(_extInstallDir)
-  ? fs.readdirSync(_extInstallDir).filter(d => d.startsWith('holtek.ht32-vscode-')).sort()
-  : [];
-if (!_installed.length) throw new Error(`ERROR: no installed holtek.ht32-vscode-* found under ${_extInstallDir}`);
-const DFP_STORAGE_PATH = path.join(_extInstallDir, _installed[_installed.length - 1]);
+const { resolveInstalledExt } = require('./test-helpers');
+const _extResult = resolveInstalledExt();
+if (!_extResult) throw new Error(`ERROR: no installed holtek.ht32-vscode-* found under ${path.join(os.homedir(), '.vscode', 'extensions')}`);
+const DFP_STORAGE_PATH = _extResult.extDir;
 
 // 載入編譯好的 extension 工具
 const {

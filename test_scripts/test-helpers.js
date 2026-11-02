@@ -6,6 +6,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 
 /**
  * Check Reset_Handler in a startup .s file has Thumb LSB marking.
@@ -176,6 +177,30 @@ function parseRamFromMakeOutput(stdout, stderr) {
   return m ? parseInt(m[1]) : null;
 }
 
+/**
+ * Locate the newest installed Holtek HT32 VS Code Extension.
+ * Returns { extDir, extVersion } or null if not installed.
+ */
+function resolveInstalledExt() {
+  const extInstallDir = path.join(os.homedir(), '.vscode', 'extensions');
+  if (!fs.existsSync(extInstallDir)) return null;
+  const installed = fs.readdirSync(extInstallDir)
+    .filter(d => d.startsWith('holtek.ht32-vscode-'))
+    .sort((a, b) => {
+      const ver = s => {
+        const m = /^(\d+)\.(\d+)\.(\d+)/.exec(s.replace('holtek.ht32-vscode-', ''));
+        return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
+      };
+      const [av, bv] = [ver(a), ver(b)];
+      return av[0] - bv[0] || av[1] - bv[1] || av[2] - bv[2];
+    });
+  if (!installed.length) return null;
+  const extDir = path.join(extInstallDir, installed[installed.length - 1]);
+  const raw = path.basename(extDir).replace('holtek.ht32-vscode-', '');
+  const extVersion = /^\d+\.\d+\.\d+/.test(raw) ? raw : `${raw || '?'} (unknown)`;
+  return { extDir, extVersion };
+}
+
 module.exports = {
   checkThumbLsbFile,
   checkThumbLsbInDir,
@@ -188,4 +213,5 @@ module.exports = {
   readStartupEquFromDir,
   readHeapStackSizes,
   parseRamFromMakeOutput,
+  resolveInstalledExt,
 };

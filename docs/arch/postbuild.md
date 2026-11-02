@@ -157,6 +157,10 @@ Convert 時，若 bat 路徑位於**來源專案目錄**（uV：`MDK_ARMv5/`；H
 **Sibling bat 掃描**：primary bat 目錄下若有其他屬於 bundle 的 bat（`DFUmaker_combo.bat`、`srec_make_combo.bat`），  
 依相同規則一併處理（這些 bat 通常由 afterbuild 間接呼叫，不直接出現在 `postBuildCmd`）。
 
+**TPMaker 目錄同步**：`srec_make_combo.bat` 執行時需要 `Tools/TPMaker/setting_template.ini`（用來產生 `setting.ini`）。  
+`srec_make_combo.bat` 出現在處理結果中（無論 copied/updated/skipped）且 bat 同層的 `TPMaker/` 目錄不存在時，`syncTPMakerDir()` 會將 bundle 內的 `afterbuild/TPMaker/` 複製到該目錄。  
+規則：**只複製目標不存在的檔案**，已存在者不覆蓋（保留使用者自訂的 `setting_template.ini`）。
+
 ---
 
 ## 儲存
