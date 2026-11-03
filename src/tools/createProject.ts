@@ -688,7 +688,7 @@ ${stored.length > 0 ? `<div class="row">
 </div>
 <div class="row">
   <label class="field">Project Name</label>
-  <input type="text" id="projectName" placeholder="e.g. HT32_52352" oninput="onNameInput(this)">
+  <input type="text" id="projectName" placeholder="e.g. Project_52352" oninput="onNameInput(this)">
   <p class="hint" style="margin-top:3px">Used for ELF/HEX filename. Allowed: letters, digits, _ - .</p>
 </div>
 <div class="row">
@@ -828,7 +828,7 @@ function onMcuChange() {
     if (m) {
       // Strip HT32F prefix to avoid "HT32_HT32F49395"; keep numeric suffix for standard series
       const suffix = m.chipSuffix.replace(/^HT32[A-Za-z]/i, '') || m.chipSuffix;
-      document.getElementById('projectName').value = 'HT32_' + suffix;
+      document.getElementById('projectName').value = 'Project_' + suffix;
     }
   }
   checkReady();

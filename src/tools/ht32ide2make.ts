@@ -12,8 +12,9 @@ import { writeProjectLists } from './utils';
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface Ht32IdeSource {
-  group:        string;    // Eclipse group name (e.g. "User", "Library", "CMSIS")
-  absPath:      string;    // resolved absolute path, forward slashes
+  group:         string;    // Eclipse group name (e.g. "User", "Library", "CMSIS")
+  absPath:       string;    // resolved absolute path, forward slashes
+  groupRelPath?: string;    // project-relative path for key lookup: "group/subdir/file.c" (lowercase, forward-slash)
   headerOnly?:  boolean;   // true = .h file (project tree only, not compiled)
   missing?:     boolean;   // true = file not found on disk; kept in meta.json but excluded from build
   excluded?:    boolean;   // true = "Exclude from build" in HT32-IDE (sourceEntries excluding=)
@@ -117,6 +118,8 @@ function findOpt(opts: any[], superClassSuffix: string): any {
 function parsePerFileSettings(cprojectPath: string): {
   executeOnlyPaths: Set<string>;
   excludedPaths:    Set<string>;
+  sourceEntries:    Array<{ name: string; excludeRelPaths: Set<string> }>;
+  buildDirName:     string;
 } {
   const parser = new XMLParser({
     ignoreAttributes: false, attributeNamePrefix: '',
@@ -153,22 +156,114 @@ function parsePerFileSettings(cprojectPath: string): {
     if (!excl) continue;
     for (const fname of excl.split('|')) {
       const trimmed = fname.trim();
-      if (trimmed) excludedPaths.add(`${folder}/${trimmed.toLowerCase()}`);
+      if (trimmed) excludedPaths.add(`${folder}/${trimmed.toLowerCase().replace(/\\/g, '/')}`);
     }
   }
 
-  return { executeOnlyPaths, excludedPaths };
+  const sourceEntries = ((cfg.sourceEntries?.entry ?? []) as any[]).map((e: any) => {
+    const name = String(e.name ?? '');
+    const excludeRelPaths = new Set<string>();
+    const excl = String(e.excluding ?? '');
+    if (excl) {
+      for (const p of excl.split('|')) {
+        const t = p.trim().toLowerCase().replace(/\\/g, '/');
+        if (t) excludeRelPaths.add(t);
+      }
+    }
+    return { name, excludeRelPaths };
+  });
+
+  const buildDirName = (String(cfg.name ?? '').trim()) || 'HT32';
+
+  return { executeOnlyPaths, excludedPaths, sourceEntries, buildDirName };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// .project parser
+// .project parser — folder-link support
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parseProjectFile(projectPath: string): { projectName: string; sources: Ht32IdeSource[]; warnings: { message: string; file: string }[] } {
+/**
+ * Resolve an Eclipse variable value (e.g. "file:/C:/Users/foo/Demo") to an
+ * absolute path on the current machine.
+ *
+ * Strategy:
+ *   1. Strip file:/ URI scheme and try the literal path.
+ *   2. Walk up from projectDir looking for a directory whose basename matches
+ *      the variable target's basename. If linkedFolderNames is provided, also
+ *      verify the candidate directory contains at least one of those child
+ *      folders — this prevents false matches when two ancestors share the same
+ *      basename (e.g. a nested Demo/firmware/Demo layout).
+ */
+function resolveEclipseVariableValue(value: string, projectDir: string, linkedFolderNames: string[] = []): string {
+  let p = value
+    .replace(/^file:\/\/\//, '')
+    .replace(/^file:\/\//, '')
+    .replace(/^file:\//, '');
+  // file:/ on Windows starts with /C:/... — strip leading slash before drive letter
+  p = p.replace(/^\/([A-Za-z]:)/, '$1');
+  p = p.replace(/\//g, path.sep);
+  if (fs.existsSync(p)) return p.replace(/\\/g, '/');
+
+  // Walk up from projectDir: match basename, then confirm with child-folder check
+  const targetBase = path.basename(p).toLowerCase();
+  let dir = projectDir;
+  for (let n = 0; n < 8; n++) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+    if (path.basename(dir).toLowerCase() !== targetBase || !fs.existsSync(dir)) continue;
+    // If we have expected child-folder names, require at least one to exist
+    if (linkedFolderNames.length === 0 ||
+        linkedFolderNames.some(f => fs.existsSync(path.join(dir, f)))) {
+      return dir.replace(/\\/g, '/');
+    }
+  }
+  return p.replace(/\\/g, '/');   // return literal even if not found on disk
+}
+
+// Common build-output and hidden directory names to skip during source scanning.
+const SCAN_SKIP_DIR_RE = /^(Release|Debug|RelWithDebInfo|MinSizeRel|build|\.)/i;
+
+/** Recursively scan a folder and return all compilable/header source entries. */
+function scanSourceFolder(
+  folderAbs: string,
+  groupName: string,
+  excludeRelPaths: Set<string>,
+  buildDirName: string,
+): Ht32IdeSource[] {
+  const buildDirLower = buildDirName.toLowerCase();
+  const results: Ht32IdeSource[] = [];
+  function recurse(dir: string) {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      const abs = path.join(dir, name);
+      let stat: fs.Stats;
+      try { stat = fs.statSync(abs); } catch { continue; }
+      if (stat.isDirectory()) {
+        if (!SCAN_SKIP_DIR_RE.test(name) && name.toLowerCase() !== buildDirLower) recurse(abs);
+        continue;
+      }
+      if (!/\.(c|cpp|s|S|h)$/i.test(name)) continue;
+      const relToFolder = path.relative(folderAbs, abs).replace(/\\/g, '/').toLowerCase();
+      if (excludeRelPaths.has(relToFolder)) continue;
+      results.push({
+        group:        groupName,
+        absPath:      abs.replace(/\\/g, '/'),
+        groupRelPath: `${groupName.toLowerCase()}/${relToFolder}`,
+        headerOnly:   /\.h$/i.test(name) || undefined,
+      });
+    }
+  }
+  recurse(folderAbs);
+  return results;
+}
+
+function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: string; excludeRelPaths: Set<string> }>, buildDirName = 'HT32'): { projectName: string; sources: Ht32IdeSource[]; warnings: { message: string; file: string }[] } {
   const projectDir = path.dirname(projectPath);
   const parser = new XMLParser({
     ignoreAttributes: false, attributeNamePrefix: '',
-    isArray: (name) => ['link'].includes(name),
+    isArray: (name) => ['link', 'variable'].includes(name),
   });
   const doc = parser.parse(fs.readFileSync(projectPath, 'utf8'));
   const projectName: string = doc?.projectDescription?.name ?? path.basename(projectDir);
@@ -176,6 +271,7 @@ function parseProjectFile(projectPath: string): { projectName: string; sources: 
   const sources: Ht32IdeSource[] = [];
   const warnings: { message: string; file: string }[] = [];
 
+  // ── Type-1: individual file links ────────────────────────────────────────
   for (const link of links) {
     const name: string = String(link.name ?? '');
     const type: string = String(link.type ?? '0');
@@ -195,8 +291,71 @@ function parseProjectFile(projectPath: string): { projectName: string; sources: 
     if (isMissing) {
       warnings.push({ message: `Source file not found: ${absPath}\n(from .project entry: ${uri})`, file: projectPath });
     }
-    sources.push({ group, absPath, headerOnly: isHeader || undefined, missing: isMissing || undefined });
+    sources.push({ group, absPath, groupRelPath: name.toLowerCase().replace(/\\/g, '/'), headerOnly: isHeader || undefined, missing: isMissing || undefined });
   }
+
+  // ── Type-2: folder links (shared-library / copy_PARENT style) ────────────
+  // Scan folder links whenever they exist — independent of any type-1 file links.
+  // Projects may mix individually-listed files (type-1) with folder-linked libraries (type-2).
+  const hasType2Links = links.some(l => String(l.type ?? '') === '2');
+  if (hasType2Links && sourceEntries) {
+    // Build variable map from <variableList>
+    const variables: any[] = doc?.projectDescription?.variableList?.variable ?? [];
+    const variableMap = new Map<string, string>();
+    for (const v of variables) {
+      const vName  = String(v.name  ?? '').toLowerCase();
+      const vValue = String(v.value ?? '');
+      if (vName) variableMap.set(vName, vValue);
+    }
+
+    // Collect type-2 link names upfront — used to validate variable resolution
+    const type2LinkNames = links
+      .filter(l => String(l.type ?? '') === '2')
+      .map(l => String(l.name ?? ''))
+      .filter(Boolean);
+
+    // Build folder-link map: virtual name → resolved absolute path
+    const folderLinkMap = new Map<string, string>(); // lowercase name → abs path
+    for (const link of links) {
+      if (String(link.type ?? '') !== '2') continue;
+      const linkName = String(link.name ?? '');
+      if (!linkName) continue;
+      const uri = String(link.locationURI ?? link.location ?? '');
+      // Only enter variable branch when the prefix is a known user-defined variable.
+      // PARENT-N-PROJECT_LOC and file:/// URIs must fall through to resolveEclipseUri.
+      const slashIdx = uri.indexOf('/');
+      const varName  = slashIdx > 0 ? uri.slice(0, slashIdx).toLowerCase() : '';
+      const varValue = varName ? variableMap.get(varName) : undefined;
+      let absFolder: string;
+      if (varValue !== undefined) {
+        const subPath = uri.slice(slashIdx + 1);
+        const baseDir = resolveEclipseVariableValue(varValue, projectDir, type2LinkNames);
+        absFolder = path.join(baseDir.replace(/\//g, path.sep), subPath).replace(/\\/g, '/');
+      } else {
+        absFolder = resolveEclipseUri(uri, projectDir).replace(/\\/g, '/');
+      }
+      folderLinkMap.set(linkName.toLowerCase(), absFolder);
+    }
+
+    for (const entry of sourceEntries) {
+      if (!entry.name) continue;
+      const entryKey = entry.name.toLowerCase();
+      let folderAbs: string | undefined = folderLinkMap.get(entryKey);
+      if (!folderAbs) {
+        // Not a virtual link — check if it exists as a real sub-directory of projectDir
+        const localDir = path.join(projectDir, entry.name);
+        if (fs.existsSync(localDir)) folderAbs = localDir.replace(/\\/g, '/');
+      }
+      if (!folderAbs || !fs.existsSync(folderAbs.replace(/\//g, path.sep))) {
+        warnings.push({ message: `Source folder not found: ${entry.name} (${folderAbs ?? 'unresolved'})`, file: projectPath });
+        continue;
+      }
+      const folderSources = scanSourceFolder(folderAbs.replace(/\//g, path.sep), entry.name, entry.excludeRelPaths, buildDirName);
+      sources.push(...folderSources);
+      logInfo(`HT32-IDE: scanned folder "${entry.name}" → ${folderSources.filter(s => !s.headerOnly).length} source(s)`);
+    }
+  }
+
   // Deduplicate by absPath (some 49x .project files list the same file twice)
   const seen = new Set<string>();
   const deduped = sources.filter(s => { if (seen.has(s.absPath)) return false; seen.add(s.absPath); return true; });
@@ -453,20 +612,23 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
   const projectPath     = fs.existsSync(dotProject) ? dotProject : originalProject;
   const cprojectPath = path.join(projectDir, '.cproject');
 
-  // HT32-IDE build output dir is always "<project>/HT32" — used to resolve
-  // include/linker paths stored as relative values in .cproject.
-  const buildDir = path.join(projectDir, 'HT32');
+  // Build output dir name is read from configuration.name in .cproject (e.g. "HT32").
+  // Used to resolve include/linker paths stored as relative values in .cproject.
+  const { executeOnlyPaths, excludedPaths, sourceEntries, buildDirName } = parsePerFileSettings(cprojectPath);
+  const buildDir = path.join(projectDir, buildDirName);
 
-  const { projectName, sources: rawSources, warnings: projWarnings } = parseProjectFile(projectPath);
+  const { projectName, sources: rawSources, warnings: projWarnings } = parseProjectFile(projectPath, sourceEntries, buildDirName);
   const { artifactName, postbuildStep, icName, ...rest } = parseCProjectFile(cprojectPath, buildDir);
-  const { executeOnlyPaths, excludedPaths } = parsePerFileSettings(cprojectPath);
 
   // Apply per-file settings from .cproject to sources
   const extraWarnings: { message: string; file: string }[] = [];
   const sources = rawSources.map(s => {
-    const key = `${s.group.toLowerCase()}/${path.basename(s.absPath).toLowerCase()}`;
-    const isExcluded    = excludedPaths.has(key);
-    const isExecuteOnly = executeOnlyPaths.has(key);
+    // excludedPaths keys are "folder/basename" (sourceEntries excluding= stores only filenames)
+    // executeOnlyPaths keys are full relative paths (fileInfo resourcePath= stores the full path)
+    const basenameKey   = `${s.group.toLowerCase()}/${path.basename(s.absPath).toLowerCase()}`;
+    const fullKey       = s.groupRelPath ?? basenameKey;
+    const isExcluded    = excludedPaths.has(basenameKey);
+    const isExecuteOnly = executeOnlyPaths.has(fullKey);
     if (isExcluded) {
       logInfo(`File excluded from build: ${path.basename(s.absPath)}`);
     }
@@ -492,7 +654,7 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
   }
 
   // Translate HT32-IDE post-build variables; bat path → absolute (caller calls resolveHt32IdePostBuildPath)
-  // postbuildStep path is relative to the HT32-IDE build output dir (Project_xxx/HT32/), not projectDir.
+  // postbuildStep path is relative to the HT32-IDE build output dir (Project_xxx/<buildDirName>/), not projectDir.
   const postBuildCmd = postbuildStep
     ? buildHt32IdePostBuildCmd(postbuildStep, buildDir, outputName, icName, projectName)
     : undefined;
