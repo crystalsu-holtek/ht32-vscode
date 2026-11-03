@@ -148,30 +148,25 @@ function parsePerFileSettings(cprojectPath: string): {
     }
   }
 
-  // Excluded: sourceEntries entry with excluding="..." attribute
+  // Excluded + sourceEntries: single pass over sourceEntries.entry builds both structures
   const excludedPaths = new Set<string>();
+  const sourceEntries: Array<{ name: string; excludeRelPaths: Set<string> }> = [];
   for (const entry of (cfg.sourceEntries?.entry ?? []) as any[]) {
-    const folder = String(entry.name ?? '').toLowerCase();
+    const name   = String(entry.name ?? '');
+    const folder = name.toLowerCase();
     const excl   = String(entry.excluding ?? '');
-    if (!excl) continue;
-    for (const fname of excl.split('|')) {
-      const trimmed = fname.trim();
-      if (trimmed) excludedPaths.add(`${folder}/${trimmed.toLowerCase().replace(/\\/g, '/')}`);
-    }
-  }
-
-  const sourceEntries = ((cfg.sourceEntries?.entry ?? []) as any[]).map((e: any) => {
-    const name = String(e.name ?? '');
     const excludeRelPaths = new Set<string>();
-    const excl = String(e.excluding ?? '');
     if (excl) {
       for (const p of excl.split('|')) {
         const t = p.trim().toLowerCase().replace(/\\/g, '/');
-        if (t) excludeRelPaths.add(t);
+        if (t) {
+          excludeRelPaths.add(t);
+          excludedPaths.add(`${folder}/${t}`);
+        }
       }
     }
-    return { name, excludeRelPaths };
-  });
+    sourceEntries.push({ name, excludeRelPaths });
+  }
 
   const buildDirName = (String(cfg.name ?? '').trim()) || 'HT32';
 
@@ -611,6 +606,9 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
   const originalProject = path.join(projectDir, 'original.project');
   const projectPath     = fs.existsSync(dotProject) ? dotProject : originalProject;
   const cprojectPath = path.join(projectDir, '.cproject');
+  if (!fs.existsSync(cprojectPath)) {
+    throw new Error(`.cproject not found: ${cprojectPath}`);
+  }
 
   // Build output dir name is read from configuration.name in .cproject (e.g. "HT32").
   // Used to resolve include/linker paths stored as relative values in .cproject.
