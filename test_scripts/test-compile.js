@@ -225,6 +225,18 @@ function pickRandom(arr, n) {
 
 function ensureDir(d) { fs.mkdirSync(d, { recursive: true }); }
 
+function validateMetaGroupPaths(meta, projectRootDir) {
+  const missing = Object.values(meta.groups ?? {}).flatMap(v => Array.isArray(v) ? v : [])
+    .filter(p => !meta.fileOptions?.[p]?.exclude && !/\.ld$/i.test(p))
+    .map(p => path.resolve(projectRootDir, p))
+    .filter(abs => !fs.existsSync(abs));
+  if (missing.length) {
+    const err = new Error(`project.meta.json groups 有 ${missing.length} 條路徑不存在:\n${missing.join('\n')}`);
+    err.isGroupsError = true;
+    throw err;
+  }
+}
+
 /**
  * Check linker script has heap/stack counted in RAM usage.
  * Accepts either KEEP(*(.heap/.stack)) or ._user_heap_stack / __StackTop patterns.
@@ -519,8 +531,12 @@ async function testUvision(exampleDir, uvprojxPath, code) {
       try {
         const m = JSON.parse(fs.readFileSync(path.join(outDir, 'project.meta.json'), 'utf8'));
         const ld = m.linkerScripts?.[0] ?? m.ldFile ?? null;
+
+        // 驗證 groups 路徑都能 resolve 到存在的檔案（排除 excluded 和 .ld）
+        validateMetaGroupPaths(m, path.dirname(path.dirname(outDir)));
+
         return ld ? path.basename(ld) : 'linker_script.ld';
-      } catch { return 'linker_script.ld'; }
+      } catch (e) { if (e.isGroupsError) throw e; return 'linker_script.ld'; }
     })();
     const uvStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
     const heapIssues = [
@@ -580,6 +596,10 @@ async function testHt32Ide(exampleDir, projectDir, code) {
 
     // Check LD + startup .s
     const ideLdName = r.meta.linkerScripts?.[0] ? path.basename(r.meta.linkerScripts[0]) : 'linker.ld';
+
+    // 驗證 groups 路徑都能 resolve 到存在的檔案（排除 excluded 和 .ld）
+    validateMetaGroupPaths(r.meta, path.dirname(path.dirname(bgDir)));
+
     const ldIssues  = checkLinkerHeapStack(path.join(gnuArmDir, ideLdName), gnuArmDir);
     const ideStartupFiles = (() => { try { return fs.readdirSync(gnuArmDir).filter(f => /^startup_/i.test(f) && f.endsWith('.s')); } catch { return []; } })();
     const startupIssues = ideStartupFiles.length

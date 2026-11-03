@@ -1365,7 +1365,12 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string, opts?: { f
           const metaMtime     = fs.statSync(metaPath).mtimeMs;
           const allListsExist = ['sources.list', 'includes.list', 'defines.list', 'adefines.list', 'compile_commands.json']
             .every(f => fs.existsSync(path.join(bgDir, f)));
-          if (allListsExist && makeMtime > settingsMtime && makeMtime > metaMtime) { continue; }
+          if (allListsExist && makeMtime > settingsMtime && makeMtime > metaMtime) {
+            const makefileContent = fs.readFileSync(makefilePath, 'utf8');
+            const ccMatch = makefileContent.match(/^CC\s*:=\s*(.+)$/m);
+            const currentCc = (ccMatch?.[1] ?? '').trim().replace(/\\/g, '/');
+            if (currentCc === gcc.replace(/\\/g, '/')) { continue; }
+          }
         }
       }
 
@@ -1987,7 +1992,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     // which would suppress auto-detection from uvprojx. workspaceValue is only set when
     // the user has explicitly written the setting to settings.json.
     const cfgOpts = {
-      cc:                'arm-none-eabi-gcc',
+      cc:                await locateArmGcc() || 'arm-none-eabi-gcc',
       floatAbi:          (cfg.inspect<string>('floatAbi')?.workspaceValue || undefined) as 'soft' | 'softfp' | 'hard' | undefined,
       fpu:               cfg.inspect<string>('fpu')?.workspaceValue || undefined,
       optimizationLevel: cfg.inspect<string>('optimizationLevel')?.workspaceValue || undefined,
@@ -2211,8 +2216,8 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
     const cfg = vscode.workspace.getConfiguration('ht32');
-    const gccPathSetting = cfg.get<string>('gccPath', '').trim();
-    const gccPath = gccPathSetting || await locateArmGcc() || 'arm-none-eabi-gcc';
+    // locateArmGcc() 已內建讀取 ht32.gccPath 使用者設定並驗證（toolchain.ts），勿在外部重複讀取
+    const gccPath = await locateArmGcc() || 'arm-none-eabi-gcc';
 
     let activeWsRoot: string | undefined;
     let activeDirName: string | undefined;

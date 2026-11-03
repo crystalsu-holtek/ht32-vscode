@@ -375,7 +375,6 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
 
   const projDir = path.dirname(opts.uvprojx);  		// uvprojx 所在 MDK_ARMv5
   const outDirAbs = path.isAbsolute(opts.outDir) ? opts.outDir : path.join(projDir, opts.outDir);
-  const projFolderName = path.basename(projDir);  // 例如 "MDK_ARMv5"
   ensureDir(outDirAbs);
   const convWarnings: ConversionWarning[] = [];
 
@@ -670,16 +669,17 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
   }));
   await writeCompileCommands(outDirAbs, effectiveOpts, info);
 
+  // outDirAbs is always exactly 2 levels inside projectRoot: projectRoot/HT32_VSCode/ProjectName/
+  const projectRoot = path.dirname(path.dirname(outDirAbs));
+  // toMeta: projDir-relative → projectRoot-relative (works regardless of how deep projDir is)
+  const toMeta = (rel: string) => normalize(path.relative(projectRoot, path.resolve(projDir, rel)));
+
   const metaGroups: Record<string, string[]> = {};
   if (infoRaw.groups) {
     for (const [g, files] of Object.entries(infoRaw.groups)) {
-      metaGroups[g] = files.map(rel =>
-        normalize(path.join(projFolderName, rel))
-      );
+      metaGroups[g] = files.map(toMeta);
     }
   }
-
-  const projectRoot = path.dirname(path.dirname(outDirAbs));
 
   // Add .ld to Linker group (app only).
   if (ldRelPath) {
@@ -697,7 +697,7 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
   const metaFileOptions: Record<string, FileOption> = {};
   if (infoRaw.fileOptions) {
     for (const [rel, opt] of Object.entries(infoRaw.fileOptions)) {
-      const metaKey = normalize(path.join(projFolderName, rel));
+      const metaKey = toMeta(rel);
       metaFileOptions[metaKey] = opt;
       if (opt.exclude) {
         logInfo(`File excluded from build: ${path.basename(rel)}`);
@@ -2004,7 +2004,7 @@ function extractProjectInfo(doc: any, projDir: string, fallbackName: string, bui
           ensureDir(gnuArmRoot);
           const destAbs = path.join(gnuArmRoot, path.basename(abs));
           fs.copyFileSync(abs, destAbs);
-          finalRel = normalize(path.relative(buildGenRoot, destAbs));
+          finalRel = normalize(path.relative(projDir, destAbs));
         } else {
           // FWLib GNU_ARM template → GNU_ARM/；找不到時 fallback 到 bundled templates/{familyTag}/GNU_ARM/
           const replaced = handleKeilAsm(rel, projDir, templateRoot, buildGenRoot, gnuArmRoot, extPath);
@@ -2965,14 +2965,25 @@ function generateLinkerScript(outDir: string, projDir: string, info: Extracted, 
   }
   if (!effectiveLd)
     throw new Error(`FWLib linker.ld not found at ${fwlLd}`);
-  let ldStd = fs.readFileSync(effectiveLd, 'utf8');
-  ldStd = patchLdMemoryFromInfo(ldStd, infoForTpl);
-  if (stackSafeLength) ldStd = patchLdStackTop(ldStd, stackSafeLength);
-  // FWLib STD linker.ld: ._user_heap_stack { *(.heap) *(.stack) }（無 KEEP，無算術）
-  // patchLdForStackUsage STD path 改成 KEEP sections；__StackTop/__HT_check_sp 由 startup .s 提供。
-  ldStd = patchLdStackSections(ldStd);
-  fs.writeFileSync(path.join(outDir, 'linker.ld'), ldStd);
+  const patchStdLd = (text: string): string => {
+    let t = patchLdMemoryFromInfo(text, infoForTpl);
+    if (stackSafeLength) t = patchLdStackTop(t, stackSafeLength);
+    // FWLib STD linker.ld: ._user_heap_stack { *(.heap) *(.stack) }（無 KEEP，無算術）
+    // patchLdForStackUsage STD path 改成 KEEP sections；__StackTop/__HT_check_sp 由 startup .s 提供。
+    return patchLdStackSections(t);
+  };
+  fs.writeFileSync(path.join(outDir, 'linker.ld'), patchStdLd(fs.readFileSync(effectiveLd, 'utf8')));
   logInfo(`generateLinkerScript: STD FWLib linker.ld from ${templateRoot}`);
+
+  // 若 template 目錄有 linker_oldversion.ld（給不支援 READONLY 語法的舊版 ld），一併輸出。
+  // 刻意不加入 meta.linkerScripts / meta.groups：讓使用者自行修改 Makefile 的 LDFLAGS 切換，
+  // 不在 TreeView 顯示，避免與 linker.ld 混淆。
+  const oldVerSrc = path.join(path.dirname(effectiveLd), 'linker_oldversion.ld');
+  if (fs.existsSync(oldVerSrc)) {
+    fs.writeFileSync(path.join(outDir, 'linker_oldversion.ld'), patchStdLd(fs.readFileSync(oldVerSrc, 'utf8')));
+    logInfo(`generateLinkerScript: linker_oldversion.ld also written`);
+  }
+
   return 'linker.ld';
 }
 
