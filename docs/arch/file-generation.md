@@ -14,6 +14,7 @@
 | `compile_commands.json` | `refreshDerivedFiles` + `regenAllMakefileFlags` + 獨立指令 |
 | `project.meta.json` | 轉換時初次建立；`persistMeta`（有改動才呼叫） |
 | `project.settings.json` | 轉換時（初次）；Settings Save |
+| `.vscode/settings.json` | `writeMakefileToolsSettings`（所有轉換 / Open Project 路徑共用） |
 
 ---
 
@@ -183,6 +184,17 @@ Open project 使用 `refreshDerivedFiles`（不寫 meta.json），Settings Save 
 
 **source of truth**：`meta.groups`（檔案列表）、`meta.linkerScripts`、`meta.fileOptions`（xo/exclude/rom，使用者設定）。
 
+### meta.groups key 格式
+
+`meta.groups` 的 key 為 group 路徑字串，支援兩種格式（向下相容）：
+
+| 格式 | 例子 | 說明 |
+|------|------|------|
+| 單層（舊格式） | `"User"`、`"Library"` | 手動建立或 uVision 轉換，treeview 直接顯示為頂層 group |
+| 多層（HT32-IDE 轉換） | `"Library/Driver/src"` | 以 `/` 分隔，treeview 自動建立中間 folder 節點 |
+
+treeview 讀取時以 `/` 分割 key 建立層次樹（`groupTreeChildren` helper）。兩種格式可在同一個 `meta.groups` 物件內混用。`.h` 檔案不寫入 `meta.groups`（`buildProjectMeta` 跳過 `headerOnly` 來源）。
+
 ---
 
 ## project.settings.json
@@ -194,6 +206,28 @@ Open project 使用 `refreshDerivedFiles`（不寫 meta.json），Settings Save 
 | 內部更新 | adapter serial 自動清除、flash loader 自動偵測等 |
 
 **source of truth**：mcu/fpu/floatAbi 供 `regenerateMakefileFlags` 使用；`includePaths` / `cDefs` / `aDefs` 供 `includes.list` / `defines.list` / `adefines.list` 使用。
+
+---
+
+## .vscode/settings.json
+
+**管理者：`writeMakefileToolsSettings`**（`src/ht32-project-assistant-for-vs-code.ts`）
+
+workspace 層級的 VS Code 設定。由所有會建立或開啟專案的路徑呼叫。
+
+| 觸發 | 呼叫路徑 |
+|------|---------|
+| uVision 轉換 | `uv2make()` 完成後 |
+| HT32-IDE 轉換 | `convertHt32IdeProject()` 完成後 |
+| Create Project | `generateProjectFiles()` 完成後 |
+| Open Project | `initProjectsFromMeta()` 完成後 |
+
+注入規則（僅在對應 key 不存在時才寫入，不覆蓋使用者已設定的值）：
+
+| key | 值 | 說明 |
+|-----|----|------|
+| `files.autoGuessEncoding` | `true` | 防止中文來源檔亂碼 |
+| `workbench.tree.indent` | `16` | 增加樹狀圖縮排，方便瀏覽多層 group |
 
 ---
 

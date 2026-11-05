@@ -2,6 +2,73 @@
 Holtek HT32 VS Code Extension — Revision History
 ================================================================================
 
+v0.3.3  (from v0.3.2)
+--------------------------------------------------------------------------------
+
+摘要
+  新功能（4）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+              TreeView 子群組支援
+  修正（7） ：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+              開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴
+
+詳細
+新功能
+- Convert HT32-IDE 支援資料夾連結（folder link）專案：
+  解析 Eclipse .project 中 type-2 連結（shared-library / PARENT_LOC 風格），
+  新增 resolveEclipseVariableValue() 將 file:/ URI 與使用者自訂變數轉為絕對路徑；
+  新增 scanSourceFolder() 遞迴掃描連結資料夾，收集所有 .c/.cpp/.s/.h 並套用
+  sourceEntries 中的 excluding 規則（以相對路徑比對，支援子目錄）；
+  混合型專案（個別 file link + folder link 並存）兩者皆正確處理；
+  修正：原本只處理個別 file link，共用 FWLib 以資料夾連結引入的專案轉換後缺少大量來源檔案
+- afterbuildSync 自動同步 TPMaker 目錄：
+  新增 syncTPMakerDir()：Convert 後若偵測到 srec_make_combo.bat，
+  自動將 bundled afterbuild/TPMaker/ 複製到 bat 同目錄（skipIfExists，不覆蓋使用者設定）；
+  修正：srec_make_combo.bat 執行時需要 TPMaker/setting_template.ini，原本未自動複製
+- Convert uVision 輸出 linker_oldversion.ld：
+  FWLib template 目錄若含 linker_oldversion.ld（供不支援 READONLY 語法的舊版 ld），
+  套用相同 patch（memory / stack）後一併輸出；
+  刻意不加入 meta.groups / TreeView，使用者自行修改 Makefile LDFLAGS 切換，不造成混淆
+
+- TreeView 子群組支援：
+  新增 GROUP_FOLDER_MARKER / parseGroupItemId / groupTreeChildren helper；
+  群組 key 支援多層路徑（e.g. "Library/Driver/src"），treeview 自動建立 folder 節點；
+  右鍵選單 Add Group 擴展至 group / groupMixed / groupFolder 節點，可建立子群組；
+  Add Sub-Group 輸入框加入 "/" 驗證，防止意外建立多層；
+  Remove Group 在 folder 節點上顯示受影響子群組數量；
+  Add Existing/New Files 在 folder 節點上顯示明確錯誤訊息；
+  新增 getParent 實作，修正 treeView.reveal() 在非頂層節點失效的問題；
+  workbench.tree.indent 由 writeMakefileToolsSettings 在首次建立時注入 16
+
+修正
+- Convert uVision — Makefile CC 路徑寫入完整路徑：
+  cfgOpts.cc 改為 await locateArmGcc() || 'arm-none-eabi-gcc'；
+  修正：原本固定寫 'arm-none-eabi-gcc' 裸名，Make 需依賴 PATH 才能找到工具鏈
+- Convert uVision — meta.json source 路徑計算修正：
+  toMeta() 改以 projectRoot 為基準計算相對路徑，取代原本固定拼 projFolderName 前綴；
+  fileOptions metaKey 同步修正；
+  修正：uvprojx 不在預期的 MDK_ARMv5/ 層時，meta.json source 路徑多一層或路徑錯誤
+- Convert HT32-IDE — GCC 路徑讀取統一至 locateArmGcc()：
+  移除 convertHt32Ide 中重複的 cfg.get('gccPath') 外部讀取，
+  統一由 locateArmGcc()（已內建讀取並驗證 ht32.tools.gccPath）處理
+- 開啟專案 — GCC 路徑變更時強制重建 Makefile：
+  initProjectsFromMeta mtime short-circuit 加入 CC 比對：
+  Makefile 中 CC := 值與當前 locateArmGcc() 不同時不跳過重建；
+  修正：換電腦或重裝工具鏈後 GCC 完整路徑改變，但 mtime 未變，
+  導致 Makefile 保留舊 GCC 路徑直到手動觸發 Regenerate Makefile
+- winget 安裝進度顯示：
+  runWingetWithProgress 加入 progress.report()，安裝時在 VS Code 通知視窗顯示當前步驟；
+  加入 stripAnsi() 清除 ANSI escape code，避免 TUI 字元出現在進度訊息；
+  winget install 加入 --disable-interactivity，避免互動式提示阻塞安裝
+- refreshDerivedFiles — ELF 清除改為逐檔容錯：
+  stale ELF/bin/hex/map 清除改為逐檔 try/catch，跳過 EBUSY（debug session 中被鎖定的檔案）；
+  修正：原本整個 readdirSync + unlinkSync 包在單一 try/catch，
+  任一檔案刪除失敗即中止，其餘過期檔案未被清除
+- Create Project 預設專案名稱前綴由 HT32_ 改為 Project_：
+  MCU 選單選擇後自動填入的 Project Name 由 HT32_<suffix> 改為 Project_<suffix>；
+  placeholder 文字同步更新（e.g. Project_52352）
+
+================================================================================
+
 v0.3.2  (from v0.3.1)
 --------------------------------------------------------------------------------
 

@@ -2,7 +2,7 @@
   "name": "ht32-vscode",
   "displayName": "Holtek HT32 VS Code Extension",
   "description": "Create, convert, and manage Holtek HT32 projects in VS Code. Supports Keil uVision (.uvprojx) and HT32-IDE (.project/.cproject) conversion, with build, flash, and debug support.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "holtek",
   "icon": "media/ht32.png",
   "engines": {
@@ -267,7 +267,7 @@
       "activitybar": [
         {
           "id": "ht32Assistant",
-          "title": "HT32 VS Code Extension (V0.3.2)",
+          "title": "HT32 VS Code Extension (V0.3.3)",
           "icon": "media/ht32.svg"
         }
       ]
@@ -344,18 +344,23 @@
         },
         {
           "command": "ht32.treeAddNewFilesToGroup",
-          "when": "view == ht32ProjectView && viewItem == group",
+          "when": "view == ht32ProjectView && (viewItem == group || viewItem == groupMixed || viewItem == groupFolder)",
           "group": "1_edit@1"
         },
         {
           "command": "ht32.treeAddExistingFilesToGroup",
-          "when": "view == ht32ProjectView && viewItem == group",
+          "when": "view == ht32ProjectView && (viewItem == group || viewItem == groupMixed || viewItem == groupFolder)",
           "group": "1_edit@2"
         },
         {
-          "command": "ht32.treeRemoveGroup",
-          "when": "view == ht32ProjectView && viewItem == group",
+          "command": "ht32.treeAddGroup",
+          "when": "view == ht32ProjectView && (viewItem == group || viewItem == groupMixed || viewItem == groupFolder)",
           "group": "1_edit@3"
+        },
+        {
+          "command": "ht32.treeRemoveGroup",
+          "when": "view == ht32ProjectView && (viewItem == group || viewItem == groupMixed || viewItem == groupFolder)",
+          "group": "1_edit@4"
         },
         {
           "command": "ht32.treeFileSettings",

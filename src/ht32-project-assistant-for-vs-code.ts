@@ -2360,6 +2360,9 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
   if (data['files.autoGuessEncoding'] === undefined) {
     data['files.autoGuessEncoding'] = true;
   }
+  if (data['workbench.tree.indent'] === undefined) {
+    data['workbench.tree.indent'] = 16;
+  }
 
   logInfo(`Write → ${path.join(path.basename(path.dirname(settingsPath)), path.basename(settingsPath)).replace(/\\/g, '/')}`);
   fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2));
@@ -4526,6 +4529,21 @@ function persistMeta(buildGenDir: string, meta: Meta, opts?: { skipElfInvalidati
   refreshDerivedFiles(buildGenDir, meta, { ...opts, ..._vsOpts() });
 }
 
+const GROUP_FOLDER_MARKER = '::__folder__::';
+
+/** Parse group item id — handles both leaf/mixed ("::" separator) and folder (GROUP_FOLDER_MARKER). */
+function parseGroupItemId(id: string): { buildGenDir: string; groupName: string; isFolder: boolean } | null {
+  const folderIdx = id.indexOf(GROUP_FOLDER_MARKER);
+  if (folderIdx >= 0) {
+    return { buildGenDir: id.slice(0, folderIdx), groupName: id.slice(folderIdx + GROUP_FOLDER_MARKER.length), isFolder: true };
+  }
+  const sep = id.indexOf('::');
+  if (sep < 0) return null;
+  // 3-segment ids (buildGenDir::groupName::filePath) are file items — guard against corrupt groupName
+  if (id.indexOf('::', sep + 2) >= 0) return null;
+  return { buildGenDir: id.slice(0, sep), groupName: id.slice(sep + 2), isFolder: false };
+}
+
 /** Parse file item id: "{buildGenDir}::{groupName}::{filePath}" */
 function parseFileItemId(id: string): { buildGenDir: string; groupName: string; filePath: string } | null {
   const sep1 = id.indexOf('::');
@@ -4569,22 +4587,42 @@ function registerTreeEditCommands(
 
   // Add Group (right-click on project node)
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeAddGroup', async (item: vscode.TreeItem) => {
-    const buildGenDir = item.id;
+    // Called from project node: item.id == buildGenDir
+    // Called from group/groupMixed/groupFolder node: parse to get buildGenDir + parent path
+    let buildGenDir: string;
+    let parentPath: string;
+    const parsed = parseGroupItemId(item.id || '');
+    if (parsed) {
+      buildGenDir = parsed.buildGenDir;
+      parentPath  = parsed.groupName;
+    } else {
+      buildGenDir = item.id || '';
+      parentPath  = '';
+    }
     if (!buildGenDir) return;
-    const name = await vscode.window.showInputBox({ prompt: 'New group name', placeHolder: 'e.g. user' });
-    if (!name?.trim()) return;
+
+    const prompt      = parentPath ? `New sub-group name under "${parentPath}"` : 'New group name';
+    const placeHolder = parentPath ? 'e.g. NewGroup' : 'e.g. User';
+    const input = await vscode.window.showInputBox({ prompt, placeHolder });
+    if (!input?.trim()) return;
+    if (input.includes('/')) {
+      vscode.window.showErrorMessage('Group name cannot contain "/". Use the right-click menu to create nested sub-groups.');
+      return;
+    }
+    const groupKey = parentPath ? `${parentPath}/${input.trim()}` : input.trim();
+
     const meta = readProjectMeta(buildGenDir);
     if (!meta) return;
     if (!meta.groups) meta.groups = {};
-    if (meta.groups[name]) { vscode.window.showWarningMessage(`Group "${name}" already exists.`); return; }
-    meta.groups[name] = [];
+    if (meta.groups[groupKey]) { vscode.window.showWarningMessage(`Group "${groupKey}" already exists.`); return; }
+    meta.groups[groupKey] = [];
     persistMeta(buildGenDir, meta);
     tree.refresh();
-    // Reveal the new group so user sees it without manually expanding
-    const newGroupItem = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.Expanded);
-    newGroupItem.id = `${buildGenDir}::${name}`;
+    await new Promise(r => setTimeout(r, 50));
+    const newGroupItem = new vscode.TreeItem(input.trim(), vscode.TreeItemCollapsibleState.Collapsed);
+    newGroupItem.id = `${buildGenDir}::${groupKey}`;
     (newGroupItem as any).contextValue = 'group';
-    try { await treeView.reveal(newGroupItem, { expand: false, focus: false, select: true }); } catch {}
+    try { await treeView.reveal(newGroupItem, { expand: true, focus: false, select: true }); } catch {}
   }));
 
   // Add Files to Group (right-click on group node)
@@ -4617,19 +4655,33 @@ function registerTreeEditCommands(
 
     persistMeta(buildGenDir, meta);
     tree.refresh();
-    const groupItem = new vscode.TreeItem(groupName, vscode.TreeItemCollapsibleState.Expanded);
-    groupItem.id = `${buildGenDir}::${groupName}`;
-    (groupItem as any).contextValue = 'group';
-    try { await treeView.reveal(groupItem, { expand: true, focus: false, select: false }); } catch {}
+    await new Promise(r => setTimeout(r, 50));
+
+    // Step 1: expand the group so its file children are loaded
+    const groupReveal = new vscode.TreeItem(groupName.split('/').pop()!, vscode.TreeItemCollapsibleState.Collapsed);
+    groupReveal.id = `${buildGenDir}::${groupName}`;
+    const hasSubGroups = Object.keys(meta.groups).some(k => k.startsWith(groupName + '/'));
+    (groupReveal as any).contextValue = hasSubGroups ? 'groupMixed' : 'group';
+    try { await treeView.reveal(groupReveal, { expand: true, focus: false, select: false }); } catch {}
+
+    // Step 2: select the last added file
+    const lastUri = uris[uris.length - 1];
+    const lastRel = path.relative(projectRoot, lastUri.fsPath).replace(/\\/g, '/');
+    const fileReveal = new vscode.TreeItem(path.basename(lastRel), vscode.TreeItemCollapsibleState.None);
+    fileReveal.id = `${buildGenDir}::${groupName}::${lastRel}`;
+    (fileReveal as any).contextValue = /\.(c|cpp)$/i.test(lastRel) ? 'sourceFile' : /\.ld$/i.test(lastRel) ? 'linkerFile' : 'file';
+    try { await treeView.reveal(fileReveal, { expand: false, focus: false, select: true }); } catch {}
   };
 
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeAddExistingFilesToGroup', async (item: vscode.TreeItem) => {
     if (!root()) return;
-    const id = item.id || '';
-    const sep = id.indexOf('::');
-    if (sep < 0) return;
-    const buildGenDir = id.slice(0, sep);
-    const groupName   = id.slice(sep + 2);
+    const parsed = parseGroupItemId(item.id || '');
+    if (!parsed) return;
+    if (parsed.isFolder) {
+      vscode.window.showErrorMessage(`Cannot add files to a folder node. Expand "${parsed.groupName}" and right-click a group inside it instead.`);
+      return;
+    }
+    const { buildGenDir, groupName } = parsed;
 
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
@@ -4643,15 +4695,21 @@ function registerTreeEditCommands(
 
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeAddNewFilesToGroup', async (item: vscode.TreeItem) => {
     if (!root()) return;
-    const id = item.id || '';
-    const sep = id.indexOf('::');
-    if (sep < 0) return;
-    const buildGenDir = id.slice(0, sep);
-    const groupName   = id.slice(sep + 2);
+    const parsed = parseGroupItemId(item.id || '');
+    if (!parsed) return;
+    if (parsed.isFolder) {
+      vscode.window.showErrorMessage(`Cannot add files to a folder node. Expand "${parsed.groupName}" and right-click a group inside it instead.`);
+      return;
+    }
+    const { buildGenDir, groupName } = parsed;
     const projectRoot = path.dirname(path.dirname(buildGenDir));
 
+    let defaultName = 'new_file.c';
+    for (let i = 1; fs.existsSync(path.join(projectRoot, defaultName)); i++) {
+      defaultName = `new_file${i}.c`;
+    }
     const saveUri = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.file(path.join(projectRoot, 'new_file.c')),
+      defaultUri: vscode.Uri.file(path.join(projectRoot, defaultName)),
       filters: { 'Source Files': ['c', 'cpp', 's', 'h'] },
       saveLabel: 'Create + Add to Group',
       title: 'New File',
@@ -4665,23 +4723,29 @@ function registerTreeEditCommands(
     await vscode.window.showTextDocument(saveUri);
   }));
 
-  // Remove Group (right-click on group node)
+  // Remove Group (right-click on group / groupMixed / groupFolder node)
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeRemoveGroup', async (item: vscode.TreeItem) => {
-    const id = item.id || '';
-    const sep = id.indexOf('::');
-    if (sep < 0) return;
-    const buildGenDir = id.slice(0, sep);
-    const groupName   = id.slice(sep + 2);
-
-    const confirmed = await vscode.window.showWarningMessage(
-      `Remove group "${groupName}" and all its files from the project?`,
-      { modal: true }, 'Remove'
-    );
-    if (confirmed !== 'Remove') return;
+    const parsed = parseGroupItemId(item.id || '');
+    if (!parsed) return;
+    const { buildGenDir, groupName } = parsed;
 
     const meta = readProjectMeta(buildGenDir);
     if (!meta?.groups) return;
-    delete meta.groups[groupName];
+    const prefix = groupName + '/';
+    const subCount = Object.keys(meta.groups).filter(k => k.startsWith(prefix)).length;
+    const directFiles = (meta.groups[groupName] ?? []).length;
+    const msg = subCount > 0
+      ? directFiles > 0
+        ? `Remove "${groupName}" (${directFiles} file${directFiles > 1 ? 's' : ''}), its ${subCount} sub-group${subCount > 1 ? 's' : ''}, and all their files from the project?`
+        : `Remove "${groupName}" and its ${subCount} sub-group${subCount > 1 ? 's' : ''} and all their files from the project?`
+      : `Remove "${groupName}" and all its files from the project?`;
+
+    const confirmed = await vscode.window.showWarningMessage(msg, { modal: true }, 'Remove');
+    if (confirmed !== 'Remove') return;
+
+    for (const key of Object.keys(meta.groups)) {
+      if (key === groupName || key.startsWith(prefix)) delete meta.groups[key];
+    }
     persistMeta(buildGenDir, meta);
     tree.refresh();
   }));
@@ -4925,6 +4989,31 @@ function writeOrUpdateProjectFile(bgParentDir: string, bgDirs: string[], project
   return ht32wsPath;
 }
 
+/** Returns immediate child nodes of parentPath in the group key trie. */
+function groupTreeChildren(
+  allKeys: string[],
+  parentPath: string
+): Array<{ label: string; fullPath: string; isLeaf: boolean; hasChildren: boolean }> {
+  const prefix = parentPath ? parentPath + '/' : '';
+  const segs = new Map<string, boolean>(); // seg → isLeaf
+  for (const key of allKeys) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    if (!rest) continue;
+    const seg = rest.split('/')[0];
+    if (rest === seg) {
+      segs.set(seg, true);
+    } else if (!segs.has(seg)) {
+      segs.set(seg, false);
+    }
+  }
+  return Array.from(segs.entries()).map(([seg, isLeaf]) => {
+    const fullPath = prefix + seg;
+    const hasChildren = allKeys.some(k => k.startsWith(fullPath + '/'));
+    return { label: seg, fullPath, isLeaf, hasChildren };
+  });
+}
+
 class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private _em = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._em.event;
@@ -5050,20 +5139,65 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   async expandAll(treeView: vscode.TreeView<vscode.TreeItem>) {
     try {
       for (const proj of this.projects) {
-        const groupNames = proj.meta?.groups
-          ? Object.keys(proj.meta.groups)
-          : this.inferGroupNames(proj.files);
-        for (const g of groupNames) {
-          const item = new vscode.TreeItem(g, vscode.TreeItemCollapsibleState.Expanded);
-          item.id = `${proj.buildGenDir}::${g}`;
-          (item as any).contextValue = 'group';
-          await treeView.reveal(item, { expand: true, focus: false, select: false });
+        for (const item of this.buildGroupItems(proj)) {
+          await treeView.reveal(item, { expand: 3, focus: false, select: false });
         }
       }
     } catch { /* ignore */ }
   }
 
   getTreeItem(el: vscode.TreeItem) { return el; }
+
+  getParent(el: vscode.TreeItem): vscode.ProviderResult<vscode.TreeItem> {
+    if (!el.id) return undefined;
+    const ctx = (el as any).contextValue as string | undefined;
+
+    // File items — id: "bgdir::groupName::filePath"
+    if (ctx === 'file' || ctx === 'sourceFile' || ctx === 'linkerFile') {
+      const parsed = parseFileItemId(el.id);
+      if (!parsed) return undefined;
+      const proj = this.projects.find(p => p.buildGenDir === parsed.buildGenDir);
+      if (!proj) return undefined;
+      return this._makeGroupOrMixedItem(parsed.buildGenDir, parsed.groupName, proj);
+    }
+
+    if (ctx !== 'group' && ctx !== 'groupMixed' && ctx !== 'groupFolder') return undefined;
+    const parsed = parseGroupItemId(el.id);
+    if (!parsed) return undefined;
+    const { buildGenDir, groupName } = parsed;
+    const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
+    if (!proj) return undefined;
+    if (!groupName.includes('/')) return this._makeProjectItem(proj);
+
+    const parentPath = groupName.split('/').slice(0, -1).join('/');
+    // parentPath is a direct key in meta.groups → parent is a group/groupMixed node
+    if (proj.meta?.groups && parentPath in proj.meta.groups) {
+      return this._makeGroupOrMixedItem(buildGenDir, parentPath, proj);
+    }
+    return this._makeFolderItem(buildGenDir, parentPath);
+  }
+
+  private _makeGroupOrMixedItem(buildGenDir: string, groupName: string, proj: ProjectEntry): vscode.TreeItem {
+    const hasSubKeys = Object.keys(proj.meta?.groups ?? {}).some(k => k.startsWith(groupName + '/'));
+    const item = new vscode.TreeItem(groupName.split('/').pop()!, vscode.TreeItemCollapsibleState.Collapsed);
+    item.id = `${buildGenDir}::${groupName}`;
+    (item as any).contextValue = hasSubKeys ? 'groupMixed' : 'group';
+    return item;
+  }
+
+  private _makeProjectItem(proj: ProjectEntry): vscode.TreeItem {
+    const item = new vscode.TreeItem(proj.displayName, vscode.TreeItemCollapsibleState.Expanded);
+    item.id = proj.buildGenDir;
+    (item as any).contextValue = 'project';
+    return item;
+  }
+
+  private _makeFolderItem(buildGenDir: string, folderPath: string): vscode.TreeItem {
+    const item = new vscode.TreeItem(folderPath.split('/').pop()!, vscode.TreeItemCollapsibleState.Collapsed);
+    item.id = `${buildGenDir}${GROUP_FOLDER_MARKER}${folderPath}`;
+    (item as any).contextValue = 'groupFolder';
+    return item;
+  }
 
   async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (!this.root) {
@@ -5133,21 +5267,37 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return this.buildGroupItems(proj);
     }
 
-    // group 節點 → file 節點（id 格式：'buildGenDir::groupName'）
-    if ((el as any).contextValue === 'group') {
-      const sep = (el.id || '').indexOf('::');
-      if (sep < 0) return [];
-      const buildGenDir = el.id!.slice(0, sep);
-      const groupName   = el.id!.slice(sep + 2);
+    // group / groupMixed 節點 → file 節點（id 格式：'buildGenDir::groupName'）
+    // groupMixed: 同時是 leaf（有直屬檔案）又有子 group，先展示子 group 再展示直屬檔案
+    if ((el as any).contextValue === 'group' || (el as any).contextValue === 'groupMixed') {
+      const parsed = parseGroupItemId(el.id || '');
+      if (!parsed) return [];
+      const { buildGenDir, groupName } = parsed;
       const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
       if (!proj) return [];
-      const files = this.getFilesOfGroup(proj, groupName);
+
+      const result: vscode.TreeItem[] = [];
+      if ((el as any).contextValue === 'groupMixed') {
+        const allKeys = (proj.meta?.groups
+          ? Object.keys(proj.meta.groups)
+          : this.inferGroupNames(proj.files)
+        ).filter(g => !g.startsWith('__'));
+        result.push(...this._groupNodesToItems(buildGenDir, groupTreeChildren(allKeys, groupName)));
+      }
+
+      const isHeader = /\.h$/i;
+      const files = [...this.getFilesOfGroup(proj, groupName)].sort((a, b) => {
+        const isHdrA = isHeader.test(a), isHdrB = isHeader.test(b);
+        if (isHdrA !== isHdrB) return isHdrA ? 1 : -1;
+        return path.basename(a).localeCompare(path.basename(b));
+      });
       // meta.groups paths are relative to project root (grandparent of build-gen dir),
       // which is always path.dirname(path.dirname(buildGenDir)) in both old and new layout.
       const fileBase = path.dirname(path.dirname(buildGenDir));
-      return files.map(f => {
+      result.push(...files.map(f => {
         const absFile = path.resolve(fileBase, f);
         const isCSrc  = /\.(c|cpp)$/i.test(f);
+        const isHdr   = isHeader.test(f);
         const collState = isCSrc ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
         const it = new vscode.TreeItem(path.basename(f), collState);
         it.id           = `${buildGenDir}::${groupName}::${f}`;
@@ -5160,7 +5310,12 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         if (fo?.exclude) {
           it.iconPath = new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('disabledForeground'));
           descParts.push('[excluded]');
+        } else if (isHdr) {
+          it.iconPath = new vscode.ThemeIcon('symbol-interface');
         } else {
+          it.iconPath = /\.(o|a|obj|lib)$/i.test(f)
+            ? new vscode.ThemeIcon('file-binary')
+            : new vscode.ThemeIcon('file-code');
           const tags: string[] = [];
           if (fo?.xo)  tags.push('xo');
           if (fo?.rom) tags.push('rom');
@@ -5172,7 +5327,20 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           it.command = { command: 'vscode.open', title: 'Open', arguments: [it.resourceUri] };
         }
         return it;
-      });
+      }));
+      return result;
+    }
+
+    // groupFolder 節點 → 子 group/folder 節點
+    if ((el as any).contextValue === 'groupFolder') {
+      const parsed = parseGroupItemId(el.id || '');
+      if (!parsed) return [];
+      const { buildGenDir, groupName: folderPath } = parsed;
+      const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
+      if (!proj) return [];
+      const allKeys = Object.keys(proj.meta?.groups ?? {}).filter(g => !g.startsWith('__'));
+      const nodes = groupTreeChildren(allKeys, folderPath);
+      return this._groupNodesToItems(buildGenDir, nodes);
     }
 
     // sourceFile 節點 → include 子節點（#include "..." 的本地 header）
@@ -5242,15 +5410,36 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   }
 
   private buildGroupItems(proj: ProjectEntry): vscode.TreeItem[] {
-    const groupNames = (proj.meta?.groups
+    const allKeys = (proj.meta?.groups
       ? Object.keys(proj.meta.groups)
       : this.inferGroupNames(proj.files)
-    ).filter(g => !g.startsWith('__')) // guard against any future internal __ groups
-     .sort((a, b) => (a === 'Linker' ? 1 : b === 'Linker' ? -1 : 0));
-    return groupNames.map(g => {
-      const item = new vscode.TreeItem(g, vscode.TreeItemCollapsibleState.Collapsed);
-      item.contextValue = 'group';
-      item.id = `${proj.buildGenDir}::${g}`;
+    ).filter(g => !g.startsWith('__'));
+    const nodes = groupTreeChildren(allKeys, '');
+    nodes.sort((a, b) => a.fullPath === 'Linker' ? 1 : b.fullPath === 'Linker' ? -1 : 0);
+    return this._groupNodesToItems(proj.buildGenDir, nodes);
+  }
+
+  private _groupNodesToItems(
+    buildGenDir: string,
+    nodes: Array<{ label: string; fullPath: string; isLeaf: boolean; hasChildren: boolean }>
+  ): vscode.TreeItem[] {
+    return nodes.map(node => {
+      const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.Collapsed);
+      if (!node.isLeaf && node.hasChildren) {
+        item.contextValue = 'groupFolder';
+        item.id = `${buildGenDir}${GROUP_FOLDER_MARKER}${node.fullPath}`;
+        item.iconPath = new vscode.ThemeIcon('folder');
+      } else if (node.isLeaf && node.hasChildren) {
+        item.contextValue = 'groupMixed';
+        item.id = `${buildGenDir}::${node.fullPath}`;
+        item.iconPath = new vscode.ThemeIcon('list-flat');
+      } else {
+        // isLeaf && !hasChildren (the only reachable case; !isLeaf && !hasChildren is impossible
+        // because groupTreeChildren only sets isLeaf=false when a longer key exists under fullPath)
+        item.contextValue = 'group';
+        item.id = `${buildGenDir}::${node.fullPath}`;
+        item.iconPath = new vscode.ThemeIcon('list-flat');
+      }
       return item;
     });
   }

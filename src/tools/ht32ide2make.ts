@@ -12,7 +12,8 @@ import { writeProjectLists } from './utils';
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface Ht32IdeSource {
-  group:         string;    // Eclipse group name (e.g. "User", "Library", "CMSIS")
+  group:         string;    // Eclipse group name top-level segment (e.g. "User", "Library")
+  groupPath?:    string;    // full group path for meta key (e.g. "Library/Driver/src"); undefined = same as group
   absPath:       string;    // resolved absolute path, forward slashes
   groupRelPath?: string;    // project-relative path for key lookup: "group/subdir/file.c" (lowercase, forward-slash)
   headerOnly?:  boolean;   // true = .h file (project tree only, not compiled)
@@ -240,10 +241,14 @@ function scanSourceFolder(
         continue;
       }
       if (!/\.(c|cpp|s|S|h)$/i.test(name)) continue;
-      const relToFolder = path.relative(folderAbs, abs).replace(/\\/g, '/').toLowerCase();
+      const relToFolderOrig = path.relative(folderAbs, abs).replace(/\\/g, '/');
+      const relToFolder     = relToFolderOrig.toLowerCase();
       if (excludeRelPaths.has(relToFolder)) continue;
+      const dirPart  = path.dirname(relToFolderOrig).replace(/\\/g, '/');
+      const groupPath = dirPart !== '.' ? `${groupName}/${dirPart}` : undefined;
       results.push({
         group:        groupName,
+        groupPath,
         absPath:      abs.replace(/\\/g, '/'),
         groupRelPath: `${groupName.toLowerCase()}/${relToFolder}`,
         headerOnly:   /\.h$/i.test(name) || undefined,
@@ -275,7 +280,9 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
     const isCompilable = /\.(c|cpp|s|S)$/i.test(name);
     const isHeader     = /\.h$/i.test(name);
     if (!isCompilable && !isHeader) continue;           // skip other files
-    const group   = name.includes('/') ? name.split('/')[0] : '(root)';
+    const nameParts = name.split('/');
+    const group     = nameParts.length > 1 ? nameParts[0] : '(root)';
+    const groupPath = nameParts.length > 2 ? nameParts.slice(0, -1).join('/') : undefined;
     const absPath = resolveEclipseUri(uri, projectDir).replace(/\\/g, '/');
     // Skip Keil/MDK startup files — some 49x .project files include both
     // startup/gcc/ and startup/mdk/ variants; only the gcc one is GCC-compatible.
@@ -286,7 +293,7 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
     if (isMissing) {
       warnings.push({ message: `Source file not found: ${absPath}\n(from .project entry: ${uri})`, file: projectPath });
     }
-    sources.push({ group, absPath, groupRelPath: name.toLowerCase().replace(/\\/g, '/'), headerOnly: isHeader || undefined, missing: isMissing || undefined });
+    sources.push({ group, groupPath, absPath, groupRelPath: name.toLowerCase().replace(/\\/g, '/'), headerOnly: isHeader || undefined, missing: isMissing || undefined });
   }
 
   // ── Type-2: folder links (shared-library / copy_PARENT style) ────────────
@@ -487,7 +494,7 @@ function parseCProjectFile(cprojectPath: string, buildDir: string): Omit<Ht32Ide
   const allOtherObjOpts = allLdOpts.filter((o: any) =>
     String(o.superClass ?? o.id ?? '').includes('linker.otherobjs'));
   const otherObjsAll = [...new Set(allOtherObjOpts.flatMap((o: any) => listValues(o)))];
-  const stripQ = (s: string) => s.replace(/^"|"$/g, '').trim();
+  const stripQ = (s: string) => s.replace(/^"|"$/g, '').trim().replace(/\\/g, '/');
   const otherLdScripts = otherObjsAll.filter(s => stripQ(s).toLowerCase().endsWith('.ld'));
   const otherLibFiles  = otherObjsAll
     .filter(s => stripQ(s).toLowerCase().endsWith('.a'))
@@ -531,16 +538,15 @@ function parseCProjectFile(cprojectPath: string, buildDir: string): Omit<Ht32Ide
   // ── Resolve paths from Eclipse build dir ─────────────────────────────────
   const includePaths = rawIncludes
     .filter(Boolean)
-    .map(p => path.resolve(buildDir, p).replace(/\\/g, '/'));
+    .map(p => path.resolve(buildDir, stripQ(p)).replace(/\\/g, '/'));
 
-  const stripQuotes = (s: string) => s.replace(/^"|"$/g, '').replace(/\\/g, '/');
   const linkerScript = ldScripts[0]
-    ? path.resolve(buildDir, stripQuotes(ldScripts[0])).replace(/\\/g, '/')
+    ? path.resolve(buildDir, stripQ(ldScripts[0])).replace(/\\/g, '/')
     : '';
   const extraLinkerScripts = [
     ...ldScripts.slice(1),
     ...otherLdScripts,
-  ].map(s => path.resolve(buildDir, stripQuotes(s)).replace(/\\/g, '/'));
+  ].map(s => path.resolve(buildDir, stripQ(s)).replace(/\\/g, '/'));
 
   const deviceName = resolveDeviceName(icName, cmsisDeviceName, defines);
 
@@ -625,7 +631,7 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
     // executeOnlyPaths keys are full relative paths (fileInfo resourcePath= stores the full path)
     const basenameKey   = `${s.group.toLowerCase()}/${path.basename(s.absPath).toLowerCase()}`;
     const fullKey       = s.groupRelPath ?? basenameKey;
-    const isExcluded    = excludedPaths.has(basenameKey);
+    const isExcluded    = excludedPaths.has(basenameKey) || excludedPaths.has(fullKey);
     const isExecuteOnly = executeOnlyPaths.has(fullKey);
     if (isExcluded) {
       logInfo(`File excluded from build: ${path.basename(s.absPath)}`);
@@ -821,7 +827,8 @@ export function buildProjectMeta(result: Ht32IdeResult, wsRoot: string): {
   for (const src of result.sources) {
     const rel = path.relative(wsRoot, src.absPath.replace(/\//g, path.sep));
     const p = path.isAbsolute(rel) ? src.absPath : rel.replace(/\\/g, '/');
-    (groups[src.group] ||= []).push(p);
+    const groupKey = src.groupPath ?? src.group;
+    (groups[groupKey] ||= []).push(p);
     const fo: FileOption = {};
     if (src.excluded)    fo.exclude = true;
     if (src.executeOnly) fo.xo = true;

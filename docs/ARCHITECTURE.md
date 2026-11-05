@@ -250,7 +250,7 @@ TreeView 右鍵選單：
 
 | 命令 | Command ID | 說明 |
 |------|-----------|------|
-| `Add Group` | `ht32.treeAddGroup` | 在專案節點新增群組 |
+| `Add Group` | `ht32.treeAddGroup` | 在專案節點新增群組；在 group / groupFolder 節點新增子群組 |
 | `Add Files to Group` | `ht32.treeAddFilesToGroup` | 新增檔案到群組 |
 | `Remove from Group` | `ht32.treeRemoveGroup` / `ht32.treeRemoveFile` | 從群組移除 |
 | `Delete File` | `ht32.treeDeleteFile` | 從磁碟刪除檔案（Delete 鍵） |
