@@ -22,6 +22,7 @@ export function enforceMinHeap(heapSize: string | undefined): string | undefined
     : heapSize;
 }
 
+export const LOG_WRITE = false;  // set true to enable "Write →" trace logs
 export function logInfo(msg: string) {
   CHANNEL.appendLine(`[INFO] ${msg}`);
 }
@@ -32,6 +33,7 @@ export function logError(msg: string) {
   CHANNEL.appendLine(`[ERROR] ${msg}`);
 }
 function logFile(absPath: string) {
+  if (!LOG_WRITE) return;
   const parts = absPath.replace(/\\/g, '/').split('/');
   logInfo(`Write → ${parts.slice(-2).join('/')}`);
 }
@@ -2143,7 +2145,7 @@ function extractProjectInfo(doc: any, projDir: string, fallbackName: string, bui
 
 function writeLists(outDir: string, info: Extracted) {
   const dir2 = path.basename(outDir);
-  logInfo(`Write → ${dir2}/sources.list, ${dir2}/includes.list, ${dir2}/defines.list, ${dir2}/adefines.list`);
+  if (LOG_WRITE) logInfo(`Write → ${dir2}/sources.list, ${dir2}/includes.list, ${dir2}/defines.list, ${dir2}/adefines.list`);
   fs.writeFileSync(path.join(outDir, "sources.list"), info.sources.join("\n"));
   writeProjectLists(outDir, {
     includes: ['-I../GNU_ARM', ...info.includes.map(i => `-I"${i}"`)].join(" "),

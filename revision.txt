@@ -8,8 +8,9 @@ v0.3.3  (from v0.3.2)
 摘要
   新功能（5）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
               TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框
-  修正（7） ：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
-              開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴
+  修正（9） ：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+              開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
+              Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換
 
 詳細
 新功能
@@ -75,6 +76,15 @@ v0.3.3  (from v0.3.2)
 - Create Project 預設專案名稱前綴由 HT32_ 改為 Project_：
   MCU 選單選擇後自動填入的 Project Name 由 HT32_<suffix> 改為 Project_<suffix>；
   placeholder 文字同步更新（e.g. Project_52352）
+- Multi-project TreeView Move Up / Move Down 右鍵選單不出現：
+  原本透過 onDidChangeSelection 非同步呼叫 setContext 設定 canMoveProjectUp/Down，
+  VS Code 在非同步結果到達前即渲染右鍵選單，導致條件永遠為 false；
+  修正：將位置資訊編碼進 contextValue（project-first / project-mid / project-last），
+  右鍵選單 when 條件直接比對 viewItem，完全同步、不依賴 setContext
+- TreeView 點選 .c 檔節點或 groupMixed 節點時 clangd active project 不切換：
+  onDidChangeSelection 的 bgDir 擷取分支遺漏 'sourceFile' 與 'groupMixed'，
+  導致這兩種節點的選擇事件提早 return，setClangdIntelliSenseProject 未被呼叫；
+  修正：將兩者加入 else-if 條件
 
 ================================================================================
 

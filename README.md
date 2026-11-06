@@ -109,7 +109,7 @@ The **`···` (More Actions)** menu also contains:
 
 <br>
 
-**Project File Tree** shows source groups — the same group concept as Keil uVision.
+**Project File Tree** shows source groups for organizing project files.
 
 <img src="media/5-1.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 

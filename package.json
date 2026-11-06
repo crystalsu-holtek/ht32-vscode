@@ -307,27 +307,27 @@
         },
         {
           "command": "ht32.treeMoveProjectUp",
-          "when": "view == ht32ProjectView && viewItem == project && ht32.canMoveProjectUp",
+          "when": "view == ht32ProjectView && (viewItem == project-last || viewItem == project-mid)",
           "group": "1_order@1"
         },
         {
           "command": "ht32.treeMoveProjectDown",
-          "when": "view == ht32ProjectView && viewItem == project && ht32.canMoveProjectDown",
+          "when": "view == ht32ProjectView && (viewItem == project-first || viewItem == project-mid)",
           "group": "1_order@2"
         },
         {
           "command": "ht32.treeRevealProjectFolder",
-          "when": "view == ht32ProjectView && viewItem == project",
+          "when": "view == ht32ProjectView && viewItem =~ /^project/",
           "group": "2_edit@0"
         },
         {
           "command": "ht32.deleteProject",
-          "when": "view == ht32ProjectView && viewItem == project",
+          "when": "view == ht32ProjectView && viewItem =~ /^project/",
           "group": "2_edit@1"
         },
         {
           "command": "ht32.treeAddGroup",
-          "when": "view == ht32ProjectView && viewItem == project",
+          "when": "view == ht32ProjectView && viewItem =~ /^project/",
           "group": "2_edit@2"
         },
         {

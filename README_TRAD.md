@@ -109,7 +109,7 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 
 <br>
 
-**專案檔案樹**顯示原始碼群組結構，與 Keil uVision 的群組概念相同。
+**專案檔案樹**顯示原始碼群組結構，方便管理專案檔案。
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/5-1.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 

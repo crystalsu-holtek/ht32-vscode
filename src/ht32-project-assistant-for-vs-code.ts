@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec as cpExec, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
-import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles } from './tools/uv2make';
+import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles, LOG_WRITE } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
 import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
@@ -122,48 +122,22 @@ export async function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(treeView);
   ctx.subscriptions.push(treeView.onDidChangeSelection(e => {
     const item = e.selection[0];
-    if (!item) {
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectUp',   false);
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectDown', false);
-      return;
-    }
+    if (!item) { return; }
     const cv = (item as any).contextValue as string | undefined;
     // Extract bgDir from item id regardless of tree level:
-    //   project → id = buildGenDir
-    //   group   → id = `${buildGenDir}::${groupName}`
-    //   file    → id = `${buildGenDir}::${groupName}::${relPath}`
+    //   project* → id = buildGenDir
+    //   group    → id = `${buildGenDir}::${groupName}`
+    //   file     → id = `${buildGenDir}::${groupName}::${relPath}`
     let bgDir: string | undefined;
-    if (cv === 'project') {
+    if (cv?.startsWith('project')) {
       bgDir = item.id;
-    } else if (cv === 'group' || cv === 'file' || cv === 'linkerFile') {
+    } else if (cv === 'group' || cv === 'groupMixed' || cv === 'file' || cv === 'sourceFile' || cv === 'linkerFile') {
       const sep = (item.id ?? '').indexOf('::');
       if (sep >= 0) bgDir = item.id!.slice(0, sep);
     }
-    if (!bgDir) {
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectUp',   false);
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectDown', false);
-      return;
-    }
+    if (!bgDir) { return; }
     const bgName = path.basename(bgDir);
     const bgParentDir = path.dirname(bgDir);
-    if (cv === 'project') {
-      let projects: string[] = [];
-      try {
-        let _s: any = {};
-        try { _s = JSON.parse(fs.readFileSync(path.join(bgParentDir, '.vscode', 'settings.json'), 'utf8')); } catch {}
-        const _f: string | undefined = _s['ht32.activeProjectFile'];
-        if (_f) {
-          const _p = path.isAbsolute(_f) ? _f : path.join(bgParentDir, _f);
-          projects = parseHt32vsFile(_p)?.projects ?? [];
-        }
-      } catch {}
-      const idx = projects.indexOf(bgName);
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectUp',   idx > 0);
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectDown', idx >= 0 && idx < projects.length - 1);
-    } else {
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectUp',   false);
-      vscode.commands.executeCommand('setContext', 'ht32.canMoveProjectDown', false);
-    }
     setClangdIntelliSenseProject(bgParentDir, bgName);
     tree.setClangdActive(bgDir);
   }));
@@ -1010,7 +984,7 @@ function ensureDir(fileOrDir: string) {
 function writeJsonPretty(file: string, obj: unknown) {
   ensureDir(file);
   const rel = file.replace(/\\/g, '/').split('/').slice(-2).join('/');
-  logInfo(`Write → ${rel}`);
+  if (LOG_WRITE) logInfo(`Write → ${rel}`);
   fs.writeFileSync(file, JSON.stringify(obj, null, 2));
 }
 function setContextHasProject(val: boolean) {
@@ -1269,7 +1243,7 @@ function ensureClangdAtProjectRoot(root: string, bgName?: string, gccPath?: stri
     const destPath = path.join(root, '.clangd');
     const newContent = lines.join('\n') + '\n';
     const existed = fs.existsSync(destPath);
-    logInfo(`Write → .clangd`);
+    if (LOG_WRITE) logInfo(`Write → .clangd`);
     fs.writeFileSync(destPath, newContent);
     // 第一次產出時 clangd 已經啟動卻找不到 .clangd，需要重啟讓它重新載入設定
     if (!existed) {
@@ -1608,7 +1582,6 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
         tree.refresh();
         statusItem.show();
         statusItem.text = `$(circuit-board) HT32: ${result.projectName}`;
-        try { await tree.expandAll(treeView); } catch {}
       }
     });
   });
@@ -1691,7 +1664,6 @@ function addNewProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       tree.refresh();
       statusItem.show();
       statusItem.text = `$(circuit-board) HT32: ${result.projectName}`;
-      try { await tree.expandAll(treeView); } catch {}
     });
   }, lockedFolder);
 }
@@ -2114,8 +2086,6 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     statusItem.show();
     statusItem.text = `$(circuit-board) HT32: converted ${toConvert.length} project(s)`;
 
-    try { await tree.expandAll(treeView); } catch {}
-
     applyPrebuiltDiagnostics(allPrebuiltWarnings);
     applyConvertDiagnostics(allConvertWarnings);
     const _curRoot2 = currentWsRoot();
@@ -2301,8 +2271,6 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     statusItem.show();
     statusItem.text = '$(circuit-board) HT32: HT32-IDE converted';
 
-    try { await tree.expandAll(treeView); } catch {}
-
     applyConvertDiagnostics(ideConvertWarnings);
     const _curRoot3 = currentWsRoot();
     const needsReload3 = !_curRoot3 || path.resolve(_curRoot3) !== path.resolve(ideWsOpenRoot);
@@ -2364,7 +2332,7 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
     data['workbench.tree.indent'] = 16;
   }
 
-  logInfo(`Write → ${path.join(path.basename(path.dirname(settingsPath)), path.basename(settingsPath)).replace(/\\/g, '/')}`);
+  if (LOG_WRITE) logInfo(`Write → ${path.join(path.basename(path.dirname(settingsPath)), path.basename(settingsPath)).replace(/\\/g, '/')}`);
   fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2));
 
 }
@@ -5183,15 +5151,6 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     });
   }
 
-  async expandAll(treeView: vscode.TreeView<vscode.TreeItem>) {
-    try {
-      for (const proj of this.projects) {
-        for (const item of this.buildGroupItems(proj)) {
-          await treeView.reveal(item, { expand: 3, focus: false, select: false });
-        }
-      }
-    } catch { /* ignore */ }
-  }
 
   getTreeItem(el: vscode.TreeItem) { return el; }
 
@@ -5214,7 +5173,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const { buildGenDir, groupName } = parsed;
     const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
     if (!proj) return undefined;
-    if (!groupName.includes('/')) return this._makeProjectItem(proj);
+    if (!groupName.includes('/')) return this._makeProjectItem(proj, 0, 1);
 
     const parentPath = groupName.split('/').slice(0, -1).join('/');
     // parentPath is a direct key in meta.groups → parent is a group/groupMixed node
@@ -5232,10 +5191,13 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return item;
   }
 
-  private _makeProjectItem(proj: ProjectEntry): vscode.TreeItem {
+  private _makeProjectItem(proj: ProjectEntry, idx: number, total: number): vscode.TreeItem {
     const item = new vscode.TreeItem(proj.displayName, vscode.TreeItemCollapsibleState.Expanded);
     item.id = proj.buildGenDir;
-    (item as any).contextValue = 'project';
+    (item as any).contextValue = total <= 1 ? 'project'
+      : idx === 0             ? 'project-first'
+      : idx === total - 1     ? 'project-last'
+      :                         'project-mid';
     return item;
   }
 
@@ -5270,10 +5232,8 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         vscodeItem.iconPath = new vscode.ThemeIcon('folder-library');
         items.push(vscodeItem);
       }
-      items.push(...this.projects.map(proj => {
-        const item = new vscode.TreeItem(proj.displayName, vscode.TreeItemCollapsibleState.Expanded);
-        item.contextValue = 'project';
-        item.id = proj.buildGenDir;
+      items.push(...this.projects.map((proj, idx) => {
+        const item = this._makeProjectItem(proj, idx, this.projects.length);
         item.iconPath = new vscode.ThemeIcon(proj.isLibrary ? 'package' : 'circuit-board');
         const isClangdActive = this.projects.length > 1 && proj.buildGenDir === this._clangdActiveBgDir;
         const descParts = [proj.mcu, proj.isLibrary ? 'lib' : '', isClangdActive ? '● clangd' : ''].filter(Boolean);
@@ -5308,7 +5268,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (this.projects.length === 0) return [];
 
     // 專案節點 → group 節點
-    if ((el as any).contextValue === 'project') {
+    if (((el as any).contextValue as string | undefined)?.startsWith('project')) {
       const proj = this.projects.find(p => p.buildGenDir === el.id);
       if (!proj) return [];
       return this.buildGroupItems(proj);
