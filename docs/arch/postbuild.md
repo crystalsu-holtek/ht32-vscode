@@ -66,9 +66,17 @@ Keil 用此指令產生 `.bin`，GCC Makefile 已由 `arm-none-eabi-objcopy` 處
 
 | CDT 變數 | 展開為 |
 |----------|--------|
-| `${BuildArtifactFileBaseName}` | outputName |
+| `${BuildArtifactFileName}` | sentinel `\x00ELF\x00`（延遲替換，見下） |
+| `${BuildArtifactFileBaseName}` | sentinel `\x00BASE\x00`（延遲替換，見下） |
+| `${BuildArtifactFileExtension}` | `elf` |
 | `${IC_NAME}` | icName（來自 `<ic name=…>`） |
 | `${ProjName}` | projectName |
+
+`${BuildArtifactFileName}` / `${BuildArtifactFileBaseName}` 包含 build 輸出目錄的相對路徑，
+但該路徑直到 `convertHt32IdeProject` 算出 `bgDir` 後才知道，所以先替換成 sentinel byte，
+最後才補入實際路徑（三步驟第 3 步）。
+
+若替換後仍有殘留 `${...}` 變數（非以上已知變數），`buildHt32IdePostBuildCmd` 會透過 `logWarn` 在 Output 面板提示，原樣保留。
 
 第一個 token 的處理分兩種情況：
 
@@ -81,12 +89,20 @@ Keil 用此指令產生 `.bin`，GCC Makefile 已由 `arm-none-eabi-objcopy` 處
 
 - `ht32ide` mode 替換為 `vsc`
 
-### 路徑相對化（`resolveHt32IdePostBuildPath()`）
+### 路徑相對化（三步驟）
 
-轉換時 wsRoot（`HT32_VSCode/`）未知，分兩步：
+HT32-IDE post-build 轉換分三步進行：
 
-1. `buildHt32IdePostBuildCmd()` → 有路徑的 token 已為**絕對路徑**；bare 命令原樣
-2. 外層取得 wsRoot 後呼叫 `resolveHt32IdePostBuildPath()` → 有路徑者轉為 wsRoot-relative；bare 命令直接回傳原字串（同樣以無路徑分隔符判斷）
+1. **`buildHt32IdePostBuildCmd()`** — CDT 變數替換：
+   - 有路徑的 bat/exe token → `path.resolve(buildDir, rawPath)` 轉為絕對路徑
+   - bare 命令原樣保留
+   - `${BuildArtifactFileName}` / `${BuildArtifactFileBaseName}` → sentinel bytes（尚未解析）
+2. **`resolveHt32IdePostBuildPath()`** — bat 路徑轉 wsRoot-relative（含 relocate）：
+   - 有路徑者計算相對 `ht32VsDir` 的路徑；bare 命令直接回傳原字串
+3. **sentinel 替換**（在 `convertHt32IdeProject` 中）— bgDir 已知後：
+   - `\x00ELF\x00` → `<buildRelPath>/<outputName>.elf`
+   - `\x00BASE\x00` → `<buildRelPath>/<outputName>`
+   - `buildRelPath` 相對 `ht32VsDir`（= `${workspaceFolder}`）
 
 ---
 

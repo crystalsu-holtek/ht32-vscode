@@ -52,7 +52,9 @@ export interface Ht32IdeResult {
   isLibrary:     boolean;  // artifactType=staticLib → ar rcs lib$(TARGET).a
   warnings:      { message: string; file: string }[];
   fwlibRoot?:    string;    // FWLib 根目錄絕對路徑（用於寫入 FWLib root .clangd）
-  postBuildCmd?: string;    // post-build command; bat path is absolute (call resolveHt32IdePostBuildPath to relativize)
+  postBuildCmd?: string;    // post-build command; may contain ELF_SENTINEL/BASENAME_SENTINEL bytes —
+                            // only safe to consume AFTER convertHt32IdeProject() resolves the sentinels.
+                            // Call resolveHt32IdePostBuildPath() to relativize the bat path.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +222,12 @@ function resolveEclipseVariableValue(value: string, projectDir: string, linkedFo
 // Common build-output and hidden directory names to skip during source scanning.
 const SCAN_SKIP_DIR_RE = /^(Release|Debug|RelWithDebInfo|MinSizeRel|build|\.)/i;
 
+// Sentinels used to defer ${BuildArtifactFileName/FileBaseName} substitution.
+// buildHt32IdePostBuildCmd inserts them; convertHt32IdeProject replaces them
+// once the final build/ path (relative to ht32VsDir) is known.
+const ELF_SENTINEL      = '\x00ELF\x00';   // → <buildRelPath>/TARGET.elf
+const BASENAME_SENTINEL = '\x00BASE\x00';  // → <buildRelPath>/TARGET
+
 /** Recursively scan a folder and return all compilable/header source entries. */
 function scanSourceFolder(
   folderAbs: string,
@@ -299,8 +307,11 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
   // ── Type-2: folder links (shared-library / copy_PARENT style) ────────────
   // Scan folder links whenever they exist — independent of any type-1 file links.
   // Projects may mix individually-listed files (type-1) with folder-linked libraries (type-2).
+  // Also scan when there are NO linked resources at all: pure local-folder projects
+  // (e.g. Config/Library/Startup/User as real subdirectories) have no <linkedResources>
+  // in .project, so hasType2Links would be false even though sourceEntries define real dirs.
   const hasType2Links = links.some(l => String(l.type ?? '') === '2');
-  if (hasType2Links && sourceEntries) {
+  if ((hasType2Links || links.length === 0) && sourceEntries) {
     // Build variable map from <variableList>
     const variables: any[] = doc?.projectDescription?.variableList?.variable ?? [];
     const variableMap = new Map<string, string>();
@@ -660,7 +671,7 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
   // Translate HT32-IDE post-build variables; bat path → absolute (caller calls resolveHt32IdePostBuildPath)
   // postbuildStep path is relative to the HT32-IDE build output dir (Project_xxx/<buildDirName>/), not projectDir.
   const postBuildCmd = postbuildStep
-    ? buildHt32IdePostBuildCmd(postbuildStep, buildDir, outputName, icName, projectName)
+    ? buildHt32IdePostBuildCmd(postbuildStep, buildDir, icName, projectName)
     : undefined;
 
   // Mirror HT32-IDE's PARENT-n-PROJECT_LOC mechanism: for each -l library whose search
@@ -697,15 +708,24 @@ export function parseHt32IdeProject(projectDir: string): Ht32IdeResult {
 function buildHt32IdePostBuildCmd(
   raw:        string,
   projectDir: string,
-  outputName: string,
   icName:     string,
   projectName: string,
 ): string {
-  // Substitute Eclipse CDT variables
+  // Substitute Eclipse CDT built-in variables.
+  // ${BuildArtifactFileName} and ${BuildArtifactFileBaseName} both represent paths inside
+  // the build output directory. The final build/ path (relative to wsRoot) is only known
+  // in convertHt32IdeProject — use sentinels; replaced there after bgDir is computed.
   let cmd = raw
-    .replace(/\$\{BuildArtifactFileBaseName\}/g, outputName)
-    .replace(/\$\{IC_NAME\}/g, icName)
-    .replace(/\$\{ProjName\}/g, projectName);
+    .replace(/\$\{BuildArtifactFileName\}/g,         ELF_SENTINEL)
+    .replace(/\$\{BuildArtifactFileBaseName\}/g,     BASENAME_SENTINEL)
+    .replace(/\$\{BuildArtifactFileExtension\}/g,    'elf')
+    .replace(/\$\{ProjName\}/g,                      projectName)
+    .replace(/\$\{IC_NAME\}/g,                       icName);
+  // Warn if any unrecognised CDT variables remain (sentinels excluded — resolved later)
+  const remaining = cmd.replace(/\x00[A-Z]+\x00/g, '').match(/\$\{[^}]+\}/g);
+  if (remaining) {
+    logWarn(`HT32-IDE post-build: unrecognised CDT variable(s): ${remaining.join(', ')} — left as-is`);
+  }
 
   // Resolve first token (bat/exe path) from projectDir-relative to absolute.
   // If rawPath has no separator (bare command name like "arm-none-eabi-objcopy.exe"),
@@ -1172,13 +1192,16 @@ export interface Ht32IdeConvertProjectResult {
 
 /**
  * Compute the HT32_VSCode workspace root from a HT32-IDE project directory.
- *   49x layout: .../calibration/HT32-IDE          → wsRoot = calibration/
- *   STD layout: .../exDir/HT32-IDE/Project_xxx    → wsRoot = exDir/
+ *   49x layout:    .../calibration/HT32-IDE          → wsRoot = calibration/
+ *   STD layout:    .../exDir/HT32-IDE/Project_xxx    → wsRoot = exDir/
+ *   Type-3 local:  .../SomeFolder/ProjectName        → wsRoot = SomeFolder/
  */
 export function computeHt32IdeWsRoot(projectDir: string): string {
-  return /^ht32-?ide$/i.test(path.basename(projectDir))
-    ? path.dirname(projectDir)
-    : path.dirname(path.dirname(projectDir));
+  if (/^ht32-?ide$/i.test(path.basename(projectDir)))
+    return path.dirname(projectDir);                     // 49x: projectDir IS HT32-IDE/
+  if (/^ht32-?ide$/i.test(path.basename(path.dirname(projectDir))))
+    return path.dirname(path.dirname(projectDir));       // STD: HT32-IDE/Project_xxx
+  return path.dirname(projectDir);                      // Type-3: pure local folder
 }
 
 /** Returns the HT32_VSCode directory that convertHt32IdeProject will create for a given projectDir. */
@@ -1267,8 +1290,14 @@ export async function convertHt32IdeProject(
   const floatAbiFinal = result.fpuName
     ? (result.hardFloat ? 'hard' : 'softfp')
     : (fpuFinal ? 'hard' : 'soft');
+  // Post-build cwd = ${workspaceFolder} = ht32VsDir, so paths must be relative to ht32VsDir.
+  const buildRelPath  = path.join(path.relative(ht32VsDir, bgDir), 'build').replace(/\\/g, '/');
+  const elfRelPath    = `${buildRelPath}/${result.outputName}.elf`;
+  const baseRelPath   = `${buildRelPath}/${result.outputName}`;
   const idePostBuildCmd = result.postBuildCmd
     ? resolveHt32IdePostBuildPath(result.postBuildCmd, ht32VsDir, path.dirname(projectDir))
+        .replace(/\x00ELF\x00/g,  elfRelPath)
+        .replace(/\x00BASE\x00/g, baseRelPath)
     : undefined;
   const isFirstConvert = !fs.existsSync(path.join(bgDir, 'project.settings.json'));
   const _existingSettings = readProjectSettings(bgDir);

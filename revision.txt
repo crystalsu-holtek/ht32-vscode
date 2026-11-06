@@ -6,8 +6,8 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（4）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
-              TreeView 子群組支援
+  新功能（5）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+              TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框
   修正（7） ：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴
 
@@ -38,6 +38,15 @@ v0.3.3  (from v0.3.2)
   Add Existing/New Files 在 folder 節點上顯示明確錯誤訊息；
   新增 getParent 實作，修正 treeView.reveal() 在非頂層節點失效的問題；
   workbench.tree.indent 由 writeMakefileToolsSettings 在首次建立時注入 16
+- TreeView 統一 Remove/Delete 對話框（Del 鍵 / 右鍵選單）：
+  新增 ht32.treeDelete 命令，取代原本分散的 treeRemoveGroup / treeRemoveFile / treeDeleteFile；
+  File 節點：第一個 modal 選擇「Remove from Project」或「Remove + Delete File」，
+    選刪除則再顯示第二個確認 modal；
+  Group 節點：同樣兩階段確認；group 內無檔案時自動隱藏「Delete All Files」選項；
+  修正：刪除含 .ld 的 group 時正確清除 meta.linkerScripts[]（舊版未清除）；
+  修正：absPath fallback 改用 projectRoot（path.dirname × 2 from buildGenDir），
+    避免 tree.getRoot() 在新版佈局回傳錯誤的 HT32_VSCode/ 路徑；
+  新增 removeFileFromMeta() helper，消除三份重複的 ldRel 路徑計算邏輯
 
 修正
 - Convert uVision — Makefile CC 路徑寫入完整路徑：

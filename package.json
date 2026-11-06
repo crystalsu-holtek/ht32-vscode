@@ -210,12 +210,6 @@
         "icon": "$(add)"
       },
       {
-        "command": "ht32.treeRemoveGroup",
-        "category": "HT32",
-        "title": "Remove Group",
-        "icon": "$(trash)"
-      },
-      {
         "command": "ht32.treeAddNewFilesToGroup",
         "category": "HT32",
         "title": "Add New Files",
@@ -234,15 +228,9 @@
         "icon": "$(settings-gear)"
       },
       {
-        "command": "ht32.treeRemoveFile",
+        "command": "ht32.treeDelete",
         "category": "HT32",
-        "title": "Remove from Group",
-        "icon": "$(close)"
-      },
-      {
-        "command": "ht32.treeDeleteFile",
-        "category": "HT32",
-        "title": "Delete File",
+        "title": "Remove / Delete...",
         "icon": "$(trash)"
       },
       {
@@ -358,7 +346,7 @@
           "group": "1_edit@3"
         },
         {
-          "command": "ht32.treeRemoveGroup",
+          "command": "ht32.treeDelete",
           "when": "view == ht32ProjectView && (viewItem == group || viewItem == groupMixed || viewItem == groupFolder)",
           "group": "1_edit@4"
         },
@@ -368,24 +356,14 @@
           "group": "1_edit@0"
         },
         {
-          "command": "ht32.treeRemoveFile",
+          "command": "ht32.treeDelete",
           "when": "view == ht32ProjectView && (viewItem == file || viewItem == sourceFile)",
           "group": "1_edit@1"
         },
         {
-          "command": "ht32.treeDeleteFile",
-          "when": "view == ht32ProjectView && (viewItem == file || viewItem == sourceFile)",
-          "group": "1_edit@2"
-        },
-        {
-          "command": "ht32.treeRemoveFile",
+          "command": "ht32.treeDelete",
           "when": "view == ht32ProjectView && viewItem == linkerFile",
           "group": "1_edit@1"
-        },
-        {
-          "command": "ht32.treeDeleteFile",
-          "when": "view == ht32ProjectView && viewItem == linkerFile",
-          "group": "1_edit@2"
         }
       ],
       "view/title": [
@@ -687,7 +665,7 @@
     },
     "keybindings": [
       {
-        "command": "ht32.treeDeleteFile",
+        "command": "ht32.treeDelete",
         "key": "delete",
         "when": "focusedView == ht32ProjectView"
       },

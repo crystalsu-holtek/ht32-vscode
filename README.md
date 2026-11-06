@@ -128,10 +128,10 @@ Hovering over the root node reveals:
 |--------|---------|
 | Tree root (`.ht32vs`) | Rename Project File |
 | Sub-project node | Move Up, Move Down, Open Folder in Explorer, Remove Project, Add Group |
-| Group | Add Sub-Group, Add New Files, Add Existing Files, Remove Group |
-| Group folder | Add Sub-Group, Remove Group |
-| File | File Settings (exclude / execute-only / ROM region), Remove from Group, Delete File |
-| Linker file (`.ld`) | Remove from Group, Delete File |
+| Group | Add Sub-Group, Add New Files, Add Existing Files, Remove / Delete... |
+| Group folder | Add Sub-Group, Remove / Delete... |
+| File | File Settings (exclude / execute-only / ROM region), Remove / Delete... |
+| Linker file (`.ld`) | Remove / Delete... |
 
 <img src="media/12.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 ---

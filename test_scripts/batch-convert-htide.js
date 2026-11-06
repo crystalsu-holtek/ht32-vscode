@@ -9,6 +9,10 @@
 // Example:
 //   node test_scripts/batch-convert-htide.js E:\HT32F493x5_FWLib_V1.2.1_172\project\ht32f49395_sk\examples
 //   node test_scripts/batch-convert-htide.js E:\FWLib\examples "C:\gcc\bin\arm-none-eabi-gcc.exe"
+//
+// Coverage note: to exercise the Type-3 conversion branch (pure local folder, no <linkedResources>),
+// include at least one Type-3 project in <examples-dir>. STD/49x FWLib examples only cover branches
+// 1 and 2 of computeHt32IdeWsRoot; Type-3 projects (self-contained, no linked resources) cover branch 3.
 
 'use strict';
 

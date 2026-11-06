@@ -128,10 +128,10 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 |------|------|
 | 樹狀根節點（`.ht32vs`） | Rename Project File（重新命名）|
 | 子專案節點 | Move Up（上移）、Move Down（下移）、Open Folder in Explorer（開啟專案資料夾）、Remove Project（從清單移除）、Add Group（新增群組） |
-| 群組 | Add Sub-Group（新增子群組）、Add New Files（新建檔案）、Add Existing Files（加入現有檔案）、Remove Group（移除群組） |
-| 群組資料夾 | Add Sub-Group（新增子群組）、Remove Group（移除群組） |
-| 檔案 | File Settings（排除編譯 / Execute-only / ROM region）、Remove from Group（從群組移除）、Delete File（從磁碟刪除） |
-| Linker 檔案（`.ld`） | Remove from Group（從群組移除）、Delete File（從磁碟刪除） |
+| 群組 | Add Sub-Group（新增子群組）、Add New Files（新建檔案）、Add Existing Files（加入現有檔案）、Remove / Delete...（移除或刪除） |
+| 群組資料夾 | Add Sub-Group（新增子群組）、Remove / Delete...（移除或刪除） |
+| 檔案 | File Settings（排除編譯 / Execute-only / ROM region）、Remove / Delete...（移除或從磁碟刪除） |
+| Linker 檔案（`.ld`） | Remove / Delete...（移除或從磁碟刪除） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/12.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 ---

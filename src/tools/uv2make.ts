@@ -5,7 +5,7 @@ import * as path from "path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { scatter2ld } from "./scatter2ld";
 import { semverCmp, writeProjectLists, resolveInclude, parseIncludesList } from './utils';
-import { readProjectSettings, writeProjectSettings, ProjectSettings } from "./settingsWebview";
+import { readProjectSettings, writeProjectSettings, ProjectSettings, bgDirToProjectRoot } from "./settingsWebview";
 
 /* ──────────────────────────────────────
  * 共用 OutputChannel / Log
@@ -669,8 +669,7 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
   }));
   await writeCompileCommands(outDirAbs, effectiveOpts, info);
 
-  // outDirAbs is always exactly 2 levels inside projectRoot: projectRoot/HT32_VSCode/ProjectName/
-  const projectRoot = path.dirname(path.dirname(outDirAbs));
+  const projectRoot = bgDirToProjectRoot(outDirAbs);
   // toMeta: projDir-relative → projectRoot-relative (works regardless of how deep projDir is)
   const toMeta = (rel: string) => normalize(path.relative(projectRoot, path.resolve(projDir, rel)));
 
@@ -3493,7 +3492,7 @@ export async function refreshDerivedFiles(
   }
 ): Promise<void> {
   const buildGenName = path.basename(buildGenDir);
-  const wsRoot      = path.dirname(path.dirname(buildGenDir));
+  const wsRoot      = bgDirToProjectRoot(buildGenDir);
   const bgParentDir = path.dirname(buildGenDir);
   const relUp  = path.relative(buildGenDir, wsRoot).replace(/\\/g, '/');
   const allFiles: string[] = Object.values(meta.groups || {}).flat()

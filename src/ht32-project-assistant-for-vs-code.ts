@@ -6,7 +6,7 @@ import { exec as cpExec, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
 import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
-import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged } from './tools/settingsWebview';
+import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
 import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
@@ -4557,6 +4557,17 @@ function parseFileItemId(id: string): { buildGenDir: string; groupName: string; 
   };
 }
 
+/** Remove one file from meta.groups and, if it is a .ld, from meta.linkerScripts[]. */
+function removeFileFromMeta(buildGenDir: string, groupName: string, filePath: string, meta: Meta): void {
+  if (!meta?.groups?.[groupName]) return;
+  meta.groups[groupName] = meta.groups[groupName].filter((f: string) => f !== filePath);
+  if (filePath.toLowerCase().endsWith('.ld') && meta.linkerScripts) {
+    const ldRel = path.relative(buildGenDir, path.resolve(bgDirToProjectRoot(buildGenDir), filePath)).replace(/\\/g, '/');
+    meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
+    notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
+  }
+}
+
 /** Validate project.meta.json and project.settings.json for a bgDir.
  *  Returns an error string if either file is missing or contains invalid JSON, null if OK. */
 function validateProjectFiles(bgDir: string): string | null {
@@ -4635,7 +4646,7 @@ function registerTreeEditCommands(
     // This matches the base used by buildProjectMeta() during conversion and by refreshDerivedFiles().
     // DO NOT use root() here — for new-layout projects root() points to HT32_VSCode/, which is
     // one level shallower than project root, causing paths like "../foo.a" that resolve incorrectly.
-    const projectRoot = path.dirname(path.dirname(buildGenDir));
+    const projectRoot = bgDirToProjectRoot(buildGenDir);
     for (const uri of uris) {
       const rel = path.relative(projectRoot, uri.fsPath).replace(/\\/g, '/');
       existing.add(rel);
@@ -4702,7 +4713,7 @@ function registerTreeEditCommands(
       return;
     }
     const { buildGenDir, groupName } = parsed;
-    const projectRoot = path.dirname(path.dirname(buildGenDir));
+    const projectRoot = bgDirToProjectRoot(buildGenDir);
 
     let defaultName = 'new_file.c';
     for (let i = 1; fs.existsSync(path.join(projectRoot, defaultName)); i++) {
@@ -4724,86 +4735,122 @@ function registerTreeEditCommands(
   }));
 
   // Remove Group (right-click on group / groupMixed / groupFolder node)
-  ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeRemoveGroup', async (item: vscode.TreeItem) => {
-    const parsed = parseGroupItemId(item.id || '');
-    if (!parsed) return;
-    const { buildGenDir, groupName } = parsed;
-
-    const meta = readProjectMeta(buildGenDir);
-    if (!meta?.groups) return;
-    const prefix = groupName + '/';
-    const subCount = Object.keys(meta.groups).filter(k => k.startsWith(prefix)).length;
-    const directFiles = (meta.groups[groupName] ?? []).length;
-    const msg = subCount > 0
-      ? directFiles > 0
-        ? `Remove "${groupName}" (${directFiles} file${directFiles > 1 ? 's' : ''}), its ${subCount} sub-group${subCount > 1 ? 's' : ''}, and all their files from the project?`
-        : `Remove "${groupName}" and its ${subCount} sub-group${subCount > 1 ? 's' : ''} and all their files from the project?`
-      : `Remove "${groupName}" and all its files from the project?`;
-
-    const confirmed = await vscode.window.showWarningMessage(msg, { modal: true }, 'Remove');
-    if (confirmed !== 'Remove') return;
-
-    for (const key of Object.keys(meta.groups)) {
-      if (key === groupName || key.startsWith(prefix)) delete meta.groups[key];
-    }
-    persistMeta(buildGenDir, meta);
-    tree.refresh();
-  }));
-
-  // Remove File (right-click on file node)
-  ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeRemoveFile', async (item: vscode.TreeItem) => {
-    const parsed = parseFileItemId(item.id || '');
-    if (!parsed) return;
-    const { buildGenDir, groupName, filePath } = parsed;
-
-    const meta = readProjectMeta(buildGenDir);
-    if (!meta?.groups?.[groupName]) return;
-    meta.groups[groupName] = meta.groups[groupName].filter((f: string) => f !== filePath);
-    // If the removed file is a .ld, also remove it from linkerScripts[]
-    if (filePath.toLowerCase().endsWith('.ld') && meta.linkerScripts) {
-      const ldRel = path.relative(buildGenDir, path.resolve(path.dirname(path.dirname(buildGenDir)), filePath)).replace(/\\/g, '/');
-      meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
-      notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
-    }
-    persistMeta(buildGenDir, meta);
-    tree.refresh();
-  }));
-
-  // Delete File from disk (Delete key / right-click → Delete File)
-  ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeDeleteFile', async (item?: vscode.TreeItem) => {
-    // Keyboard shortcut doesn't pass item; fall back to tree selection
+  // Unified Remove/Delete — Del key + right-click menu entry for both files and groups
+  ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeDelete', async (item?: vscode.TreeItem) => {
     const target = item ?? treeView.selection[0];
     if (!target) return;
-    const parsed = parseFileItemId(target.id || '');
-    if (!parsed || (target.contextValue !== 'file' && target.contextValue !== 'linkerFile')) return;
-    const { buildGenDir, groupName, filePath } = parsed;
+    const cv = (target as any).contextValue as string | undefined;
 
-    const absPath = target.resourceUri?.fsPath ?? path.resolve(tree.getRoot() ?? '', filePath);
-    const fileName = path.basename(absPath);
-    const answer = await vscode.window.showWarningMessage(
-      `Delete "${fileName}"? This will move it to the recycle bin.`,
-      { modal: true }, 'Yes'
-    );
-    if (answer !== 'Yes') return;
+    // ── File node ──────────────────────────────────────────────────────────
+    if (cv === 'file' || cv === 'sourceFile' || cv === 'linkerFile') {
+      const parsed = parseFileItemId(target.id || '');
+      if (!parsed) return;
+      const { buildGenDir, groupName, filePath } = parsed;
+      const absPath = target.resourceUri?.fsPath ?? path.resolve(bgDirToProjectRoot(buildGenDir), filePath);
+      const fileName = path.basename(absPath);
 
-    try {
-      await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { useTrash: true });
-    } catch (e) {
-      vscode.window.showErrorMessage(`Failed to delete "${fileName}": ${e}`);
+      const meta = readProjectMeta(buildGenDir);
+      if (!meta?.groups?.[groupName]) {
+        vscode.window.showErrorMessage(`Cannot remove file: project data may be out of sync. Try reloading the window (Ctrl+Shift+P → Developer: Reload Window).`);
+        return;
+      }
+
+      const choice = await vscode.window.showWarningMessage(
+        `What do you want to do with "${fileName}"?`,
+        { modal: true },
+        'Remove from Project',
+        'Remove + Delete File'
+      );
+      if (!choice) return;
+
+      if (choice === 'Remove + Delete File') {
+        const confirm = await vscode.window.showWarningMessage(
+          `"${fileName}" will be permanently moved to the recycle bin. This cannot be undone.`,
+          { modal: true },
+          'Delete'
+        );
+        if (confirm !== 'Delete') return;
+        try {
+          await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { useTrash: true });
+        } catch (e) {
+          vscode.window.showErrorMessage(`Failed to delete "${fileName}": ${e}`);
+          return;
+        }
+      }
+
+      removeFileFromMeta(buildGenDir, groupName, filePath, meta);
+      persistMeta(buildGenDir, meta);
+      tree.refresh();
       return;
     }
 
-    const meta = readProjectMeta(buildGenDir);
-    if (meta?.groups?.[groupName]) {
-      meta.groups[groupName] = meta.groups[groupName].filter((f: string) => f !== filePath);
-      if (filePath.toLowerCase().endsWith('.ld') && meta.linkerScripts) {
-        const ldRel = path.relative(buildGenDir, path.resolve(path.dirname(path.dirname(buildGenDir)), filePath)).replace(/\\/g, '/');
-        meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
-        notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts);
+    // ── Group node ─────────────────────────────────────────────────────────
+    if (cv === 'group' || cv === 'groupMixed' || cv === 'groupFolder') {
+      const parsed = parseGroupItemId(target.id || '');
+      if (!parsed) return;
+      const { buildGenDir, groupName } = parsed;
+
+      const meta = readProjectMeta(buildGenDir);
+      if (!meta?.groups) return;
+      const prefix = groupName + '/';
+      const affectedKeys = Object.keys(meta.groups).filter(k => k === groupName || k.startsWith(prefix));
+      const totalFiles = affectedKeys.reduce((sum, k) => sum + (meta.groups[k]?.length ?? 0), 0);
+      const subCount = affectedKeys.length - (meta.groups[groupName] !== undefined ? 1 : 0);
+
+      const groupLabel = subCount > 0
+        ? `"${groupName}" (${subCount} sub-group${subCount > 1 ? 's' : ''}, ${totalFiles} file${totalFiles !== 1 ? 's' : ''})`
+        : `"${groupName}" (${totalFiles} file${totalFiles !== 1 ? 's' : ''})`;
+
+      const firstOptions: string[] = ['Remove from Project'];
+      if (totalFiles > 0) firstOptions.push('Remove + Delete All Files');
+      const choice = await vscode.window.showWarningMessage(
+        `What do you want to do with group ${groupLabel}?`,
+        { modal: true },
+        ...firstOptions
+      ) as string | undefined;
+      if (!choice) return;
+
+      const projectRoot = bgDirToProjectRoot(buildGenDir);
+
+      if (choice === 'Remove + Delete All Files') {
+        const confirm = await vscode.window.showWarningMessage(
+          `All ${totalFiles} file${totalFiles !== 1 ? 's' : ''} in group "${groupName}" will be permanently moved to the recycle bin. This cannot be undone.`,
+          { modal: true },
+          'Delete All'
+        );
+        if (confirm !== 'Delete All') return;
+
+        for (const key of affectedKeys) {
+          for (const f of (meta.groups[key] ?? [])) {
+            const absFile = path.resolve(projectRoot, f);
+            try {
+              await vscode.workspace.fs.delete(vscode.Uri.file(absFile), { useTrash: true });
+            } catch {
+              // best-effort; file may already be missing
+            }
+          }
+        }
       }
+
+      // Clean up linkerScripts[] for any .ld files in the removed groups.
+      // Not using removeFileFromMeta() here: that notifies per file; we batch
+      // one notification at the end. ldRel formula must stay in sync with removeFileFromMeta().
+      let linkerChanged = false;
+      for (const key of affectedKeys) {
+        for (const f of (meta.groups[key] ?? [])) {
+          if (f.toLowerCase().endsWith('.ld') && meta.linkerScripts) {
+            const ldRel = path.relative(buildGenDir, path.resolve(projectRoot, f)).replace(/\\/g, '/');
+            meta.linkerScripts = meta.linkerScripts.filter((s: string) => s !== ldRel);
+            linkerChanged = true;
+          }
+        }
+      }
+      if (linkerChanged) notifySettingsLinkerScriptsChanged(path.basename(buildGenDir), meta.linkerScripts ?? []);
+
+      for (const key of affectedKeys) { delete meta.groups[key]; }
       persistMeta(buildGenDir, meta);
+      tree.refresh();
     }
-    tree.refresh();
   }));
 
   // Move Project Up / Down — reorder projects[] in .ht32vs, refresh TreeView + regenerate tasks
@@ -5292,8 +5339,8 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         return path.basename(a).localeCompare(path.basename(b));
       });
       // meta.groups paths are relative to project root (grandparent of build-gen dir),
-      // which is always path.dirname(path.dirname(buildGenDir)) in both old and new layout.
-      const fileBase = path.dirname(path.dirname(buildGenDir));
+      // which is always bgDirToProjectRoot(buildGenDir) in both old and new layout.
+      const fileBase = bgDirToProjectRoot(buildGenDir);
       result.push(...files.map(f => {
         const absFile = path.resolve(fileBase, f);
         const isCSrc  = /\.(c|cpp)$/i.test(f);
@@ -5355,7 +5402,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const parsed = parseFileItemId(el.id || '');
     if (!parsed) return [];
     const { buildGenDir, filePath } = parsed;
-    const fileBase    = path.dirname(path.dirname(buildGenDir));
+    const fileBase    = bgDirToProjectRoot(buildGenDir);
     const absFilePath = path.resolve(fileBase, filePath);
 
     // cache 存 Promise 避免並發展開時重複讀檔

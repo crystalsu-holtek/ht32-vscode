@@ -11,15 +11,20 @@
 | 轉換路徑 | 判斷依據 | wsRoot |
 |---------|---------|--------|
 | Convert uVision | 若 `.uvprojx` 所在目錄名稱符合 `mdk*/keil/arm*` → 上一層；否則原目錄 | `.uvprojx` 所在目錄的上一層（`MDK_ARMv5` 或 `mdk_v5` 的父目錄） |
-| Convert HT32-IDE（STD） | `projectDir` 名稱不是 `HT32-IDE`（如 `Project_xxx`、`AP`）→ 上二層 | `projectDir` 的上二層（`HT32-IDE` 的父目錄） |
-| Convert HT32-IDE（49x） | `projectDir` 名稱本身是 `HT32-IDE` → 上一層 | `projectDir` 的上一層（`HT32-IDE` 的父目錄） |
+| Convert HT32-IDE（49x） | `projectDir` 名稱本身符合 `ht32-?ide` → 上一層 | `projectDir` 的上一層（`HT32-IDE` 的父目錄） |
+| Convert HT32-IDE（STD） | `projectDir` 父目錄名稱符合 `ht32-?ide`（如 `HT32-IDE/Project_xxx`）→ 上二層 | `projectDir` 的上二層（`HT32-IDE` 的父目錄） |
+| Convert HT32-IDE（Type-3） | 純本地資料夾，`projectDir` 和其父目錄名稱都不符合 `ht32-?ide` → 上一層 | `projectDir` 的上一層（包含該專案的資料夾） |
 | Create Project / Open Project | 使用者選取的目錄 | 使用者指定 |
 
-兩種 HT32-IDE 情境實作（`ht32ide2make.ts`）：
+三種 HT32-IDE 情境實作（`ht32ide2make.ts`，`computeHt32IdeWsRoot`）：
 ```typescript
-const wsRoot = /^ht32-?ide$/i.test(path.basename(projectDir))
-  ? path.dirname(projectDir)                 // 49x：HT32-IDE 的上一層
-  : path.dirname(path.dirname(projectDir));  // STD：HT32-IDE/Project_xxx 的上二層
+export function computeHt32IdeWsRoot(projectDir: string): string {
+  if (/^ht32-?ide$/i.test(path.basename(projectDir)))
+    return path.dirname(projectDir);               // 49x：HT32-IDE 目錄的上一層
+  if (/^ht32-?ide$/i.test(path.basename(path.dirname(projectDir))))
+    return path.dirname(path.dirname(projectDir)); // STD：HT32-IDE/Project_xxx 的上二層
+  return path.dirname(projectDir);                // Type-3：純本地資料夾的上一層
+}
 ```
 
 ---
@@ -51,6 +56,7 @@ PROJECT_ROOT/
 **關鍵函式**：
 - `bgParent(root)` — 回傳 Project 的父目錄（`HT32_VSCode/`）
 - `computeWsOpenRoot(root)` — 回傳 VS Code workspace 應開啟的目錄（`HT32_VSCode/`）
+- `bgDirToProjectRoot(buildGenDir)` — 從 bgDir 反推 wsRoot（`bgDir = wsRoot/HT32_VSCode/<ProjectName>`，永遠兩層）；定義於 `settingsWebview.ts`，匯入至 `uv2make.ts` 和主檔案
 - `bgRel` — workspace root 到 bgParent 的相對路徑（空字串）
 
 ---

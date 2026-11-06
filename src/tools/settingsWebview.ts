@@ -114,6 +114,12 @@ function normalizeDebugInterface(val: string): string {
  *  For backward compat, merges missing meta fields from build.meta.json if present. */
 export { DEFAULT_PROJECT_SETTINGS };
 
+/** Returns the project root (wsRoot) for a given build-gen directory.
+ *  Invariant: bgDir = wsRoot/HT32_VSCode/<ProjectName> — always two levels below wsRoot. */
+export function bgDirToProjectRoot(buildGenDir: string): string {
+  return path.dirname(path.dirname(buildGenDir));
+}
+
 export function readProjectSettings(bgDir: string): ProjectSettings {
   const settingsPath = path.join(bgDir, 'project.settings.json');
   if (fs.existsSync(settingsPath)) {
@@ -557,7 +563,7 @@ export function openSettingsPanel(
             const newScripts: string[] = scripts.map((s: string) =>
               path.isAbsolute(s) ? path.relative(bg.dir, s).replace(/\\/g, '/') : s
             );
-            const projectRoot = path.dirname(path.dirname(bg.dir));
+            const projectRoot = bgDirToProjectRoot(bg.dir);
             meta.groups = meta.groups ?? {};
 
             // Helper: bgDir-relative ld → projectRoot-relative (newScripts are always relative after normalization above)

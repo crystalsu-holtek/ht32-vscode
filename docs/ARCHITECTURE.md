@@ -21,6 +21,7 @@
 | [arch/stack-analysis.md](arch/stack-analysis.md) | STACK USAGE 面板、Watermark 機制、DAP evaluate crash、IAP/AP MSP 來源 |
 | [arch/multi-project.md](arch/multi-project.md) | 多專案支援、compile_commands.json per-project、clangd IntelliSense 切換 |
 | [arch/fpu_present.md](arch/fpu_present.md) | `detectFpuPresentFromHeader`：device header `__FPU_PRESENT` 偵測機制、各路徑 search path、49x vs STD 行為差異 |
+| [arch/ht32ide-project-format.md](arch/ht32ide-project-format.md) | HT32-IDE 專案格式三種類型：Type-1 個別 file link / Type-2 folder link + 自訂變數 / 純本地資料夾（無 linkedResources） |
 | [arch/library-linking.md](arch/library-linking.md) | HT32-IDE 兩種 library 引入方式（直接路徑 vs -l/-L）、c/cpp.linker 合併解析 |
 | [arch/settings-ini.md](arch/settings-ini.md) | conf/Settings.ini 三個使用場景：HLM WORKAREASIZE、RAM patch（Create Project）、_estack 上限 cap |
 | [arch/maintenance.md](arch/maintenance.md) | 新增 MCU checklist（DFP/pack/HLM/cfg）、HT32-IDE 改版流程、pyOCD 架構（uv auto-install/pack 選取/產生檔案）、測試腳本、Bundled Make、Marketplace 發布 |
@@ -252,8 +253,7 @@ TreeView 右鍵選單：
 |------|-----------|------|
 | `Add Group` | `ht32.treeAddGroup` | 在專案節點新增群組；在 group / groupFolder 節點新增子群組 |
 | `Add Files to Group` | `ht32.treeAddFilesToGroup` | 新增檔案到群組 |
-| `Remove from Group` | `ht32.treeRemoveGroup` / `ht32.treeRemoveFile` | 從群組移除 |
-| `Delete File` | `ht32.treeDeleteFile` | 從磁碟刪除檔案（Delete 鍵） |
+| `Remove / Delete...` | `ht32.treeDelete` | 從群組移除或刪除檔案／群組（Del 鍵）；兩段式確認 modal |
 
 ---
 
