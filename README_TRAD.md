@@ -262,6 +262,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 **`.uvprojx` 單一專案** — 共用檔輸出至 `HT32_VSCode/GNU_ARM/`；Makefile 與中繼資料輸出至 `HT32_VSCode/Project/`
 
 **`.uvmpw` 多專案** — 每個子專案各一個目錄，目錄名稱取自 `.uvprojx` 檔名（例如 `Project_IAP.uvprojx` + `Project_AP.uvprojx`）：
+
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/7.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ```
@@ -465,9 +466,9 @@ int main(void) {
 | C Runtime Library | `nano`（newlib-nano）/ `nosys`（不使用 syscalls）— 可同時勾選 |
 | printf float | 啟用浮點 printf（`-u _printf_float`） |
 | scanf float | 啟用浮點 scanf（`-u _scanf_float`） |
-| Libraries (-l) | 要連結的函式庫名稱（`-lName`） |
-| Search Paths (-L) | 函式庫搜尋路徑（`-L"dir"`） |
-| Extra LDFLAGS | 附加連結旗標 |
+| Libraries (-l) | 要連結的函式庫名稱。輸入名稱時不需加 `lib` 前綴，例如輸入 `MyDSP`，GCC 會在搜尋路徑中尋找 `libMyDSP.a`。若要直接加入預建 `.a` 檔（不透過搜尋路徑），請在工程視圖的群組上按右鍵，選擇**加入檔案至群組**。 |
+| Search Paths (-L) | GCC 搜尋函式庫的目錄（`-L"dir"`）。將含有 `.a` 檔的資料夾加入此處，再於上方 Libraries (-l) 填入對應的庫名。 |
+| Extra LDFLAGS | 直接傳給連結器的附加旗標。常見用途：`-Wl,--wrap=FunctionName`（攔截並替換特定函式）、`-Wl,--defsym=__heap_size=0x400`（覆蓋連結器符號值）。完整選項請參考 [GNU ld manual](https://sourceware.org/binutils/docs/ld/)。 |
 | Linker Scripts | 連結腳本路徑（相對於 build 目錄） |
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-3.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 

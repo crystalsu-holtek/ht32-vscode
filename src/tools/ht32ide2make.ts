@@ -226,7 +226,7 @@ const SCAN_SKIP_DIR_RE = /^(Release|Debug|RelWithDebInfo|MinSizeRel|build|\.)/i;
 // buildHt32IdePostBuildCmd inserts them; convertHt32IdeProject replaces them
 // once the final build/ path (relative to ht32VsDir) is known.
 const ELF_SENTINEL      = '\x00ELF\x00';   // → <buildRelPath>/TARGET.elf
-const BASENAME_SENTINEL = '\x00BASE\x00';  // → <buildRelPath>/TARGET
+const BASENAME_SENTINEL = '\x00BASE\x00';  // → TARGET (bare output name, no path)
 
 /** Recursively scan a folder and return all compilable/header source entries. */
 function scanSourceFolder(
@@ -1297,7 +1297,7 @@ export async function convertHt32IdeProject(
   const idePostBuildCmd = result.postBuildCmd
     ? resolveHt32IdePostBuildPath(result.postBuildCmd, ht32VsDir, path.dirname(projectDir))
         .replace(/\x00ELF\x00/g,  elfRelPath)
-        .replace(/\x00BASE\x00/g, baseRelPath)
+        .replace(/\x00BASE\x00/g, result.outputName)
     : undefined;
   const isFirstConvert = !fs.existsSync(path.join(bgDir, 'project.settings.json'));
   const _existingSettings = readProjectSettings(bgDir);

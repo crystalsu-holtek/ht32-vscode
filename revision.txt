@@ -6,11 +6,16 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（5）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
-              TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框
-  修正（9） ：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+  新功能（8）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+              TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
+              keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
+              Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
+              Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）
+  修正（12）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
-              Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換
+              Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
+              Add/Delete project 不再彈工具鏈安裝 UI（skipUI）、
+              clangd.arguments 保留使用者自訂 arg、pyocd.yaml 保留使用者自訂 key
 
 詳細
 新功能
@@ -39,6 +44,28 @@ v0.3.3  (from v0.3.2)
   Add Existing/New Files 在 folder 節點上顯示明確錯誤訊息；
   新增 getParent 實作，修正 treeView.reveal() 在非頂層節點失效的問題；
   workbench.tree.indent 由 writeMakefileToolsSettings 在首次建立時注入 16
+- keil2gnu 格式全面改善（STACK/HEAP 完整 GCC labels、condStack、"aw",%nobits）：
+  condStack 追蹤 IF 嵌套型別（'def' = #ifdef、'if' = .if），ELIF/ELSE/ENDIF 自動選擇
+  C preprocessor 或 GAS 指令，解決 :DEF: 與算術條件混用時 ELSE/ENDIF 配對錯誤；
+  AREA STACK/HEAP 展開為完整 GCC-style label block（__StackTop / __StackLimit /
+  __HT_check_sp / __HeapBase / _end / __HeapLimit），供 Stack Analysis 使用；
+  DCD → .long（與 template 一致）；__Vectors → __interrupt_vector_cortex_m（CMSIS 標準名稱）；
+  `emitSiDataBlock()` helper 消除 .word _sidata 區塊重複；siData 只在 AREA STACK 前發一次
+- Convert uVision — startup 有 INCLUDE 指令時強制走 keil2gnu：
+  handleKeilAsm Rule 1 新增 INCLUDE 偵測；patchStartupFromKeil 無法保留 INCLUDE，
+  有 INCLUDE 的 startup（例如含 BootProcess 的 IAP 啟動碼）直接走 keil2gnu + injectStartupInit
+- Add/Delete/Reorder project 後自動更新 tasks/launch config：
+  新增 refreshTasksConfig() helper，tree.refresh + generateTasksAndLaunchAndMakefile
+  with regenMakefile:false, skipUI:true；三個操作改呼叫此函式，避免 tasks.json 殘留舊 project 清單
+- resolveToolchain 加 skipUI 參數：
+  Add/Delete project 觸發的 generateTasksAndLaunchAndMakefile 不再彈工具鏈安裝 UI；
+  _pyocdPathCache 有快取時 skipUI 仍使用快取路徑（不彈 UI）
+- clangd.arguments 保留使用者自訂 arg：
+  writeMakefileToolsSettings 更新 clangd.arguments 時，保留非 managed prefix 的 arg；
+  managed prefixes：--compile-commands-dir= / --query-driver=
+- pyocd.yaml 保留使用者自訂 key（case-insensitive）：
+  generatePyocdFiles 過濾 managed key 時雙邊 toLowerCase，避免大小寫不同的 key 重複
+
 - TreeView 統一 Remove/Delete 對話框（Del 鍵 / 右鍵選單）：
   新增 ht32.treeDelete 命令，取代原本分散的 treeRemoveGroup / treeRemoveFile / treeDeleteFile；
   File 節點：第一個 modal 選擇「Remove from Project」或「Remove + Delete File」，

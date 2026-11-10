@@ -259,6 +259,7 @@ For `.uvmpw`, **all sub-projects are converted at once**, each into its own fold
 **`.uvprojx` single-project** — output to `HT32_VSCode/GNU_ARM/` (shared files) + `HT32_VSCode/Project/` (Makefile & metadata)
 
 **`.uvmpw` multi-project** — one folder per sub-project, named from the `.uvprojx` filename (e.g. `Project_IAP.uvprojx` + `Project_AP.uvprojx`):
+
 <img src="media/7.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ```
@@ -459,9 +460,9 @@ Open via the **Settings** button in the HT32 toolbar. The panel has four tabs.
 | C Runtime Library | `nano` (newlib-nano) / `nosys` — can combine both |
 | printf float | Enable floating-point printf (`-u _printf_float`) |
 | scanf float | Enable floating-point scanf (`-u _scanf_float`) |
-| Libraries (-l) | Library names to link (`-lName`) |
-| Search Paths (-L) | Library search directories (`-L"dir"`) |
-| Extra LDFLAGS | Additional linker flags |
+| Libraries (-l) | Library names to link. Enter the name without the `lib` prefix, e.g. `MyDSP` → GCC looks for `libMyDSP.a` in the search paths. To add a prebuilt `.a` file directly (bypassing search paths), right-click a group in the TreeView and choose **Add Files to Group**. |
+| Search Paths (-L) | Directories where GCC looks for libraries (`-L"dir"`). Add the folder containing your `.a` files here, then reference the library by name in Libraries (-l) above. |
+| Extra LDFLAGS | Additional flags passed directly to the linker. Common examples: `-Wl,--wrap=FunctionName` (intercept/replace a function), `-Wl,--defsym=__heap_size=0x400` (override a linker symbol). See the [GNU ld manual](https://sourceware.org/binutils/docs/ld/) for all available options. |
 | Linker Scripts | Linker script paths relative to the build directory |
 <img src="media/15-3.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 

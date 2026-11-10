@@ -227,7 +227,8 @@ function ensureDir(d) { fs.mkdirSync(d, { recursive: true }); }
 
 function validateMetaGroupPaths(meta, projectRootDir) {
   const missing = Object.values(meta.groups ?? {}).flatMap(v => Array.isArray(v) ? v : [])
-    .filter(p => !meta.fileOptions?.[p]?.exclude && !/\.ld$/i.test(p))
+    // .h 刻意排除：uvprojx/HT32-IDE 會把 header 加進 groups 方便 IDE 瀏覽，但這些檔案由使用者自行建立，test 環境不保證存在
+    .filter(p => !meta.fileOptions?.[p]?.exclude && !/\.ld$/i.test(p) && !/\.h$/i.test(p))
     .map(p => path.resolve(projectRootDir, p))
     .filter(abs => !fs.existsSync(abs));
   if (missing.length) {

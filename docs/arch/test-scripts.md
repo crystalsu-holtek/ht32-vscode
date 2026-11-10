@@ -1,6 +1,6 @@
 # 測試腳本（test_scripts/）
 
-現有腳本：`test-helpers.js`、`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`ht32vs-make.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`。
+現有腳本：`test-helpers.js`、`test-mcu.js`、`test-create-project.js`、`create-prj.js`、`test-compile.js`、`ht32vs-make.js`、`batch-convert-htide.js`、`clean-prj.js`、`clean-vscode-templates.bat`、`_keil2gnu_test.js`。
 
 FWLib 路徑清單共用同一個 ini：`test_scripts/fwlib-paths.ini`。所有腳本都需先 `npm run compile` 編譯 TypeScript。
 
@@ -35,6 +35,7 @@ node test_scripts/test-compile.js --lib 5xxxx
 |------|------|-----------|---------|---------|
 | test-helpers.js | — | — | — | 共用驗證函式庫（被 import，不直接執行）|
 | test-mcu.js | 快 | 不需要 | 不需要 | 修改 HLM/cfg/OpenOCD 相關 |
+| **_keil2gnu_test.js** | 快 | 需要（FWLib .s 路徑） | 不需要 | 修改 `keil2gnu()` / `injectStartupInit()`；直接 require `out/tools/uv2make` |
 | test-create-project.js | 中 | 需要 | 預設需要（`--no-compile` 跳過）| 修改 createProject.ts |
 | create-prj.js | 中 | 需要 | 不需要 | test-compile.js 前置：建立 STD example 專案 |
 | test-compile.js | 慢 | 需要 | 需要 | 修改 uv2make.ts / ht32ide2make.ts |
@@ -247,6 +248,28 @@ ht32vs-make.exe <project.ht32vs> [options]
 ```
 
 **進入點**：`test_scripts/ht32vs-make.js`；以 `pkg` 打包成 `afterbuild/ht32vs-make.exe`（Windows x64）。
+
+---
+
+## _keil2gnu_test.js — keil2gnu 格式正確性
+
+直接 `require('../out/tools/uv2make')` 匯入 `keil2gnu` 與 `injectStartupInit`，對 FWLib IAP startup .s 逐一轉換並做 sanity check。**不需要 GCC**，只需要 FWLib .s 路徑存在。
+
+```bash
+npm run compile      # 必須先編譯
+node test_scripts/_keil2gnu_test.js
+```
+
+**每個 .s 的驗證項目：**
+- `__StackTop`、`__StackLimit`、`__HeapBase`、`__HeapLimit` label 存在
+- `Reset_Handler` 存在
+- `.section` 有 `"aw",%nobits`（不含裸 `"w"`）
+- `.if` / `.endif` 數量相等（condStack 未出現失配）
+
+輸出至 `test_scripts/_keil2gnu_out/<basename>_gcc.s`，可手動比對 template。
+
+**修改 `keil2gnu()` 或 `injectStartupInit()` 後必須執行。**  
+test-compile.js 不直接呼叫 `keil2gnu()`（走 `handleKeilAsm` 再 patch），發現問題時間較晚；此腳本是第一道快速驗證。
 
 ---
 

@@ -909,7 +909,21 @@ function resolveGccBinFromSiblingBuildGen(
  * @param visited    防止遞迴 INCLUDE 循環（呼叫者不需傳入）
  * @returns GNU assembler 語法文字
  */
-function keil2gnu(
+function emitSiDataBlock(out: string[]) {
+  out.push('');
+  out.push('/* start address for the initialization values of the .data section. defined in linker script */');
+  out.push('\t.word  _sidata');
+  out.push('/* start address for the .data section. defined in linker script */');
+  out.push('\t.word  _sdata');
+  out.push('/* end address for the .data section. defined in linker script */');
+  out.push('\t.word  _edata');
+  out.push('/* start address for the .bss section. defined in linker script */');
+  out.push('\t.word  _sbss');
+  out.push('/* end address for the .bss section. defined in linker script */');
+  out.push('\t.word  _ebss');
+  out.push('');
+}
+export function keil2gnu(
   keilText: string,
   srcDir: string,
   outDir: string,
@@ -923,17 +937,18 @@ function keil2gnu(
     '\t.syntax unified',   // 啟用 Thumb2 UAL 語法（LSLS 3-operand 等需要）
   ];
 
-  // Pre-scan: find symbols used as SPACE values (e.g. "SPACE Heap_Size", "SPACE Stack_Size").
-  // For these symbols we must NOT emit #define — only .equ.
-  // Reason: when compiled with -x assembler-with-cpp, the C preprocessor runs first and expands
-  // "#define Heap_Size 0" in ".if Heap_Size > 0" / ".space Heap_Size", so even if the user later
-  // changes ".equ Heap_Size, 512" in the .s file, the old #define still wins → 0 bytes allocated.
-  // Using only .equ lets GAS evaluate the symbol from the symbol table after preprocessing.
-  const spaceSymbols = new Set<string>();
-  for (const l of lines) {
-    const sm = /^\s*(?:[\w$]+\s+)?SPACE\s+([\w$]+)/i.exec(l);
-    if (sm) spaceSymbols.add(sm[1]);
-  }
+  // State for per-line conversion
+  let inCBlockComment = false;  // inside a ;/* ... */ block comment
+  let currentArea     = '';     // 'STACK' | 'HEAP' | '' = other
+  let siDataEmitted   = false;  // .word _sidata/etc. block already emitted
+  const condStack: ('def' | 'if')[] = [];  // track IF nesting: 'def'=#ifdef, 'if'=.if
+
+  // Keil STACK/HEAP area labels replaced by GCC-style equivalents — skip them
+  const SKIP_IN_STACK_HEAP = new Set([
+    'Stack_Mem', '__initial_sp', '__heap_base', 'Heap_Mem', '__heap_limit',
+    '__HT_check_sp',  // already in some FWLib Keil sources; emitted by AREA STACK handler
+    '__HT_check_heap',
+  ]);
 
   // AREA 屬性 → section 指令對應
   // .text / .data / .bss 是 GNU as 獨立 pseudo-op；.rodata 不是，必須加 .section
@@ -966,9 +981,29 @@ function keil2gnu(
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
-    // ── 1. 行尾 ; 注解 → @ ──────────────────────────────────────────────
-    // 注意：字串內的 ; 不處理（HT32 組語幾乎沒有字串，這裡簡化處理）
-    line = line.replace(/;(.*)$/, (_, comment) => `@ ${comment.trimStart()}`);
+    // ── 1. ; 注解 → /* */ ；C block comment 行（;/* …、; * …）直接去掉 ;，保留 /* */ 格式 ──
+    {
+      const leadingSemiM = /^(\s*);(.*)$/.exec(line);
+      if (leadingSemiM) {
+        const after  = leadingSemiM[2];
+        const afterT = after.trimStart();
+        const isBlock = inCBlockComment
+          || afterT.startsWith('/*')
+          || afterT.startsWith('*/');
+        if (isBlock) {
+          line = leadingSemiM[1] + after;
+          if (after.includes('/*') && !after.includes('*/')) inCBlockComment = true;
+          else if (after.includes('*/'))                     inCBlockComment = false;
+        } else {
+          inCBlockComment = false;
+          line = line.replace(/;(.*)$/, (_, c) => `/* ${c.trimStart()} */`);
+        }
+      } else {
+        // Inline ; on instruction line → /* */; also terminates any block comment context
+        inCBlockComment = false;
+        line = line.replace(/;(.*)$/, (_, c) => `/* ${c.trimStart()} */`);
+      }
+    }
 
     const trimmed = line.trim();
     const upper   = trimmed.toUpperCase();
@@ -1000,11 +1035,45 @@ function keil2gnu(
     // 區域名稱可能是普通識別字或 Keil 的 |.text| 管道括住形式
     const areaM = /^\s*AREA\s+(\|[^|]*\||\w[\w$]*)\s*,\s*(.+)$/i.exec(line);
     if (areaM) {
-      const areaName = areaM[1];
-      const attrs    = areaM[2];
-      const sect     = areaToSection(areaName, attrs);
-      // ALIGN=n → .balign 2^n
-      const alignM = /ALIGN\s*=\s*(\d+)/i.exec(attrs);
+      const areaName  = areaM[1];
+      const attrs     = areaM[2];
+      const areaUpper = areaName.toUpperCase().replace(/^\||\|$/g, '');
+
+      // ── AREA STACK → .section ".stack" + GCC-style labels ──────────────
+      if (areaUpper === 'STACK') {
+        currentArea = 'STACK';
+        if (!siDataEmitted) { emitSiDataBlock(out); siDataEmitted = true; }
+        out.push('\t.section ".stack","aw",%nobits');
+        out.push('\t.align  3');
+        out.push('\t.globl  __StackTop');
+        out.push('\t.globl  __StackLimit');
+        out.push('\t.globl  __HT_check_sp');
+        out.push('__HT_check_sp:');
+        out.push('__StackLimit:');
+        continue;
+      }
+
+      // ── AREA HEAP → .section ".heap" + GCC-style labels ────────────────
+      if (areaUpper === 'HEAP') {
+        currentArea = 'HEAP';
+        out.push('\t.section ".heap","aw",%nobits');
+        out.push('\t.align  3');
+        out.push('\t.globl  __HeapBase');
+        out.push('\t.globl  _end');
+        out.push('\t.globl  __HeapLimit');
+        out.push('\t.globl  __HT_check_heap');
+        out.push('__HT_check_heap:');
+        out.push('__HeapBase:');
+        out.push('_end:');
+        continue;
+      }
+
+      // ── Other AREAs ─────────────────────────────────────────────────────
+      currentArea = '';
+      // If no AREA STACK was seen yet (unusual), still emit siData before RESET
+      if (!siDataEmitted && areaUpper === 'RESET') { emitSiDataBlock(out); siDataEmitted = true; }
+      const sect    = areaToSection(areaName, attrs);
+      const alignM  = /ALIGN\s*=\s*(\d+)/i.exec(attrs);
       const balign  = alignM ? (1 << parseInt(alignM[1])) : null;
       out.push(`\t${sect}`);
       if (balign) out.push(`\t.balign ${balign}`);
@@ -1014,7 +1083,8 @@ function keil2gnu(
     // ── 7. EQU：「name EQU value」(name 可能在同一行前面) ────────────────
     const equM = /^(\s*)([\w$]+)\s+EQU\s+(.+)$/i.exec(line);
     if (equM) {
-      const name = equM[2];
+      let name = equM[2];
+      if (name === '__initial_sp') name = '__StackTop';  // rename EQU-override in STACK area
       let   val  = equM[3].trim();
       // 去掉行末注解（已被上面轉成 @，所以抓 @ 後面的部分）
       val = val.replace(/\s*@.*$/, '').trim();
@@ -1024,14 +1094,9 @@ function keil2gnu(
       val = val.replace(/"(.)"/g, "'$1'");
       // 運算子轉換
       val = keilOperators(val);
-      // Emit .equ BEFORE #define: preprocessor expands macros top-down, so .equ must appear
-      // before #define to avoid the macro name being replaced in the .equ symbol field itself.
-      // Symbols used in SPACE directives (e.g. Heap_Size, Stack_Size) get .equ ONLY — no #define.
-      // This allows users to change the .equ value in the .s file and have it take effect correctly.
+      // .equ only — no #define duplicate.
+      // Conditionals now use .if (GAS directive) which reads .equ values directly.
       out.push(`${equM[1]}.equ ${name}, ${val}`);
-      if (!spaceSymbols.has(name)) {
-        out.push(`#define ${name} ${val}`);
-      }
       continue;
     }
 
@@ -1039,13 +1104,51 @@ function keil2gnu(
     // 支援「label SPACE val」與「        SPACE val」兩種形式
     const dataM = /^(\s*)([\w$]+\s+)?(DCD|DCW|DCB|SPACE)\s+(.*)$/i.exec(line);
     if (dataM) {
-      const labelPart = dataM[2]?.trim();   // 有 label → 輸出 "label:"
+      const labelPart = dataM[2]?.trim();
       const dir       = dataM[3].toUpperCase();
-      const val       = keilOperators(dataM[4].replace(/\s*@.*$/, '').trim());
+      let   val       = keilOperators(dataM[4].replace(/\s*@.*$/, '').trim());
+      // Replace Keil stack-top label with GCC equivalent
+      val = val.replace(/\b__initial_sp\b/g, '__StackTop');
+
+      // ── SPACE inside STACK/HEAP area ─────────────────────────────────
+      if (dir === 'SPACE' && (currentArea === 'STACK' || currentArea === 'HEAP')) {
+        // labelPart is typically Stack_Mem / Heap_Mem (skipped); emit space + post-labels
+        if (currentArea === 'STACK') {
+          out.push(`\t.if     ${val}`);
+          out.push(`\t.space  ${val}`);
+          out.push(`\t.endif`);
+          out.push(`\t.size __StackLimit, . - __StackLimit`);
+          out.push(`__StackTop:`);
+          out.push(`\t.size __StackTop, . - __StackTop`);
+        } else {
+          out.push(`\t.if     ${val}`);
+          out.push(`\t.space  ${val}`);
+          out.push(`\t.endif`);
+          out.push(`\t.size __HeapBase, . - __HeapBase`);
+          out.push(`__HeapLimit:`);
+          out.push(`\t.size __HeapLimit, . - __HeapLimit`);
+        }
+        continue;
+      }
+
+      // ── DCD / DCW / DCB and regular SPACE ────────────────────────────
       const gnuDir: Record<string, string> = {
-        DCD: '.word', DCW: '.hword', DCB: '.byte', SPACE: '.space'
+        DCD: '.long', DCW: '.hword', DCB: '.byte', SPACE: '.space'
       };
-      if (labelPart) out.push(`${labelPart}:`);
+      if (labelPart) {
+        if (SKIP_IN_STACK_HEAP.has(labelPart)) {
+          // Keil stack/heap label — skip it; still emit data if not SPACE
+          if (dir !== 'SPACE') out.push(`\t${gnuDir[dir]} ${val}`);
+          continue;
+        }
+        if (labelPart === '__Vectors') {
+          out.push('\t.global  __interrupt_vector_cortex_m');
+          out.push('\t.type  __interrupt_vector_cortex_m, %object');
+          out.push('__interrupt_vector_cortex_m:');
+        } else {
+          out.push(`${labelPart}:`);
+        }
+      }
       // SPACE 0 → GNU assembler 警告 "repeat count is zero"；用 .if guard 消除
       if (dir === 'SPACE') {
         out.push(`\t.if ${val} > 0`);
@@ -1068,8 +1171,9 @@ function keil2gnu(
     // ── 10. EXPORT sym [WEAK] ─────────────────────────────────────────────
     const exportM = /^\s*EXPORT\s+([\w$]+)\s*(\[WEAK\])?/i.exec(line);
     if (exportM) {
-      const sym  = exportM[1];
+      let sym    = exportM[1];
       const weak = !!exportM[2];
+      if (sym === '__Vectors') sym = '__interrupt_vector_cortex_m';
       if (weak) out.push(`\t.weak ${sym}`);
       out.push(`\t.global ${sym}`);
       continue;
@@ -1094,35 +1198,32 @@ function keil2gnu(
     }
 
     // ── 13. IF / ELSE / ENDIF ────────────────────────────────────────────
-    //  IF :DEF:sym      → .ifdef sym
-    //  IF :LNOT::DEF:x  → .ifndef sym
-    //  IF sym=val       → .if sym == val
+    //  IF :DEF:sym      → #ifdef sym  (C preprocessor: works with -D flags)
+    //  IF :LNOT::DEF:x  → #ifndef sym
+    //  IF sym=val       → .if sym == val  (GAS directive: reads .equ values)
     //  IF (expr)        → .if (expr)
     const ifM = /^\s*IF\s+(.+)$/i.exec(line);
     if (ifM) {
-      const cond = ifM[1].trim().replace(/\s*@.*$/, '');
+      const cond  = ifM[1].trim().replace(/\s*@.*$/, '');
       const defM  = /^:DEF:\s*([\w$]+)$/i.exec(cond);
       const ndefM = /^:LNOT::DEF:\s*([\w$]+)$/i.exec(cond);
-      // 使用 C preprocessor 指令（#ifdef/#if），而非 GNU as 指令（.ifdef/.if）
-      // 原因：ASFLAGS 的 -D 定義的是 C preprocessor 符號，不是 GNU as 符號；
-      //       用 .ifdef 會永遠找不到 -D 定義的 macro，必須用 #ifdef 才能正確解析。
-      if (defM)       out.push(`#ifdef ${defM[1]}`);
-      else if (ndefM) out.push(`#ifndef ${ndefM[1]}`);
-      else            out.push(`#if ${keilIfCond(cond)}`);
+      if (defM)       { out.push(`#ifdef ${defM[1]}`);         condStack.push('def'); }
+      else if (ndefM) { out.push(`#ifndef ${ndefM[1]}`);       condStack.push('def'); }
+      else            { out.push(`.if ${keilIfCond(cond)}`);   condStack.push('if');  }
       continue;
     }
     const elifM = /^\s*ELIF\s+(.+)$/i.exec(line);
     if (elifM) {
       const cond = elifM[1].trim().replace(/\s*@.*$/, '');
-      out.push(`#elif ${keilIfCond(cond)}`);
+      out.push((condStack[condStack.length - 1] ?? 'if') === 'def' ? `#elif ${keilIfCond(cond)}` : `.elseif ${keilIfCond(cond)}`);
       continue;
     }
     if (/^\s*ELSE\s*$/i.test(line)) {
-      out.push('#else');
+      out.push((condStack[condStack.length - 1] ?? 'if') === 'def' ? '#else' : '.else');
       continue;
     }
     if (/^\s*ENDIF\s*$/i.test(line)) {
-      out.push('#endif');
+      out.push((condStack.pop() ?? 'if') === 'def' ? '#endif' : '.endif');
       continue;
     }
 
@@ -1165,7 +1266,7 @@ function keil2gnu(
         // *.axf.bin — Keil build output; try to map to sibling GCC build-gen
         const resolved = resolveGccBinFromSiblingBuildGen(axfMatch[1], path.dirname(outDir), outDir);
         if (resolved) {
-          out.push(`@ [keil2gnu] INCBIN: ${path.basename(rawBin)} → GCC output ${resolved}`);
+          out.push(`/* [keil2gnu] INCBIN: ${path.basename(rawBin)} → GCC output ${resolved} */`);
           binRel = resolved;
         } else {
           binRel = normalize(path.relative(outDir, binAbs));
@@ -1180,7 +1281,7 @@ function keil2gnu(
           ? resolveGccBinFromSiblingBuildGen(plainBinMatch[1], path.dirname(outDir), outDir)
           : undefined;
         if (siblingResolved) {
-          out.push(`@ [keil2gnu] INCBIN: ${path.basename(rawBin)} → sibling GCC build ${siblingResolved}`);
+          out.push(`/* [keil2gnu] INCBIN: ${path.basename(rawBin)} → sibling GCC build ${siblingResolved} */`);
           binRel = siblingResolved;
         } else {
           binRel = normalize(path.relative(outDir, binAbs));
@@ -1214,7 +1315,7 @@ function keil2gnu(
                     : null;
     if (directive) {
       logWarn(`keil2gnu: unsupported Keil directive "${directive}", line kept as-is: ${trimmed}`);
-      out.push(`@ [keil2gnu WARNING] unrecognized Keil directive: ${directive}`);
+      out.push(`/* [keil2gnu WARNING] unrecognized Keil directive: ${directive} */`);
     }
 
     // ── 18. label 行（armasm 規定 label 必須從第 0 欄開始）→ 加 ":" ──
@@ -1223,10 +1324,19 @@ function keil2gnu(
       const pureLabel = /^[\w$]+\s*$/.test(trimmed);
       const inlineM   = /^([\w$]+)([ \t]+)(\S.*)$/.exec(trimmed);
       if (pureLabel) {
-        // 純 label 行：BP1\n → BP1:
+        // Skip Keil stack/heap labels replaced by GCC-style equivalents
+        if (SKIP_IN_STACK_HEAP.has(trimmed)) continue;
+        // __Vectors standalone → __interrupt_vector_cortex_m (normally handled in Rule 8)
+        if (trimmed === '__Vectors') {
+          out.push('\t.global  __interrupt_vector_cortex_m');
+          out.push('\t.type  __interrupt_vector_cortex_m, %object');
+          out.push('__interrupt_vector_cortex_m:');
+          continue;
+        }
         out.push(`${trimmed}:`);
         continue;
       } else if (inlineM) {
+        if (SKIP_IN_STACK_HEAP.has(inlineM[1])) continue;
         // label + 指令同行：BP1   LDR R0,... → BP1:   LDR R0,...
         out.push(`${inlineM[1]}:${inlineM[2]}${inlineM[3]}`);
         continue;
@@ -1271,11 +1381,11 @@ function keilOperators(expr: string): string {
  * 缺少 GNU toolchain 必要的 .data copy、.bss 清零、__libc_init_array。
  * 此函式做 post-process：偵測缺漏並注入標準 ARM Cortex-M 啟動序列。
  */
-function injectStartupInit(gnuText: string): string {
+export function injectStartupInit(gnuText: string): string {
   // 只處理 startup 檔（有 .isr_vector section）
   if (!gnuText.includes('.isr_vector')) return gnuText;
-  // 已有 _sdata → 不重複注入
-  if (gnuText.includes('_sdata')) return gnuText;
+  // 已有 LoopCopyDataInit → 不重複注入（.word _sdata 在 keil2gnu siData block 也會出現，不能用它判斷）
+  if (gnuText.includes('LoopCopyDataInit')) return gnuText;
 
   // ── Step 1: 移除 Keil 的 Stack/Heap .bss block ──────────────────────────
   // Keil startup 在 .bss 定義 Stack_Mem / Heap_Mem，佔用 RAM；
@@ -1288,7 +1398,7 @@ function injectStartupInit(gnuText: string): string {
     'Stack_Mem', '__initial_sp', '__heap_base', 'Heap_Mem', '__heap_limit',
   ]);
 
-  // ── Step 2: 向量表第一項 __initial_sp → _estack，並移除 Keil SystemInit 呼叫 ──
+  // ── Step 2: 向量表第一項 __initial_sp → __StackTop，並移除 Keil SystemInit 呼叫 ──
   // Keil startup 在 Reset_Handler 最前面就呼叫 SystemInit，比 data/bss 初始化早。
   // GNU 慣例（HT32-IDE 參考）：data copy → bss zero → SystemInit → __libc_init_array。
   // 所以這裡偵測並移除原本的 LDR Rx,=SystemInit + BLX Rx，稍後在正確位置重新插入。
@@ -1310,18 +1420,18 @@ function injectStartupInit(gnuText: string): string {
     if (skipNextBLX) {
       skipNextBLX = false;
       if (/^\s*BLX?\s+\w+\s*(@.*)?$/i.test(line)) continue; // 移除配對的 BLX Rx
-      filtered.push(line.replace(/\b__initial_sp\b/g, '_estack'));
+      filtered.push(line.replace(/\b__initial_sp\b/g, '__StackTop'));
       continue;
     }
     // 向量表：__initial_sp → _estack
-    filtered.push(line.replace(/\b__initial_sp\b/g, '_estack'));
+    filtered.push(line.replace(/\b__initial_sp\b/g, '__StackTop'));
   }
 
   // ── Step 3: 注入 .data/.bss 初始化 + SystemInit（正確順序）+ __libc_init_array ──
   // 順序比照 HT32-IDE GNU startup：data copy → bss zero → SystemInit → __libc_init_array
   const initCode = [
     '\t.syntax unified',            // 切換 UAL 語法，ADDS 3-operand 才能組譯
-    '\t@ Copy .data section from Flash to SRAM',
+    '\t/* Copy the data segment initializers from flash to SRAM */',
     '\tLDR\tR1, =_sidata',
     '\tLDR\tR2, =_sdata',
     '\tLDR\tR3, =_edata',
@@ -1334,7 +1444,7 @@ function injectStartupInit(gnuText: string): string {
     'LoopCopyDataInit:',
     '\tCMP\tR2, R3',
     '\tBCC\tCopyDataInit',
-    '\t@ Zero fill .bss section',
+    '\t/* Zero fill the bss segment. */',
     '\tLDR\tR2, =_sbss',
     '\tLDR\tR4, =_ebss',
     '\tMOVS\tR3, #0',
@@ -1346,10 +1456,10 @@ function injectStartupInit(gnuText: string): string {
     '\tCMP\tR2, R4',
     '\tBCC\tFillZerobss',
     ...(hadSystemInit ? [
-      '\t@ Call the clock system initialization function',
+      '\t/* Call the clock system initialization function */',
       '\tBL\tSystemInit',
     ] : []),
-    '\t@ Call C++ static constructors',
+    '\t/* Call static constructors */',
     '\tBL\t__libc_init_array',
   ];
 
@@ -1372,7 +1482,7 @@ function injectStartupInit(gnuText: string): string {
       }
       if (endIdx >= 0) {
         lines.splice(startIdx, endIdx - startIdx + 1,
-          '\t@ [keil2gnu] Keil __MICROLIB block removed (GNU toolchain uses _estack/_end)');
+          '\t/* [keil2gnu] Keil __MICROLIB block removed (GNU toolchain uses __StackTop/_end) */');
         text = lines.join('\n');
       }
     }
@@ -1413,9 +1523,12 @@ function injectStartupInit(gnuText: string): string {
     // .type 設 STT_FUNC（linker 才會在 .word 引用時加 Thumb bit），
     // .thumb_func 放 $t mapping symbol（正確反組譯）。
     if (inTextSection && /^\w[\w$]*:$/.test(t)) {
-      const labelName = t.slice(0, -1); // remove trailing ':'
-      final.push(`\t.type\t${labelName}, %function`);
-      final.push('\t.thumb_func');
+      const labelName = t.slice(0, -1);
+      // __interrupt_vector_cortex_m is a data object (.long entries), not a function
+      if (labelName !== '__interrupt_vector_cortex_m') {
+        final.push(`\t.type\t${labelName}, %function`);
+        final.push('\t.thumb_func');
+      }
     }
     final.push(line);
   }
@@ -1609,10 +1722,19 @@ function handleKeilAsm(
       null;
 
     if (templateSrc) {
-      // Template 存在：用 syncStackHeap 複製並同步 Keil 的 Stack/Heap 大小
       if (fs.existsSync(keilAbs)) {
-        patchStartupFromKeil(keilAbs, templateSrc, gccDst, gnuRoot);
-        logInfo(`handleKeilAsm: template ${path.basename(templateSrc)} + syncStackHeap from ${base}`);
+        const keilSrc    = fs.readFileSync(keilAbs, 'utf8');
+        const hasInclude = /^\s*INCLUDE\s+/im.test(keilSrc);
+        if (hasInclude) {
+          // Keil source has INCLUDE directives — template cannot preserve them; use keil2gnu
+          logInfo(`handleKeilAsm: keil2gnu() ${base} (INCLUDE directives present, template skipped)`);
+          const converted = injectStartupInit(keil2gnu(keilSrc, path.dirname(keilAbs), gnuRoot));
+          fs.writeFileSync(gccDst, converted, 'utf8');
+        } else {
+          // Template 存在且無 INCLUDE：用 syncStackHeap 複製並同步 Keil 的 Stack/Heap 大小
+          patchStartupFromKeil(keilAbs, templateSrc, gccDst, gnuRoot);
+          logInfo(`handleKeilAsm: template ${path.basename(templateSrc)} + syncStackHeap from ${base}`);
+        }
       } else {
         fs.copyFileSync(templateSrc, gccDst);
         logInfo(`handleKeilAsm: template ${path.basename(templateSrc)} (no Keil source)`);
@@ -1620,7 +1742,7 @@ function handleKeilAsm(
     } else if (fs.existsSync(keilAbs)) {
       // Fallback：找不到對應 template，才退回 keil2gnu() 轉換
       logInfo(`handleKeilAsm: keil2gnu() ${base} (no template available)`);
-      let converted = injectStartupInit(
+      const converted = injectStartupInit(
         keil2gnu(fs.readFileSync(keilAbs, 'utf8'), path.dirname(keilAbs), gnuRoot)
       );
       fs.writeFileSync(gccDst, converted, 'utf8');

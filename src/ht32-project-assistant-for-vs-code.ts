@@ -29,6 +29,7 @@ let convertDiagCollection:  vscode.DiagnosticCollection;
 /** ====== constants ====== */
 const PROJECT_VIEW_ID = 'ht32ProjectView';      // ← package.json 中 views[].id
 const CONTAINER_VIEW_ID = 'ht32Assistant';      // ← package.json 中 viewsContainers.activitybar[].id
+const MANAGED_CLANGD_ARG_PREFIXES = ['--compile-commands-dir=', '--query-driver='];
 /** ====== logging ====== */
 const CHANNEL = vscode.window.createOutputChannel('HT32 VSCode');
 function logInfo(msg: string) { CHANNEL.appendLine(`[INFO] ${msg}`); }
@@ -119,6 +120,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   const tree = new ProjectTreeProvider();
   const treeView = vscode.window.createTreeView(PROJECT_VIEW_ID, { treeDataProvider: tree });
   treeView.title = `PROJECTS`;
+
   ctx.subscriptions.push(treeView);
   ctx.subscriptions.push(treeView.onDidChangeSelection(e => {
     const item = e.selection[0];
@@ -231,7 +233,9 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const existing: string[] = _parsed.projects ?? [];
       // Find bgDirs in the same parent that are not yet listed
       const available = fs.existsSync(parent)
-        ? fs.readdirSync(parent).filter(d => isBgDir(parent, d) && !existing.includes(d)).sort()
+        ? fs.readdirSync(parent).filter(d =>
+            isBgDir(parent, d) &&
+            !existing.includes(d)).sort()
         : [];
       const picks = await vscode.window.showQuickPick(
         available.map(d => ({ label: d })),
@@ -261,7 +265,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       } else {
         writeOrUpdateProjectFile(parent, toAdd, path.basename(activeFile, '.ht32vs'));
       }
-      tree.refresh();
+      await refreshTasksConfig(tree, root, 'adding project');
     }),
     vscode.commands.registerCommand('ht32.deleteProject', async (item: vscode.TreeItem) => {
       const root = currentWsRoot();
@@ -283,7 +287,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const updated = projects.filter(p => p !== dirName);
       if (updated.length === projects.length) { return; }
       fs.writeFileSync(ht32wsPath, JSON.stringify({ projects: updated }, null, 2), 'utf8');
-      tree.refresh();
+      await refreshTasksConfig(tree, root, 'removing project');
     }),
     vscode.commands.registerCommand('ht32.closeProject',  () => {
       const root = currentWsRoot();
@@ -1292,14 +1296,15 @@ let _toolchainInstallPromise: Promise<void> | undefined;
 async function resolveToolchain(
   root: string,
   bgFullDirs: string[],
-  onInstalled: () => Promise<void>
+  onInstalled: () => Promise<void>,
+  skipUI = false
 ): Promise<ToolchainPaths> {
   const cfg             = vscode.workspace.getConfiguration('ht32');
   const makePathSetting = cfg.get<string>('makePath', '').trim();
   const makePathFull    = makePathSetting || await locateMake(extensionPath);
   const gccPath         = await locateArmGcc();
 
-  if (!makePathFull || !gccPath) {
+  if (!skipUI && (!makePathFull || !gccPath)) {
     _toolchainInstallPromise ??= (async () => {
       const missing = [!gccPath && 'arm-none-eabi-gcc', !makePathFull && 'GNU make'].filter(Boolean).join(', ');
       const sel = await vscode.window.showWarningMessage(
@@ -1313,7 +1318,10 @@ async function resolveToolchain(
   const makeExe = makePathFull ? path.basename(makePathFull).replace(/\.exe$/i, '') : 'make';
 
   const needsPyocd  = bgFullDirs.some(d => readProjectSettings(d).serverType === 'pyocd');
-  const pyocdPath   = needsPyocd ? await findOrInstallPyocd(extensionPath) : undefined;
+  // skipUI=true: skip only when not yet cached (would show UI); use cache silently if already set
+  const pyocdPath   = needsPyocd
+    ? (_pyocdPathCache !== undefined || !skipUI) ? await findOrInstallPyocd(extensionPath) : undefined
+    : undefined;
 
   return { makePathFull, makeExe, gccPath, pyocdPath };
 }
@@ -2316,9 +2324,12 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
   const queryDriver = gccFull
     ? gccFull.replace(/arm-none-eabi-gcc(\.exe)?$/i, 'arm-none-eabi-*')
     : '**/arm-none-eabi-gcc*';
+  // Preserve user-added clangd arguments; only update the two managed entries.
+  const existingClangdArgs: string[] = Array.isArray(data['clangd.arguments']) ? data['clangd.arguments'] : [];
   data['clangd.arguments'] = [
     `--compile-commands-dir=${ccDir}`,
     `--query-driver=${queryDriver}`,
+    ...existingClangdArgs.filter(a => typeof a === 'string' && !MANAGED_CLANGD_ARG_PREFIXES.some(p => a.startsWith(p))),
   ];
   // 禁用 C/C++ extension 的內建 IntelliSense，讓 clangd 接管跳轉與 include 解析
   // 若兩者並存，cpptools 會搶先接管，因為沒有 c_cpp_properties.json 所以 include 無法解析
@@ -3255,14 +3266,28 @@ function generatePyocdFiles(
   // registration via _add_ext_region (when ext loaders are configured).
   const userScriptAbs = path.join(outDir, 'pyocd_user.py').replace(/\\/g, '/');
   const eraseYaml = eraseMode === 'erase_chip' ? 'chip' : 'sector';
-  const yamlLines = [
+  // Preserve user-added keys (e.g. frequency, target_override); only update the managed entries.
+  const managedYamlLines = [
     'connect_mode: under-reset',
     `smart_flash: ${smartFlash}`,
     `erase: ${eraseYaml}`,
     `user_script: "${userScriptAbs}"`,
+  ];
+  const managedKeys = managedYamlLines.map(l => l.split(':')[0].toLowerCase());
+  const yamlPath = path.join(outDir, 'pyocd.yaml');
+  let userLines: string[] = [];
+  if (fs.existsSync(yamlPath)) {
+    userLines = fs.readFileSync(yamlPath, 'utf8')
+      .split('\n')
+      .filter(l => !managedKeys.some(k => l.trimStart().toLowerCase().startsWith(k + ':')));
+    while (userLines.length && !userLines[userLines.length - 1].trim()) userLines.pop();
+  }
+  const yamlLines = [
+    ...managedYamlLines,
+    ...userLines,
     '',
   ];
-  fs.writeFileSync(path.join(outDir, 'pyocd.yaml'), yamlLines.join('\n'), 'utf8');
+  fs.writeFileSync(yamlPath, yamlLines.join('\n'), 'utf8');
 
   const packPath = packPaths[0] ?? '';
   const internalFlashEndHex = `0x${internalFlashEnd.toString(16).toUpperCase()}`;
@@ -3669,7 +3694,7 @@ function runAfterBuildSync(wsRoot: string): void {
 
 async function generateTasksAndLaunchAndMakefile(
   root: string,
-  opts?: { bgDirHint?: string; elfPathHint?: string; deviceNameHint?: string; mcuHint?: string; ramOriginHint?: string; ramLengthHint?: string; spimFlmHint?: string; regenMakefile?: boolean },
+  opts?: { bgDirHint?: string; elfPathHint?: string; deviceNameHint?: string; mcuHint?: string; ramOriginHint?: string; ramLengthHint?: string; spimFlmHint?: string; regenMakefile?: boolean; skipUI?: boolean },
   isRetry = false
 ) {
   const cfg = vscode.workspace.getConfiguration('ht32');
@@ -3712,6 +3737,11 @@ async function generateTasksAndLaunchAndMakefile(
     bgDirs = ht32vsOrder.filter(d =>
       isBgDir(bgParentDir, d) &&
       fs.existsSync(path.join(bgParentDir, d, 'Makefile')));
+    // .ht32vs 存在但 Makefile filter 後為空（例如剛 delete 後）→ 降級為只要 isBgDir，
+    // 確保 tasks.json 仍列出正確的 projects 而不是 fallback 到 [BG_BASE]
+    if (bgDirs.length === 0) {
+      bgDirs = ht32vsOrder.filter(d => isBgDir(bgParentDir, d));
+    }
   } else {
     bgDirs = fs.existsSync(bgParentDir)
       ? fs.readdirSync(bgParentDir)
@@ -3721,6 +3751,7 @@ async function generateTasksAndLaunchAndMakefile(
       : [];
     bgDirs.sort((a, b) => (a === BG_BASE || a === BG_BASE_OLD) ? -1 : (b === BG_BASE || b === BG_BASE_OLD) ? 1 : a.localeCompare(b));
   }
+  // 只有完全沒有 .ht32vs 且目錄掃描也空的情況下才 fallback（全新 workspace）
   if (bgDirs.length === 0) bgDirs = [BG_BASE];
 
   // ★ 統一工具鏈解析：make + gcc + pyocd；缺工具時顯示單一 warning
@@ -3734,7 +3765,7 @@ async function generateTasksAndLaunchAndMakefile(
     await generateTasksAndLaunchAndMakefile(root, optsForRetry, true);
   };
   const { makePathFull, makeExe, gccPath, pyocdPath: pyocdServerPath } = await resolveToolchain(
-    root, bgFullDirs, onToolchainInstalled
+    root, bgFullDirs, onToolchainInstalled, opts?.skipUI
   );
 
   // settings.json：需要 bgDirs 才能確定路徑，放在掃描完之後
@@ -4037,6 +4068,10 @@ async function generateTasksAndLaunchAndMakefile(
         } catch {}
         if (flashLoadersExplicit) {
           logWarn(`Extra flash region detected in ${bg} but flashLoaders is explicitly configured (possibly empty) — skipping auto-detect.`);
+        } else if (opts?.skipUI) {
+          vscode.window.showWarningMessage(
+            `HT32: Extra flash region detected in "${bg}" — run "Generate Build & Debug Config" to configure the flash loader.`
+          );
         } else {
           const bgSpimFlm = await selectSpimFlm(bgDevice, bgMcu, extensionPath, bgSpimFlmHint, uncoveredAddrs);
           if (!bgSpimFlm) {
@@ -4548,6 +4583,16 @@ function validateProjectFiles(bgDir: string): string | null {
   return null;
 }
 
+/** Refresh tree + regenerate tasks/launch config without touching Makefile or showing UI prompts. */
+async function refreshTasksConfig(tree: ProjectTreeProvider, root: string, context: string): Promise<void> {
+  tree.refresh();
+  try {
+    await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false, skipUI: true });
+  } catch (e: any) {
+    vscode.window.showErrorMessage(`HT32: Failed to update build config after ${context} — ${e?.message ?? e}`);
+  }
+}
+
 function registerTreeEditCommands(
   ctx: vscode.ExtensionContext,
   tree: ProjectTreeProvider,
@@ -4837,9 +4882,9 @@ function registerTreeEditCommands(
     if (idx < 0 || newIdx < 0 || newIdx >= projects.length) return;
     [projects[idx], projects[newIdx]] = [projects[newIdx], projects[idx]];
     fs.writeFileSync(ht32vsPath, JSON.stringify({ projects }, null, 2), 'utf8');
-    tree.refresh();
     const wsRoot = tree.getRoot();
-    if (wsRoot) await generateTasksAndLaunchAndMakefile(wsRoot);
+    if (wsRoot) await refreshTasksConfig(tree, wsRoot, 'reordering project');
+    else tree.refresh();
   };
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeMoveProjectUp',   (item: vscode.TreeItem) => moveProject(item, -1)));
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeMoveProjectDown', (item: vscode.TreeItem) => moveProject(item,  1)));
