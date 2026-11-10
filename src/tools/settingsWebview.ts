@@ -63,8 +63,9 @@ export type ProjectSettings = {
 
 /** Machine-scoped settings saved to VS Code Global (User) settings */
 export type MachineSettings = {
-  gccPath:    string;
-  openocdPath: string;
+  gccPath:          string;
+  openocdPath:      string;
+  buildBeforeDebug: boolean;
 };
 
 /** Backward-compat alias */
@@ -215,15 +216,17 @@ export function writeProjectSettings(bgDir: string, s: ProjectSettings, opts?: {
 function readMachineSettings(): MachineSettings {
   const cfg = vscode.workspace.getConfiguration('ht32');
   return {
-    gccPath:     cfg.get('gccPath',    ''),
-    openocdPath: cfg.get('openocdPath', ''),
+    gccPath:          cfg.get('gccPath',          ''),
+    openocdPath:      cfg.get('openocdPath',       ''),
+    buildBeforeDebug: cfg.get('buildBeforeDebug',  true),
   };
 }
 
 async function writeMachineSettings(s: MachineSettings): Promise<void> {
   const cfg = vscode.workspace.getConfiguration('ht32');
-  await cfg.update('gccPath',     s.gccPath     || undefined, vscode.ConfigurationTarget.Global);
-  await cfg.update('openocdPath', s.openocdPath  || undefined, vscode.ConfigurationTarget.Global);
+  await cfg.update('gccPath',          s.gccPath          || undefined, vscode.ConfigurationTarget.Global);
+  await cfg.update('openocdPath',      s.openocdPath       || undefined, vscode.ConfigurationTarget.Global);
+  await cfg.update('buildBeforeDebug', s.buildBeforeDebug ? undefined : false, vscode.ConfigurationTarget.Global);
 }
 
 /** Fallback: write project settings to VS Code workspace settings (when no project loaded) */
@@ -710,6 +713,8 @@ function buildHtml(
   const bgNamesJson = JSON.stringify(bgDirs.map(b => b.name));
   const bgDirsJson  = JSON.stringify(Object.fromEntries(bgDirs.map(b => [b.name, b.dir])));
 
+  const commonSection = buildCommonSection(machine, detectedGccPath);
+
   const projSections = bgDirs.length > 0
     ? bgDirs.map((bg, i) => buildProjectSection(
         bg.name,
@@ -719,13 +724,11 @@ function buildHtml(
         autoLoadersByBg[bg.name] ?? [],
         availableFlms,
         targetNamesByBg[bg.name]  ?? '',
-        i === 0 ? machine : null,
-        i === 0 ? detectedGccPath : undefined,
         linkerScriptsByBg[bg.name] ?? DEFAULT_LINKER_SCRIPTS
       )).join('\n')
     : `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground);margin:8px 0 16px">
   No converted project found in the workspace. Convert a .uvprojx/.uvmpw first, then reopen this panel.
-</p>` + buildProjectSection('', '', '', DEFAULT_PROJECT_SETTINGS, [], availableFlms, '', machine, undefined, []);
+</p>` + buildProjectSection('', '', '', DEFAULT_PROJECT_SETTINGS, [], availableFlms, '', []);
 
   const saveCancelBar = (isTop: boolean) => `
 <div class="${isTop ? 'sticky-bar' : 'footer-bar'}">
@@ -897,6 +900,8 @@ function buildHtml(
 <body>
 
 ${saveCancelBar(true)}
+
+${commonSection}
 
 ${projSections}
 
@@ -1401,7 +1406,7 @@ function doAutoSave() {
   }
   vscode.postMessage({
     type: 'autoSave',
-    machineSettings: { gccPath: v('gccPath'), openocdPath: v('openocdPath') },
+    machineSettings: { gccPath: v('gccPath'), openocdPath: v('openocdPath'), buildBeforeDebug: !!(document.getElementById('buildBeforeDebug')?.checked) },
     allProjectSettings:  BG_NAMES.length > 0 ? allProjectSettings : undefined,
     projectSettings:     BG_NAMES.length === 0 ? collectProjectSettings('') : undefined,
     linkerScriptsByBg:   BG_NAMES.length > 0 ? linkerScriptsByBg : undefined,
@@ -1423,8 +1428,9 @@ function doSave() {
     type: 'save',
     updateConfig: document.getElementById('updateConfig').checked,
     machineSettings: {
-      gccPath:     v('gccPath'),
-      openocdPath: v('openocdPath'),
+      gccPath:          v('gccPath'),
+      openocdPath:      v('openocdPath'),
+      buildBeforeDebug: !!(document.getElementById('buildBeforeDebug')?.checked),
     },
     allProjectSettings:  BG_NAMES.length > 0 ? allProjectSettings : undefined,
     projectSettings:     BG_NAMES.length === 0 ? collectProjectSettings('') : undefined,
@@ -1449,8 +1455,6 @@ function buildProjectSection(
   autoLoaders: AutoLoaderEntry[],
   availableFlms: string[],
   defaultTargetName: string = '',
-  machine: MachineSettings | null = null,
-  detectedGccPath?: string,
   linkerScripts: string[] = DEFAULT_LINKER_SCRIPTS
 ): string {
   const p   = bgName ? bgName + '__' : '';
@@ -1796,8 +1800,20 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
   Adds a <strong>Post-Build</strong> task in tasks.json that chains after the build task.</p>
 </div>
 </div>
-${machine ? `<div class="settings-group">
-<h2>Toolchain <span class="hint" style="font-size:0.85em;font-weight:normal">(machine-wide — saved to User Settings)</span></h2>
+</div><!-- /tab_build -->
+
+${wrapClose}`;
+}
+
+/** Common settings section (Toolchain + Build Before Debug) — above all project sections */
+function buildCommonSection(machine: MachineSettings, detectedGccPath?: string): string {
+  return `<div class="settings-group" style="margin-bottom:24px">
+<h2>Common <span class="hint" style="font-size:0.85em;font-weight:normal">(saved to User Settings)</span></h2>
+<div class="row">
+  <label>Build Before Debug (F5)</label>
+  <label class="checkbox-label"><input type="checkbox" id="buildBeforeDebug" ${machine.buildBeforeDebug !== false ? 'checked' : ''}> Build project before flashing and starting debugger</label>
+  <p class="hint">When unchecked, F5 flashes and starts the debugger without rebuilding. Use when the binary is already up to date and you want faster debug launch.</p>
+</div>
 <div class="row">
   <label>GCC Path (arm-none-eabi-gcc)</label>
   <div style="display:flex;gap:4px">
@@ -1812,10 +1828,7 @@ ${_openocdAvailable ? `<div class="row">
     <button class="btn-secondary" title="Browse" style="padding:0 8px;min-width:30px" onclick="vscode.postMessage({type:'browseFile',browseId:'openocdPathBrowse',currentPath:document.getElementById('openocdPath').value.trim()})">&#8230;</button>
   </div>
 </div>` : ''}
-</div>` : ''}
-</div><!-- /tab_build -->
-
-${wrapClose}`;
+</div>`;
 }
 
 /** Generate HTML for a single loader row (server-side initial render) */

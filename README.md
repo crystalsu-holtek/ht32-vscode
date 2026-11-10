@@ -500,11 +500,20 @@ Open via the **Settings** button in the HT32 toolbar. The panel has four tabs.
 |---------|-------------|
 | Output Filename | Custom output filename for the generated `.elf` / `.a` (leave empty to keep the converted name) |
 | Post-Build Command | Command to run after a successful build (working dir: `${workspaceFolder}` = `HT32_VSCode/`) |
-| GCC Path | `arm-none-eabi-gcc` path (blank = auto-detect) — machine-wide |
-| OpenOCD Path | OpenOCD path (blank = use bundled OpenOCD) — machine-wide |
 <img src="media/15-4.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
-> Toolchain paths (GCC / OpenOCD) are stored in VS Code User Settings and **shared across all projects** — shown only in the first project's Build tab.
+<br>
+
+### Common Section
+
+Shown at the top of the Settings panel, above all project sections. Settings here are machine-wide and saved to VS Code User Settings.
+
+| Setting | Description |
+|---------|-------------|
+| Build Before Debug (F5) | When unchecked, F5 flashes and starts the debugger without rebuilding (default: checked) |
+| GCC Path | `arm-none-eabi-gcc` path (blank = auto-detect) |
+| OpenOCD Path | OpenOCD path (blank = use bundled OpenOCD) |
+<img src="media/15-5.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 

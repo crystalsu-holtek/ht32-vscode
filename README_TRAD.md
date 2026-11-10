@@ -506,12 +506,22 @@ int main(void) {
 |----------|------|
 | Output Filename | 自訂輸出檔名（留空則沿用轉換時的名稱） |
 | Post-Build | Build 後執行的命令（工作目錄：`${workspaceFolder}` = `HT32_VSCode/`） |
-| GCC Path | `arm-none-eabi-gcc` 路徑（空白 = 自動偵測或 winget 安裝） |
-| OpenOCD Path | OpenOCD 路徑（空白 = 使用內建 OpenOCD） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-4.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
-> 工具鏈路徑（GCC / OpenOCD）儲存於 VS Code 機器設定，**所有專案共用**，僅顯示於第一個專案的 Build 分頁。
+<br>
+
+### Common 區塊
+
+顯示於 Settings 面板最上方，所有專案區塊之前。設定儲存於 VS Code 機器設定（User Settings），所有專案共用。
+
+| 設定項目 | 說明 |
+|----------|------|
+| Build Before Debug (F5) | 取消勾選後，F5 直接燒錄並啟動除錯，不重新編譯（預設：勾選） |
+| GCC Path | `arm-none-eabi-gcc` 路徑（空白 = 自動偵測） |
+| OpenOCD Path | OpenOCD 路徑（空白 = 使用內建 OpenOCD） |
+
+<img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-5.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 

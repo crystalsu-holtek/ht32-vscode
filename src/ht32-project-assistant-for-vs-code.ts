@@ -3834,6 +3834,7 @@ async function generateTasksAndLaunchAndMakefile(
     return t;
   };
 
+  const buildBeforeDebug = cfg.get<boolean>('buildBeforeDebug', true);
   const taskList: any[] = [];
   for (const bg of bgDirs) {
     const bgSettings   = readProjectSettings(path.join(bgParentDir, bg));
@@ -4012,9 +4013,7 @@ async function generateTasksAndLaunchAndMakefile(
     // SVD per project
     const bgSvdFile = svdFileSetting ||
       (bgDevice ? findSvdFile(dfpPathSetting, bgDevice, extensionPath, cfg.get<string[]>('extraPdscPaths', [])) : undefined);
-    if (bgSvdFile) {
-      logInfo(`SVD file (${bg}): ${bgSvdFile}`);
-    } else if (bgDevice && isActiveBg) {
+    if (!bgSvdFile && bgDevice && isActiveBg) {
       logWarn(`SVD file not found for device: ${bgDevice}. Set ht32.dfpPath or ht32.svdFile.`);
     }
 
@@ -4301,7 +4300,9 @@ async function generateTasksAndLaunchAndMakefile(
       // F5 preLaunchTask：Build → Download (pyocd flash exits cleanly, no Kill OpenOCD needed)
       taskList.push({
         label:        debugPreLaunchLabel(bg),
-        dependsOn:    [buildLabel(bg), downloadLabel(bg)],
+        dependsOn:    buildBeforeDebug
+          ? [buildLabel(bg), downloadLabel(bg)]
+          : [downloadLabel(bg)],
         dependsOrder: 'sequence',
       });
     } else {
@@ -4343,7 +4344,9 @@ async function generateTasksAndLaunchAndMakefile(
         // F5 preLaunchTask：Build → Download (Download already dependsOn Kill OpenOCD)
         taskList.push({
           label:        debugPreLaunchLabel(bg),
-          dependsOn:    [buildLabel(bg), downloadLabel(bg)],
+          dependsOn:    buildBeforeDebug
+            ? [buildLabel(bg), downloadLabel(bg)]
+            : [downloadLabel(bg)],
           dependsOrder: 'sequence',
         });
       }
@@ -4353,7 +4356,9 @@ async function generateTasksAndLaunchAndMakefile(
       // F5 preLaunchTask：Build → Download (Kill+program exit) → OpenOCD-keep (fresh start)
       taskList.push({
         label:        debugPreLaunchLabel(bg),
-        dependsOn:    [buildLabel(bg), downloadLabel(bg), openocdKeepLabel(bg)],
+        dependsOn:    buildBeforeDebug
+          ? [buildLabel(bg), downloadLabel(bg), openocdKeepLabel(bg)]
+          : [downloadLabel(bg), openocdKeepLabel(bg)],
         dependsOrder: 'sequence',
       });
 

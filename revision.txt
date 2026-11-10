@@ -6,11 +6,12 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（8）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+  新功能（9）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
               TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
               keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
               Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
-              Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）
+              Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
+              Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）
   修正（12）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
@@ -54,6 +55,11 @@ v0.3.3  (from v0.3.2)
 - Convert uVision — startup 有 INCLUDE 指令時強制走 keil2gnu：
   handleKeilAsm Rule 1 新增 INCLUDE 偵測；patchStartupFromKeil 無法保留 INCLUDE，
   有 INCLUDE 的 startup（例如含 BootProcess 的 IAP 啟動碼）直接走 keil2gnu + injectStartupInit
+- Settings 新增 Build Before Debug（ht32.buildBeforeDebug）：
+  Settings 面板最上方新增「Common」區塊，含 Build Before Debug 核取方塊（預設勾選）；
+  取消勾選時，F5 的 preLaunchTask 跳過 Build 步驟，直接執行 Download + Debug，
+  加速「已確認 binary 正確」情況下的除錯啟動；支援 pyocd / openocd / external 三種 server 路徑；
+  設定儲存於 VS Code User Settings（machine-scoped），所有專案共用
 - Add/Delete/Reorder project 後自動更新 tasks/launch config：
   新增 refreshTasksConfig() helper，tree.refresh + generateTasksAndLaunchAndMakefile
   with regenMakefile:false, skipUI:true；三個操作改呼叫此函式，避免 tasks.json 殘留舊 project 清單

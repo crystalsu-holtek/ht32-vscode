@@ -562,6 +562,12 @@
           "scope": "machine",
           "description": "OpenOCD path override. Leave empty to use bundled OpenOCD."
         },
+        "ht32.buildBeforeDebug": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "When false, F5 flashes and starts the debugger without rebuilding."
+        },
         "ht32.dfpPath": {
           "type": "string",
           "default": "",
