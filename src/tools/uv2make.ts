@@ -2449,13 +2449,15 @@ ifeq ($(OS),Windows_NT)
   .SHELLFLAGS := /C
   RMDIR := rmdir /S /Q
   MKDIR_P = if not exist "$(subst /,\\\\,$1)" mkdir "$(subst /,\\\\,$1)" 2>NUL & ver>NUL
-  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)
+  DEVNULL := nul
+${p.isLibrary ? '' : `  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | findstr /C:"unrecognized"),,$(comma)--no-warn-rwx-segments)`}
 else
   SHELL := /bin/sh
   .SHELLFLAGS := -c
   RMDIR := rm -rf
   MKDIR_P = mkdir -p "$1"
-  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)
+  DEVNULL := /dev/null
+${p.isLibrary ? '' : `  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)`}
 endif
 
 # ---- Toolchain ----
@@ -2494,7 +2496,7 @@ all: $(BUILD)/$(TARGET).a
 $(BUILD)/$(TARGET).a: $(OBJ) | $(BUILD)
 \t@echo AR  $@
 \t@"$(AR)" rcs "$@" $(OBJ)
-\t@"$(SIZE)" "$@" 2>/dev/null || exit 0` : `\
+\t-@"$(SIZE)" "$@" 2>$(DEVNULL)` : `\
 all: $(BUILD)/$(TARGET).elf $(BUILD)/$(TARGET).bin $(BUILD)/$(TARGET).hex $(BUILD)/$(TARGET).text
 \t@"$(SIZE)" "$(BUILD)/$(TARGET).elf"
 
@@ -3272,21 +3274,34 @@ export function regenerateMakefileFlags(
   const gcLDFlags   = gcSections ? '--gc-sections,' : '';
   const newCFlags   = `-mcpu=${mcu} -mthumb${fpuFlags}${floatAbiFlag} ${opt} ${dbgFlag}${gcCFlags} "-ffile-prefix-map=$(CURDIR)=." $(INCS) $(DEFS)${extraCF}${ltoFlag}`;
 
+  // Write list files from Settings Webview — independent of meta.json; always flush first.
+  if (opts.aDefs !== undefined) {
+    fs.writeFileSync(path.join(outDir, 'adefines.list'), opts.aDefs.map(d => `-D${d}`).join(' '), 'utf8');
+  }
+  if (opts.includePaths !== undefined) {
+    const newIncs = opts.includePaths
+      .filter(Boolean)
+      .map(p => `-I"${p.replace(/\\/g, '/')}"`)
+      .join(' ');
+    fs.writeFileSync(path.join(outDir, 'includes.list'), newIncs, 'utf8');
+  }
+  if (opts.cDefs !== undefined) {
+    fs.writeFileSync(path.join(outDir, 'defines.list'), opts.cDefs.map(d => `-D${d}`).join(' '), 'utf8');
+  }
+
   let content = fs.readFileSync(makefilePath, 'utf8');
 
   // linkerScripts[] is the single source of truth — always read from meta.json.
-  let linkerScripts: string[] = [];
+  let linkerScripts: string[];  // [] = old project pre-dating linkerScripts field
+  let isLibrary = false;
   try {
     const metaJson = JSON.parse(fs.readFileSync(path.join(outDir, 'project.meta.json'), 'utf8'));
     linkerScripts = metaJson.linkerScripts ?? [];
+    isLibrary = metaJson.isLibrary ?? false;
   } catch (e: any) {
-    logWarn(`regenerateMakefileFlags: failed to read project.meta.json: ${e?.message ?? e}; falling back to -T linker_script.ld (linker flags may be incorrect)`);
+    logWarn(`regenerateMakefileFlags: failed to read project.meta.json: ${e?.message ?? e}; aborting Makefile patch`);
+    return;
   }
-  const ldTFlags = linkerScripts.length > 0
-    ? linkerScripts.map(s => `-T "${s}"`).join(' ')
-    : '-T "linker_script.ld"';
-
-  const newLDFlags = `-Wl,${gcLDFlags}--print-memory-usage$(LD_NO_WARN),-Map,$(BUILD)/$(TARGET).map ${ldTFlags}${specsFlags(opts.useNano, opts.useNosys)}${extraLDF}${ltoFlag}${printfF}${scanfF}`;
 
   // Upgrade old Makefiles that predate LD_NO_WARN dynamic detection, or that have the
   // old formula "$(subst gcc,ld,$(CC))" which breaks when CC contains a path prefix.
@@ -3299,9 +3314,9 @@ export function regenerateMakefileFlags(
     `  LD_NO_WARN = $(if $(shell "$(dir $(CC))$(subst gcc,ld,$(notdir $(CC)))" --no-warn-rwx-segments 2>&1 | grep unrecognized),,$(comma)--no-warn-rwx-segments)`,
     `endif`,
   ].join('\n');
-  if (!/LD_NO_WARN\s*[=:]/.test(content)) {
+  if (!isLibrary && !/LD_NO_WARN\s*[=:]/.test(content)) {
     content = content.replace(/^(LDFLAGS\s*:=)/m, `${ldNoWarnBlock}\n$1`);
-  } else if (/\$\(subst gcc,ld,\$\(CC\)\)/.test(content)) {
+  } else if (!isLibrary && /\$\(subst gcc,ld,\$\(CC\)\)/.test(content)) {
     // Replace the old 3-line ifeq block (comma + ifeq + Windows line + else + Linux line + endif)
     // The old block may or may not include the "comma :=" line, so match broadly.
     content = content.replace(
@@ -3321,10 +3336,6 @@ export function regenerateMakefileFlags(
     content = content.replace(/^SIZE\s*:=.*$/m,    `SIZE    := ${tcPrefix}size`);
   }
 
-  // Write aDefs to adefines.list if provided by caller (Settings WebView save).
-  if (opts.aDefs !== undefined) {
-    fs.writeFileSync(path.join(outDir, 'adefines.list'), opts.aDefs.map(d => `-D${d}`).join(' '), 'utf8');
-  }
   // Ensure ADEFS line exists in Makefile (upgrade old projects that predate adefines.list).
   const hasAdefs = /^ADEFS\s*:=/m.test(content);
   if (!hasAdefs) {
@@ -3340,32 +3351,27 @@ export function regenerateMakefileFlags(
   if (effectiveTarget) {
     content = content.replace(/^TARGET\s*:=.*$/m, `TARGET := ${effectiveTarget}`);
   }
-  // includePaths / cDefs / aDefs managed by Settings Webview; rewrite their .list files.
-  if (opts.includePaths !== undefined) {
-    const newIncs = opts.includePaths
-      .filter(Boolean)
-      .map(p => `-I"${p.replace(/\\/g, '/')}"`)
-      .join(' ');
-    fs.writeFileSync(path.join(outDir, 'includes.list'), newIncs, 'utf8');
-  }
-  if (opts.cDefs !== undefined) {
-    fs.writeFileSync(path.join(outDir, 'defines.list'), opts.cDefs.map(d => `-D${d}`).join(' '), 'utf8');
-  }
   const oldCFlags  = (content.match(/^CFLAGS\s*:=.*$/m)  ?? [''])[0];
   const oldASFlags = (content.match(/^ASFLAGS\s*:=.*$/m) ?? [''])[0];
   content = content.replace(/^CFLAGS\s*:=.*$/m,  `CFLAGS  := ${newCFlags}`);
   content = content.replace(/^ASFLAGS\s*:=.*$/m, `ASFLAGS := ${newASFlags}`);
-  content = content.replace(/^LDFLAGS\s*:=.*$/m, `LDFLAGS := ${newLDFlags}`);
+  if (!isLibrary) {
+    const ldTFlags = linkerScripts.length > 0
+      ? linkerScripts.map(s => `-T "${s}"`).join(' ')
+      : '-T "../GNU_ARM/linker.ld"';  // fallback for old projects pre-dating linkerScripts field
+    const newLDFlags = `-Wl,${gcLDFlags}--print-memory-usage$(LD_NO_WARN),-Map,$(BUILD)/$(TARGET).map ${ldTFlags}${specsFlags(opts.useNano, opts.useNosys)}${extraLDF}${ltoFlag}${printfF}${scanfF}`;
+    content = content.replace(/^LDFLAGS\s*:=.*$/m, `LDFLAGS := ${newLDFlags}`);
 
-  // Update elf target prerequisites: replace all .ld entries with current linkerScripts[].
-  const ldDepList = linkerScripts.join(' ') || 'linker_script.ld';
-  content = content.replace(
-    /^(\$\(BUILD\)\/\$\(TARGET\)\.elf:)(.*?)(\|\s*\$\(BUILD\))/m,
-    (_, prefix, middle, suffix) => {
-      const nonLd = middle.trim().split(/\s+/).filter((t: string) => Boolean(t) && !t.endsWith('.ld')).join(' ');
-      return `${prefix} ${nonLd} ${ldDepList} ${suffix}`;
-    }
-  );
+    // Update elf target prerequisites: replace all .ld entries with current linkerScripts[].
+    const ldDepList = linkerScripts.join(' ') || 'linker.ld';
+    content = content.replace(
+      /^(\$\(BUILD\)\/\$\(TARGET\)\.elf:)(.*?)(\|\s*\$\(BUILD\))/m,
+      (_, prefix, middle, suffix) => {
+        const nonLd = middle.trim().split(/\s+/).filter((t: string) => Boolean(t) && !t.endsWith('.ld')).join(' ');
+        return `${prefix} ${nonLd} ${ldDepList} ${suffix}`;
+      }
+    );
+  }
   fs.writeFileSync(makefilePath, content, 'utf8');
 
   // CFLAGS/ASFLAGS 改變時寫 marker，讓使用者按 Build 時才清除 stale .o

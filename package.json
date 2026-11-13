@@ -6,7 +6,7 @@
   "publisher": "holtek",
   "icon": "media/ht32.png",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.106.3"
   },
   "os": [
     "win32"
@@ -727,7 +727,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.74.0",
+    "@types/vscode": "^1.106.3",
     "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.28.0",
     "ts-node": "^10.9.2",

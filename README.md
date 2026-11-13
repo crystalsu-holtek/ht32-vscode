@@ -8,6 +8,23 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 
 <br>
 
+## Quick Overview
+
+<img src="media/overview.jpg" width="800" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+
+| # | Area | Description |
+|---|------|-------------|
+| **1** | HT32 Activity Bar icon | Click to open the HT32 panel |
+| **2** | Project File Tree | Source groups: add/remove files and groups via right-click |
+| **3** | Toolbar | Quick-access buttons: **Build**, **Clean**, **Download**, **Debug**, **Settings**, and more<br>The **`···` (More Actions)** button at the right end of the toolbar also contains **Open Project**, **Close Project**, and **Create Project** |
+| **4** | Editor | Main code editor: displays any open source file |
+| **5** | Configuration Wizard controls | Visible in the top-right when a file containing Configuration Wizard syntax is open<br>**Preview icon**: opens the visual wizard directly<br>**Text Editor ▼** dropdown: switches between text editor and wizard view |
+| **6** | Bottom panels | **Problems**: build errors and warnings<br>**Output**: extension and debugger logs<br>**Debug Console**: debug session output<br>**Terminal**: raw build output from Make |
+
+---
+
+<br>
+
 ## Features
 
 | Feature | Description |
@@ -32,6 +49,7 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 | Item | Description |
 |------|-------------|
 | **OS** | Windows x64 |
+| **VS Code** | 1.106.3 or later |
 | **Debug probe** | Holtek e-Link32 Pro or e-Link32 Lite; J-Link and ST-Link also supported |
 | **FWLib** | Required |
 
@@ -39,6 +57,10 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 > **pyOCD:** Installed automatically on first use — no manual setup required. Python is not required.<br>
 > **GCC toolchain:** Auto-detected on startup; installed automatically via winget if not found, or set manually in settings. **GCC 8 or later is required.**<br>
 > **Extension dependencies:** [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) and [Holtek Configuration Wizard](https://marketplace.visualstudio.com/items?itemName=holtek.ht32-config-vscode) are installed automatically.
+
+> 💡 **Tip:** When VS Code shows a notification in the **bottom-right corner** asking to install missing components (extensions, GCC toolchain, pyOCD), click **Install**.
+
+<img src="media/install_tip.jpg" width="400" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 
@@ -104,6 +126,8 @@ The **`···` (More Actions)** menu also contains:
 | Create Project | Open the Create Project wizard |
 | Open Project | Open a `.ht32vs` project file |
 | Close Project | Close the currently loaded project |
+
+<img src="media/more_actions.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 
@@ -205,6 +229,8 @@ MyProject/
 | ② | Select the **MCU model** |
 | ③ | Select output type: **Executable (.elf)** or **Library (.a)** |
 | ④ | Enter the **project name** and output folder |
+
+> **Library (.a):** Produces a static library archive instead of an executable. The project starts with a single empty `.c` file — add your source files and implement your library functions.
 
 <img src="media/6.jpg" width="450" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 

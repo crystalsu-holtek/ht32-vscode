@@ -1497,7 +1497,6 @@ export async function generateProjectFiles(
     ramOrigin,
     ramLength,
     deviceName:   displayName,
-    outputType,
     fpu:          hasFpuHw ? 'fpv4-sp-d16' : 'none',
     floatAbi:     hasFpuHw ? 'hard' : 'soft',
     useNano:      result.useNano  ?? _existingSettings.useNano,

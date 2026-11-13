@@ -58,7 +58,6 @@ export type ProjectSettings = {
   ramOrigin?:   string;   // e.g. "0x20000000"
   ramLength?:   string;   // e.g. "0x4000"
   deviceName?:  string;   // e.g. "HT32F52352"
-  outputType?:  string;   // "app" | "lib"
 };
 
 /** Machine-scoped settings saved to VS Code Global (User) settings */
@@ -156,7 +155,6 @@ export function readProjectSettings(bgDir: string): ProjectSettings {
           if (bm.ramOrigin)   s.ramOrigin   = bm.ramOrigin;
           if (bm.ramLength)   s.ramLength   = bm.ramLength;
           if (bm.deviceName)  s.deviceName  = bm.deviceName;
-          if (bm.outputType)  s.outputType  = bm.outputType;
         } catch { /* no build.meta.json */ }
       }
       return s;

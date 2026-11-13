@@ -45,6 +45,7 @@ function printHelp(version = 'unknown') {
     '  --no-regen     Skip regenerateMakefileFlags (use existing Makefile as-is)',
     '  --no-compile   Regenerate flags only, do not run make',
     '  -j <n>         Parallel make jobs (default: auto)',
+    '  --gcc, -gcc <path>   Override arm-none-eabi-gcc path (bypasses auto-detect)',
     '  -h, --help     Show this help',
   ].join('\n'));
 }
@@ -77,7 +78,8 @@ const ht32vsFile = path.resolve(args[0]);
 const logFile    = (() => { const i = args.indexOf('-o'); return i >= 0 ? args[i + 1] : null; })();
 const noRegen    = args.includes('--no-regen');
 const noCompile  = args.includes('--no-compile');
-const jobs       = (() => { const i = args.indexOf('-j'); return i >= 0 ? (args[i + 1] ?? '') : ''; })();
+const jobs       = (() => { const i = args.indexOf('-j');     return i >= 0 ? (args[i + 1] ?? '') : ''; })();
+const gccOverride = (() => { const i = args.findIndex(a => a === '--gcc' || a === '-gcc'); return i >= 0 ? args[i + 1] : null; })();
 
 // ── log helper (sync write to avoid flush loss on process.exit) ──────────────
 let _logFd = null;
@@ -149,7 +151,7 @@ async function buildOne(bgDir, gcc) {
         mcu:               settings.mcu,
         srcs:              [],
         linkerScripts:     meta.linkerScripts ?? ['../GNU_ARM/linker.ld'],
-        isLibrary:         settings.outputType === 'lib',
+        isLibrary:         meta.isLibrary ?? false,
         fpu,
         floatAbi,
         optimizationLevel: settings.optimizationLevel,
@@ -240,8 +242,21 @@ async function buildOne(bgDir, gcc) {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  const gcc = await locateArmGcc();
-  if (!gcc) exitErr('arm-none-eabi-gcc not found. Install GNU Arm toolchain or set ht32.gccPath.');
+  let gcc;
+  if (gccOverride) {
+    const resolved = path.resolve(gccOverride);
+    const gccExe = process.platform === 'win32' ? 'arm-none-eabi-gcc.exe' : 'arm-none-eabi-gcc';
+    if (fs.statSync(resolved, { throwIfNoEntry: false })?.isDirectory())
+      gcc = path.join(resolved, gccExe);
+    else
+      gcc = resolved;
+    if (!fs.existsSync(gcc))
+      exitErr(`--gcc path not found: ${gcc}`);
+  } else {
+    gcc = await locateArmGcc();
+    if (!gcc) exitErr('arm-none-eabi-gcc not found. Install GNU Arm toolchain or use --gcc <path>.');
+  }
+  console.log(`Using GCC: ${gcc}`);
 
   let allOk = true;
   for (const bgDir of bgDirs) {

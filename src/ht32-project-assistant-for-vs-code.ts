@@ -1361,14 +1361,15 @@ async function initProjectsFromMeta(bgDirs: string[], wsRoot: string, opts?: { f
       const s = readProjectSettings(bgDir);
 
       // 1. 產生 Makefile（srcs 先空，refreshDerivedFiles 補 SRCS + compile rules）
-      const linkerScripts = (meta.linkerScripts ?? ['../GNU_ARM/linker.ld']);
+      const isLibraryProject = meta.isLibrary ?? false;
+      const linkerScripts = isLibraryProject ? [] : (meta.linkerScripts ?? ['../GNU_ARM/linker.ld']);
       const makeText = buildMakefileText({
         target:            s.targetName ?? path.basename(bgDir),
         cc:                gcc,
         mcu:               s.mcu ?? 'cortex-m3',
         srcs:              [],
         linkerScripts,
-        isLibrary:         s.outputType === 'lib',
+        isLibrary:         isLibraryProject,
         fpu:               s.fpu,
         floatAbi:          s.floatAbi,
         optimizationLevel: s.optimizationLevel,
@@ -3656,14 +3657,16 @@ function buildOpenocdServerConfigs(params: {
   return [debugConfig, attachConfig];
 }
 
-const GCC_PROBLEM_MATCHER = {
-  owner: 'gcc',
-  fileLocation: ['autoDetect', '${workspaceFolder}'],
-  pattern: {
-    regexp: '^(.*):(\\d+):(\\d+):\\s+(warning|error|note):\\s+(.*)$',
-    file: 1, line: 2, column: 3, severity: 4, message: 5
-  }
-};
+function makeGccProblemMatcher(cwd: string) {
+  return {
+    owner: 'gcc',
+    fileLocation: ['autoDetect', cwd],
+    pattern: {
+      regexp: '^(.*):(\\d+):(\\d+):\\s+(warning|error|note):\\s+(.*)$',
+      file: 1, line: 2, column: 3, severity: 4, message: 5
+    }
+  };
+}
 
 function runAfterBuildSync(wsRoot: string): void {
   const bgParentDir = bgParent(wsRoot);
@@ -3848,7 +3851,7 @@ async function generateTasksAndLaunchAndMakefile(
         command:        makePathFull ?? 'make',
         args:           ['-j', '--output-sync=line', '--no-print-directory', '-C', bgCwdOf(bg)],
         options:        { cwd: bgCwdOf(bg), ...(envForTasks ? { env: envForTasks } : {}) },
-        problemMatcher: [GCC_PROBLEM_MATCHER],
+        problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
       });
       // "Post-Build X" = bat only
@@ -3875,7 +3878,7 @@ async function generateTasksAndLaunchAndMakefile(
         command:        makePathFull ?? 'make',
         args:           ['-j', '--output-sync=line', '--no-print-directory', '-C', bgCwdOf(bg)],
         options:        { cwd: bgCwdOf(bg), ...(envForTasks ? { env: envForTasks } : {}) },
-        problemMatcher: [GCC_PROBLEM_MATCHER],
+        problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
         group:          { kind: 'build', isDefault: (bg === BG_BASE || bg === BG_BASE_OLD) },
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
       });
@@ -3965,14 +3968,14 @@ async function generateTasksAndLaunchAndMakefile(
 
     // 讀各自的 project.settings.json
     const bgSettings = readProjectSettings(path.join(bgParentDir, bg));
-    const bgOutputType  = bgSettings.outputType;
     bgRamOrigin = bgRamOrigin || bgSettings.ramOrigin;
     bgRamLength = bgRamLength || bgSettings.ramLength;
     bgDevice    = bgDevice    || bgSettings.deviceName;
     bgMcu       = bgMcu       || bgSettings.mcu;
     const effectiveTargetName = bgSettings.outputName?.trim() || bgSettings.targetName;
+    const bgMeta = readProjectMeta(path.join(bgParentDir, bg));
     if (!bgElfPath && effectiveTargetName) {
-      const ext = bgSettings.outputType === 'lib' ? '.a' : '.elf';
+      const ext = bgMeta?.isLibrary ? '.a' : '.elf';
       bgElfPath = bgElfOf(bg, effectiveTargetName, ext);
     }
 
@@ -4038,7 +4041,7 @@ async function generateTasksAndLaunchAndMakefile(
       if (bgLdFile && bgLdFile.includes('/')) {
         bgLdPath = path.resolve(path.join(bgParentDir, bg), bgLdFile);
       } else {
-        const name = bgLdFile ?? 'linker_script.ld';
+        const name = bgLdFile ?? 'linker.ld';
         const gnuArmPath = path.join(bgParentDir, 'GNU_ARM');
         bgLdPath = fs.existsSync(path.join(gnuArmPath, name))
           ? path.join(gnuArmPath, name)
@@ -4105,7 +4108,7 @@ async function generateTasksAndLaunchAndMakefile(
     const attachName  = suffix ? `HT32 ${serverLabel} Attach (${suffix})` : `HT32 ${serverLabel} Attach`;
 
     // Library projects (.a) cannot be launched/debugged — skip launch config entry
-    if (bgOutputType === 'lib') { continue; }
+    if (bgMeta?.isLibrary) { continue; }
 
     const bgExecutable = bgElfPath
       ? '${workspaceFolder}/' + bgElfPath
@@ -4716,7 +4719,7 @@ function registerTreeEditCommands(
       canSelectMany: true,
       canSelectFolders: false,
       openLabel: 'Add Existing Files to Group',
-      filters: { 'Source & Library Files': ['c', 'C', 's', 'S', 'cpp', 'a', 'o', 'obj', 'ld'] },
+      filters: { 'Source & Library Files': ['c', 'C', 's', 'S', 'cpp', 'h', 'H', 'a', 'o', 'obj', 'ld'] },
     });
     if (!uris || uris.length === 0) return;
     await addFilesToGroupImpl(buildGenDir, groupName, uris);
