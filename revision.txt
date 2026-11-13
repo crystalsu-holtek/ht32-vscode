@@ -6,17 +6,21 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（9）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
-              TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
-              keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
-              Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
-              Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
-              Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）
-  修正（12）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+  新功能（10）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+               TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
+               keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
+               Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
+               Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
+               Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）、
+               Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）
+  修正（16）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
               Add/Delete project 不再彈工具鏈安裝 UI（skipUI）、
-              clangd.arguments 保留使用者自訂 arg、pyocd.yaml 保留使用者自訂 key
+              clangd.arguments 保留使用者自訂 arg、pyocd.yaml 保留使用者自訂 key、
+              Build spawn 失敗顯示錯誤、Build 取消正確回報 cancelled / 失敗正確回報 failed、
+              Build terminal Ctrl+Click 補 OSC 7（修正彈 quick pick 而非跳檔案，含空格路徑修正）、
+              runOpenocdProbe 雙 resolve 競爭（settled/done() guard）
 
 詳細
 新功能
@@ -63,6 +67,14 @@ v0.3.3  (from v0.3.2)
 - Add/Delete/Reorder project 後自動更新 tasks/launch config：
   新增 refreshTasksConfig() helper，tree.refresh + generateTasksAndLaunchAndMakefile
   with regenMakefile:false, skipUI:true；三個操作改呼叫此函式，避免 tasks.json 殘留舊 project 清單
+- Build / Compile task 改用 CustomExecution（ht32-build）：
+  Build 與 Compile task 由 `type: 'process'` 改為自訂類型 `type: 'ht32-build'`；
+  extension 在 activate() 以 vscode.tasks.registerTaskProvider 提供執行邏輯，
+  make 由 BuildPseudoterminal 直接 spawn（無 shell 中介），完全繞過 PowerShell 特殊字元問題；
+  make 結束後在同一 terminal 最後一行顯示彩色統計：
+    綠色 "Build complete"（無 error/warning）/ 黃色（有 warning）/ 紅色（有 error 或 exit≠0）；
+  OSC 7 escape sequence 寫入 terminal，Ctrl+Click 相對路徑可正確解析至 source 檔案；
+  VS Code Problems 面板仍由 tasks.json 內的 problemMatcher 獨立解析（行為與原本相同）
 - resolveToolchain 加 skipUI 參數：
   Add/Delete project 觸發的 generateTasksAndLaunchAndMakefile 不再彈工具鏈安裝 UI；
   _pyocdPathCache 有快取時 skipUI 仍使用快取路徑（不彈 UI）
@@ -118,6 +130,28 @@ v0.3.3  (from v0.3.2)
   onDidChangeSelection 的 bgDir 擷取分支遺漏 'sourceFile' 與 'groupMixed'，
   導致這兩種節點的選擇事件提早 return，setClangdIntelliSenseProject 未被呼叫；
   修正：將兩者加入 else-if 條件
+- Build task spawn 失敗時顯示錯誤訊息：
+  BuildPseudoterminal 加入 proc.on('error') handler，
+  make 執行檔不存在（ENOENT）或無執行權限（EACCES）時在 terminal 顯示紅字訊息並以 exit 1 關閉；
+  加入 done flag 防止 Node 同時 fire 'error' + 'close' 造成 closeEmitter 被呼叫兩次
+- Build 取消正確回報 cancelled、失敗正確回報 failed：
+  新增 `_cancelled` boolean field，`close()` 被呼叫時設 true；
+  close handler 讀 `this._cancelled` 而非 `signal !== null`
+  （Windows 上 ChildProcess.kill() 透過 TerminateProcess，signal 永遠為 null）；
+  label 改為三態：cancelled → "Build cancelled"、exit≠0 → "Build failed"、成功 → "Build complete"；
+  修正①：Windows Stop Task 顯示 "Build complete"（signal=null 導致誤判為未取消）；
+  修正②：linker error（exit≠0, 0 gcc-pattern errors）顯示 "Build complete: 0 error(s)"（應為 "Build failed"）
+- Build terminal Ctrl+Click 補 OSC 7 escape sequence（含空格路徑修正）：
+  BuildPseudoterminal.open() 開頭以 `vscode.Uri.file(cwd).toString()` 產生 URI
+  並寫入 `\x1b]7;uri\x07`，告知 VS Code terminal 當前工作目錄；
+  使用 vscode.Uri.file() 確保空格正確 percent-encode（`%20`），UNC 路徑也正確處理；
+  修正①：未補 OSC 7 時，Ctrl+Click 彈出 quick pick 而非直接開啟；
+  修正②：手動拼接 URI 未 percent-encode 空格，含空格路徑的 OSC 7 URI 無效
+- runOpenocdProbe 雙 resolve 競爭：
+  close handler 與 error handler 改用 `settled`/`done()` guard pattern（同 Promise 中的 once-resolve）；
+  error handler 加入 clearTimeout(killer)，避免 killer 在 error 後繼續觸發；
+  修正：原本 error handler 直接呼叫 resolve()，若 Node 同時 fire 'error' + 'close'，
+  Promise 被 resolve 兩次（第二次靜默失效但行為不確定）
 
 ================================================================================
 

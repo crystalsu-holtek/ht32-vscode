@@ -2,7 +2,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec as cpExec, ExecException, ExecOptions } from 'child_process';
+import { exec as cpExec, spawn, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
 import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles, LOG_WRITE } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
@@ -35,6 +35,74 @@ const CHANNEL = vscode.window.createOutputChannel('HT32 VSCode');
 function logInfo(msg: string) { CHANNEL.appendLine(`[INFO] ${msg}`); }
 function logWarn(msg: string) { CHANNEL.appendLine(`[WARN] ${msg}`); }
 function logError(msg: string) { CHANNEL.appendLine(`[ERROR] ${msg}`); }
+
+/** ====== ht32-build CustomExecution ====== */
+interface Ht32BuildTaskDef extends vscode.TaskDefinition {
+  make?: string;
+  cwd: string;
+  args?: string[];
+  extraPath?: string[];
+}
+
+class BuildPseudoterminal implements vscode.Pseudoterminal {
+  private writeEmitter = new vscode.EventEmitter<string>();
+  private closeEmitter = new vscode.EventEmitter<number>();
+  readonly onDidWrite = this.writeEmitter.event;
+  readonly onDidClose = this.closeEmitter.event;
+  private proc?: ReturnType<typeof spawn>;
+  private _cancelled = false;
+
+  constructor(
+    private readonly make: string,
+    private readonly makeArgs: string[],
+    private readonly cwd: string,
+    private readonly extraPath: string[],
+  ) {}
+
+  open(_dims: vscode.TerminalDimensions | undefined): void {
+    // OSC 7: tell VS Code terminal the working directory so Ctrl+Click resolves relative paths correctly
+    this.writeEmitter.fire(`\x1b]7;${vscode.Uri.file(this.cwd).toString()}\x07`);
+    let errors = 0, warnings = 0;
+    let buf = '', done = false;
+    const flush = (data: string) => {
+      buf += data;
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, '');
+        buf = buf.slice(nl + 1);
+        if (/:\d+:\d+:\s+error:/.test(line))        errors++;
+        else if (/:\d+:\d+:\s+warning:/.test(line)) warnings++;
+        this.writeEmitter.fire(line + '\r\n');
+      }
+    };
+    const sep  = process.platform === 'win32' ? ';' : ':';
+    const PATH = this.extraPath.length
+      ? this.extraPath.join(sep) + sep + (process.env['PATH'] ?? '')
+      : process.env['PATH'] ?? '';
+    this.proc = spawn(this.make, this.makeArgs, { cwd: this.cwd, env: { ...process.env, PATH } });
+    this.proc.stdout?.on('data', (d: Buffer) => flush(d.toString()));
+    this.proc.stderr?.on('data', (d: Buffer) => flush(d.toString()));
+    this.proc.on('error', (err) => {
+      if (done) return;
+      done = true;
+      this.writeEmitter.fire(`\x1b[31mFailed to start make: ${err.message}\x1b[0m\r\n`);
+      this.closeEmitter.fire(1);
+    });
+    this.proc.on('close', (code, signal) => {
+      if (done) return;
+      done = true;
+      if (buf) this.writeEmitter.fire(buf + '\r\n');
+      const cancelled = this._cancelled;
+      const failed    = cancelled || (code !== 0 && code !== null);
+      const color = failed || errors > 0 ? '\x1b[31m' : warnings > 0 ? '\x1b[33m' : '\x1b[32m';
+      const label = cancelled ? 'Build cancelled' : failed ? 'Build failed' : 'Build complete';
+      this.writeEmitter.fire(`${color}${label}: ${errors} error(s), ${warnings} warning(s)\x1b[0m\r\n`);
+      this.closeEmitter.fire(code ?? (cancelled ? 1 : 0));
+    });
+  }
+
+  close(): void { this._cancelled = true; this.proc?.kill(); }
+}
 
 /** ====== activate / deactivate ====== */
 export async function activate(ctx: vscode.ExtensionContext) {
@@ -83,6 +151,32 @@ export async function activate(ctx: vscode.ExtensionContext) {
   prebuiltDiagCollection = vscode.languages.createDiagnosticCollection('ht32-prebuilt');
   convertDiagCollection  = vscode.languages.createDiagnosticCollection('ht32-convert');
   ctx.subscriptions.push(CHANNEL, statusItem, prebuiltDiagCollection, convertDiagCollection);
+
+  ctx.subscriptions.push(
+    vscode.tasks.registerTaskProvider('ht32-build', {
+      provideTasks: () => [],
+      resolveTask(task: vscode.Task): vscode.Task | undefined {
+        const def = task.definition as Ht32BuildTaskDef;
+        if (!def.cwd) {
+          vscode.window.showErrorMessage('ht32-build task is missing required field "cwd". Please regenerate tasks.json.');
+          return undefined;
+        }
+        const resolved = new vscode.Task(
+          def,
+          task.scope ?? vscode.TaskScope.Workspace,
+          task.name,
+          'ht32',
+          new vscode.CustomExecution(async () =>
+            new BuildPseudoterminal(def.make ?? 'make', def.args ?? [], def.cwd, def.extraPath ?? [])
+          ),
+          task.problemMatchers,
+        );
+        resolved.presentationOptions = task.presentationOptions;
+        resolved.group = task.group;
+        return resolved;
+      },
+    })
+  );
 
   // Restore prebuilt warnings that survived a window reload (written before ensureWorkspaceAt)
   for (const f of vscode.workspace.workspaceFolders ?? []) {
@@ -3811,6 +3905,15 @@ async function generateTasksAndLaunchAndMakefile(
     : undefined;
   const envForTasks = envPath ? { PATH: envPath } : undefined;
 
+  // Actual resolved paths for ht32-build CustomExecution (no VS Code variable tokens)
+  const extraPathDirs: string[] = [];
+  if (makePathFull && path.isAbsolute(makePathFull)) {
+    extraPathDirs.push(path.dirname(makePathFull).replace(/\\/g, '/'));
+  }
+  if (gccPath && path.isAbsolute(gccPath)) {
+    extraPathDirs.push(path.dirname(gccPath).replace(/\\/g, '/'));
+  }
+
   /** Project → ''，Project_iap → 'IAP'，build-gen → ''，build-gen-iap → 'IAP'，HT32F52352 → 'HT32F52352' */
   const bgSuffix      = bgDirSuffix;
   /** task label for Build（手動執行，terminal 留著讓 user 看結果） */
@@ -3847,10 +3950,11 @@ async function generateTasksAndLaunchAndMakefile(
       // "Compile X" = make only（內部用，無 group）
       taskList.push({
         label:          compileLabel(bg),
-        type:           'process',
-        command:        makePathFull ?? 'make',
-        args:           ['-j', '--output-sync=line', '--no-print-directory', '-C', bgCwdOf(bg)],
-        options:        { cwd: bgCwdOf(bg), ...(envForTasks ? { env: envForTasks } : {}) },
+        type:           'ht32-build',
+        make:           makePathFull ?? 'make',
+        cwd:            path.join(bgParentDir, bg),
+        args:           ['-j', '--output-sync=line', '--no-print-directory'],
+        extraPath:      extraPathDirs,
         problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
       });
@@ -3874,10 +3978,11 @@ async function generateTasksAndLaunchAndMakefile(
       // 沒有 postBuildCmd："Build X" = make
       taskList.push({
         label:          buildLabel(bg),
-        type:           'process',
-        command:        makePathFull ?? 'make',
-        args:           ['-j', '--output-sync=line', '--no-print-directory', '-C', bgCwdOf(bg)],
-        options:        { cwd: bgCwdOf(bg), ...(envForTasks ? { env: envForTasks } : {}) },
+        type:           'ht32-build',
+        make:           makePathFull ?? 'make',
+        cwd:            path.join(bgParentDir, bg),
+        args:           ['-j', '--output-sync=line', '--no-print-directory'],
+        extraPath:      extraPathDirs,
         problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
         group:          { kind: 'build', isDefault: (bg === BG_BASE || bg === BG_BASE_OLD) },
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },

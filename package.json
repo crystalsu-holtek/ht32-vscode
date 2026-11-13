@@ -444,6 +444,18 @@
         }
       ]
     },
+    "taskDefinitions": [
+      {
+        "type": "ht32-build",
+        "required": ["cwd"],
+        "properties": {
+          "make":      { "type": "string",                            "description": "Full path to make executable" },
+          "cwd":       { "type": "string",                            "description": "Working directory for make" },
+          "args":      { "type": "array", "items": { "type": "string" }, "description": "make arguments" },
+          "extraPath": { "type": "array", "items": { "type": "string" }, "description": "Directories to prepend to PATH" }
+        }
+      }
+    ],
     "jsonValidation": [
       {
         "fileMatch": "*.ht32vs",

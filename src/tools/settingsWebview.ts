@@ -433,7 +433,8 @@ async function runOpenocdProbe(exe: string, ifaceCfg: string, serial: string, sp
 
   return new Promise(resolve => {
     const proc = spawn(exe, args);
-    let out = '';
+    let out = '', settled = false;
+    const done = (val: string) => { if (!settled) { settled = true; resolve(val); } };
     proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     proc.stderr.on('data', (d: Buffer) => { out += d.toString(); });
     const killer = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } }, 4000);
@@ -478,9 +479,9 @@ async function runOpenocdProbe(exe: string, ifaceCfg: string, serial: string, sp
         const errLine = lines.find(l => /^error:/i.test(l) || /failed|unable|timeout/i.test(l));
         if (errLine) result.push(errLine);
       }
-      resolve(result.join('\n') || '(no response)');
+      done(result.join('\n') || '(no response)');
     });
-    proc.on('error', (e: Error) => resolve(`Error: ${e.message}`));
+    proc.on('error', (e: Error) => { clearTimeout(killer); done(`Error: ${e.message}`); });
   });
 }
 
