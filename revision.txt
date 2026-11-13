@@ -13,14 +13,16 @@ v0.3.3  (from v0.3.2)
                Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
                Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）、
                Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）
-  修正（16）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+  修正（18）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
               Add/Delete project 不再彈工具鏈安裝 UI（skipUI）、
               clangd.arguments 保留使用者自訂 arg、pyocd.yaml 保留使用者自訂 key、
               Build spawn 失敗顯示錯誤、Build 取消正確回報 cancelled / 失敗正確回報 failed、
               Build terminal Ctrl+Click 補 OSC 7（修正彈 quick pick 而非跳檔案，含空格路徑修正）、
-              runOpenocdProbe 雙 resolve 競爭（settled/done() guard）
+              runOpenocdProbe 雙 resolve 競爭（settled/done() guard）、
+              Build Problems 面板 error 跳轉修正（workspace 外檔案彈 quick pick 而非直接開啟）、
+              Build 按下後啟動加速（task cache 避免每次重掃所有 provider）
 
 詳細
 新功能
@@ -74,7 +76,8 @@ v0.3.3  (from v0.3.2)
   make 結束後在同一 terminal 最後一行顯示彩色統計：
     綠色 "Build complete"（無 error/warning）/ 黃色（有 warning）/ 紅色（有 error 或 exit≠0）；
   OSC 7 escape sequence 寫入 terminal，Ctrl+Click 相對路徑可正確解析至 source 檔案；
-  VS Code Problems 面板仍由 tasks.json 內的 problemMatcher 獨立解析（行為與原本相同）
+  BuildPseudoterminal 輸出每行前呼叫 toAbsLine()，將 GCC 診斷行的相對路徑轉為絕對路徑；
+  tasks.json 內的 problemMatcher 使用 fileLocation: 'absolute'，可導覽至 workspace 外的 FWLib 檔案
 - resolveToolchain 加 skipUI 參數：
   Add/Delete project 觸發的 generateTasksAndLaunchAndMakefile 不再彈工具鏈安裝 UI；
   _pyocdPathCache 有快取時 skipUI 仍使用快取路徑（不彈 UI）
@@ -147,6 +150,15 @@ v0.3.3  (from v0.3.2)
   使用 vscode.Uri.file() 確保空格正確 percent-encode（`%20`），UNC 路徑也正確處理；
   修正①：未補 OSC 7 時，Ctrl+Click 彈出 quick pick 而非直接開啟；
   修正②：手動拼接 URI 未 percent-encode 空格，含空格路徑的 OSC 7 URI 無效
+- Build Problems 面板 error 跳轉修正（workspace 外檔案彈 quick pick）：
+  根因：CustomExecution 不展開 problemMatcher fileLocation 裡的 `${workspaceFolder}`，
+  workspace 外的 FWLib 檔案（如 `../../../../../library/.../printf.c`）路徑無法解析 → quick pick；
+  toAbsLine() 在 BuildPseudoterminal 輸出每行前將 GCC 診斷行的相對路徑轉換為絕對路徑；
+  makeGccProblemMatcher 改用 `fileLocation: 'absolute'`，直接使用絕對路徑跳轉，不依賴 VS Code 展開變數
+- Build 按下後啟動加速（task cache）：
+  fetchTasksCached() 在首次 fetchTasks() 後以 { path, mtime } 為 key 快取結果；
+  tasks.json 未修改時直接返回快取，避免每次按 Build 都重掃 npm/TypeScript/gulp 等所有 provider；
+  cache key 同時包含路徑與 mtime，防止不同 workspace 的 tasks.json 在 mtime 相同時碰撞
 - runOpenocdProbe 雙 resolve 競爭：
   close handler 與 error handler 改用 `settled`/`done()` guard pattern（同 Promise 中的 once-resolve）；
   error handler 加入 clearTimeout(killer)，避免 killer 在 error 後繼續觸發；
@@ -746,7 +758,7 @@ v0.1.8  (from v0.1.7)
 - 將 '$gcc' 字串參考改為 inline GCC_PROBLEM_MATCHER 物件，不依賴任何 extension 提供 $gcc
   根因：$gcc 來源不明確（可能由 C/C++ extension 或其他 extension 注入），
   缺少提供者時出現「Invalid problemMatcher reference: $gcc」錯誤通知
-  inline 格式：owner=gcc、fileLocation=autoDetect、pattern 匹配 file:line:col: severity: msg
+  inline 格式：owner=gcc、fileLocation=absolute、pattern 匹配 file:line:col: severity: msg
 
 [Attach 不 reset MCU — pyocd / OpenOCD]
 - pyocd Attach：launch.json serverArgs 加入 `-O connect_mode=attach`

@@ -44,6 +44,8 @@ Build / Compile task 使用自訂類型 `ht32-build`，由 extension 在 `activa
 
 **VS Code problem matcher**：tasks.json 裡的 inline `problemMatcher`（`makeGccProblemMatcher`）由 VS Code task engine 從 JSON 獨立套用，不受 `resolveTask()` 回傳的 task 影響。
 
+`fileLocation` 設為 `'absolute'`（非 `['autoDetect', cwd]`）。原因：`BuildPseudoterminal.open()` 會在輸出每行前呼叫 `toAbsLine()`，將 GCC 診斷行的相對路徑（如 `../Src/main.c:10:5: error:`）轉換成絕對路徑後再寫入 terminal。如此可正確導覽到 workspace 外的檔案（例如 FWLib library 目錄），且不依賴 VS Code 展開 `${workspaceFolder}` 變數（CustomExecution 不保證展開）。
+
 ## 為何 Clean 不用 ht32-build
 
 Clean 不需要統計 error/warning，維持 `type: 'process'` 更簡單。

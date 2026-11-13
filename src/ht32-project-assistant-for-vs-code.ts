@@ -25,6 +25,7 @@ const ourDebugSessionIds = new Set<string>();
 
 let statusItem: vscode.StatusBarItem;
 let buildRunning = false;
+let _taskCache: { tasks: vscode.Task[]; mtime: number; path: string } | undefined;
 let prebuiltDiagCollection: vscode.DiagnosticCollection;
 let convertDiagCollection:  vscode.DiagnosticCollection;
 /** ====== constants ====== */
@@ -65,15 +66,22 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
     this.writeEmitter.fire(`\x1b]7;${vscode.Uri.file(this.cwd).toString()}\x07`);
     let errors = 0, warnings = 0;
     let buf = '', done = false;
+    // Convert relative file paths in GCC diagnostic lines to absolute so the problem
+    // matcher (fileLocation: 'absolute') can navigate to files outside the workspace.
+    const toAbsLine = (line: string): string => {
+      const m = line.match(/^(.*?):(\d+):(\d+):\s+(?:error|warning|note):/);
+      if (!m || path.isAbsolute(m[1])) return line;
+      return path.resolve(this.cwd, m[1]) + line.slice(m[1].length);
+    };
     const flush = (data: string) => {
       buf += data;
       let nl: number;
       while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).replace(/\r$/, '');
+        const raw  = buf.slice(0, nl).replace(/\r$/, '');
         buf = buf.slice(nl + 1);
-        if (/:\d+:\d+:\s+error:/.test(line))        errors++;
-        else if (/:\d+:\d+:\s+warning:/.test(line)) warnings++;
-        this.writeEmitter.fire(line + '\r\n');
+        if (/:\d+:\d+:\s+error:/.test(raw))        errors++;
+        else if (/:\d+:\d+:\s+warning:/.test(raw)) warnings++;
+        this.writeEmitter.fire(toAbsLine(raw) + '\r\n');
       }
     };
     const sep  = process.platform === 'win32' ? ';' : ':';
@@ -1128,9 +1136,25 @@ function setBuildRunning(running: boolean) {
   vscode.commands.executeCommand('setContext', 'ht32.isBuilding', running);
 }
 
+async function fetchTasksCached(): Promise<vscode.Task[]> {
+  const wsFolder = vscode.workspace.workspaceFolders?.[0];
+  const tasksJson = wsFolder ? path.join(wsFolder.uri.fsPath, '.vscode', 'tasks.json') : '';
+  const mtime = tasksJson && fs.existsSync(tasksJson) ? fs.statSync(tasksJson).mtimeMs : 0;
+  if (_taskCache && _taskCache.path === tasksJson && _taskCache.mtime === mtime) return _taskCache.tasks;
+  const tasks = await vscode.tasks.fetchTasks();
+  _taskCache = { tasks, mtime, path: tasksJson };
+  return tasks;
+}
+
 async function startBuildTask(label: string) {
+  const tasks = await fetchTasksCached();
+  const t = tasks.find(t => t.name === label || (t as any).definition?.label === label);
+  if (!t) {
+    vscode.window.showErrorMessage(`Task "${label}" not found. Generate tasks.json first.`);
+    return;
+  }
   try {
-    await runTask(label);
+    await vscode.tasks.executeTask(t);
   } finally {
     if (!vscode.tasks.taskExecutions.some(e => e.task.definition.type === 'ht32-build')) {
       setBuildRunning(false);
@@ -3765,10 +3789,10 @@ function buildOpenocdServerConfigs(params: {
   return [debugConfig, attachConfig];
 }
 
-function makeGccProblemMatcher(cwd: string) {
+function makeGccProblemMatcher() {
   return {
     owner: 'gcc',
-    fileLocation: ['autoDetect', cwd],
+    fileLocation: 'absolute',
     pattern: {
       regexp: '^(.*):(\\d+):(\\d+):\\s+(warning|error|note):\\s+(.*)$',
       file: 1, line: 2, column: 3, severity: 4, message: 5
@@ -3969,7 +3993,7 @@ async function generateTasksAndLaunchAndMakefile(
         cwd:            path.join(bgParentDir, bg),
         args:           ['-j', '--output-sync=line', '--no-print-directory'],
         extraPath:      extraPathDirs,
-        problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
+        problemMatcher: [makeGccProblemMatcher()],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
       });
       // "Post-Build X" = bat only
@@ -3997,7 +4021,7 @@ async function generateTasksAndLaunchAndMakefile(
         cwd:            path.join(bgParentDir, bg),
         args:           ['-j', '--output-sync=line', '--no-print-directory'],
         extraPath:      extraPathDirs,
-        problemMatcher: [makeGccProblemMatcher(bgCwdOf(bg))],
+        problemMatcher: [makeGccProblemMatcher()],
         group:          { kind: 'build', isDefault: (bg === BG_BASE || bg === BG_BASE_OLD) },
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
       });
