@@ -24,6 +24,7 @@ let ourDebugStartPending = false;
 const ourDebugSessionIds = new Set<string>();
 
 let statusItem: vscode.StatusBarItem;
+let buildRunning = false;
 let prebuiltDiagCollection: vscode.DiagnosticCollection;
 let convertDiagCollection:  vscode.DiagnosticCollection;
 /** ====== constants ====== */
@@ -79,7 +80,7 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
     const PATH = this.extraPath.length
       ? this.extraPath.join(sep) + sep + (process.env['PATH'] ?? '')
       : process.env['PATH'] ?? '';
-    this.proc = spawn(this.make, this.makeArgs, { cwd: this.cwd, env: { ...process.env, PATH } });
+    this.proc = spawn(this.make, this.makeArgs, { cwd: this.cwd, env: { ...process.env, PATH }, windowsHide: true });
     this.proc.stdout?.on('data', (d: Buffer) => flush(d.toString()));
     this.proc.stderr?.on('data', (d: Buffer) => flush(d.toString()));
     this.proc.on('error', (err) => {
@@ -151,6 +152,29 @@ export async function activate(ctx: vscode.ExtensionContext) {
   prebuiltDiagCollection = vscode.languages.createDiagnosticCollection('ht32-prebuilt');
   convertDiagCollection  = vscode.languages.createDiagnosticCollection('ht32-convert');
   ctx.subscriptions.push(CHANNEL, statusItem, prebuiltDiagCollection, convertDiagCollection);
+
+  ctx.subscriptions.push(
+    vscode.commands.registerCommand('ht32.stopBuild', () => {
+      for (const e of vscode.tasks.taskExecutions) {
+        if (e.task.definition.type === 'ht32-build') { e.terminate(); }
+      }
+      if (vscode.debug.activeDebugSession?.type === 'cortex-debug') {
+        vscode.debug.stopDebugging();
+      }
+    }),
+    vscode.tasks.onDidStartTask(e => {
+      if (e.execution.task.definition.type === 'ht32-build') {
+        setBuildRunning(true);
+      }
+    }),
+    vscode.tasks.onDidEndTask(() => {
+      if (!buildRunning) return;
+      const stillRunning = vscode.tasks.taskExecutions.some(
+        e => e.task.definition.type === 'ht32-build'
+      );
+      if (!stillRunning) { setBuildRunning(false); }
+    }),
+  );
 
   ctx.subscriptions.push(
     vscode.tasks.registerTaskProvider('ht32-build', {
@@ -1089,14 +1113,29 @@ function setContextHasProject(val: boolean) {
   vscode.commands.executeCommand('setContext', 'ht32.hasProject', val);
 }
 
-async function runTask(label: string) {
+async function runTask(label: string): Promise<vscode.TaskExecution | undefined> {
   const tasks = await vscode.tasks.fetchTasks();
   const t = tasks.find(t => t.name === label || (t as any).detail === label || (t as any).definition?.label === label);
   if (!t) {
     vscode.window.showErrorMessage(`Task "${label}" not found. Generate tasks.json first.`);
-    return;
+    return undefined;
   }
-  await vscode.tasks.executeTask(t);
+  return vscode.tasks.executeTask(t);
+}
+
+function setBuildRunning(running: boolean) {
+  buildRunning = running;
+  vscode.commands.executeCommand('setContext', 'ht32.isBuilding', running);
+}
+
+async function startBuildTask(label: string) {
+  try {
+    await runTask(label);
+  } finally {
+    if (!vscode.tasks.taskExecutions.some(e => e.task.definition.type === 'ht32-build')) {
+      setBuildRunning(false);
+    }
+  }
 }
 
 const HT32_VSCODE_DIRNAME = 'HT32_VSCode';
@@ -1235,7 +1274,8 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
     if (kind === 'download') {
       await ensureAdapterSerialFresh(path.join(bgParent(root), bgDirs[0]), root);
     }
-    await runTask(taskLabel(bgDirs[0]));
+    if (kind === 'build') { await startBuildTask(taskLabel(bgDirs[0])); }
+    else                  { await runTask(taskLabel(bgDirs[0])); }
     return;
   }
 
@@ -1260,7 +1300,8 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
       await ensureAdapterSerialFresh(path.join(bgParent(root), selectedBg), root);
     }
   }
-  await runTask(sel.label);
+  if (kind === 'build') { await startBuildTask(sel.label); }
+  else                  { await runTask(sel.label); }
 }
 
 /** TreeView 選到 project node 時，更新 settings.json 的 --compile-commands-dir 並重啟 clangd。
@@ -2021,27 +2062,6 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
   // wsOpenRoot: ht32_vscode/ for new layout, project root for old layout (backward compat)
   const wsOpenRoot = computeWsOpenRoot(root);
 
-  // ── 步驟 1.5：若現有單一專案 .ht32vs，詢問是否升級為 Multi-Project ──
-  let uvMultiProjSetup: { name: string; existingDir: string } | undefined;
-  if (toConvert.length === 1) {
-    const af = readActiveProjectFile(bgParent(wsOpenRoot));
-    if (af) {
-      const afPath = path.isAbsolute(af) ? af : path.join(bgParent(wsOpenRoot), af);
-      const existing: string[] = parseHt32vsFile(afPath)?.projects ?? [];
-      if (existing.length === 1) {
-        const defaultName = path.basename(path.dirname(bgParent(wsOpenRoot)));
-        const name = await showInputDialog({
-          title: 'Multi-Project File Name',
-          prompt: 'Enter a name for the multi-project file',
-          value: defaultName,
-          placeHolder: defaultName,
-        });
-        if (name === undefined) return;
-        uvMultiProjSetup = { name: name.trim() || defaultName, existingDir: existing[0] };
-      }
-    }
-  }
-
   // ── 步驟 1.6：若 HT32_VSCode 已存在，詢問是否覆蓋 ──
   const ht32vsDirUv = bgParent(wsOpenRoot);
   if (fs.existsSync(ht32vsDirUv)) {
@@ -2134,13 +2154,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     } // end for
 
     // Write .ht32vs before generateTasksAndLaunchAndMakefile so that Build All order matches TreeView order.
-    let uvProjFile: string;
-    if (uvMultiProjSetup) {
-      writeOrUpdateProjectFile(bgParent(wsOpenRoot), [projDirNames[0]], projDirNames[0]);
-      uvProjFile = writeOrUpdateProjectFile(bgParent(wsOpenRoot), [uvMultiProjSetup.existingDir, projDirNames[0]], uvMultiProjSetup.name);
-    } else {
-      uvProjFile = writeOrUpdateProjectFile(bgParent(wsOpenRoot), projDirNames, uvDefaultWsName);
-    }
+    const uvProjFile = writeOrUpdateProjectFile(bgParent(wsOpenRoot), projDirNames, uvDefaultWsName);
     await addRecentProject(ctx, uvProjFile);
 
     await generateTasksAndLaunchAndMakefile(wsOpenRoot, {

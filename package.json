@@ -168,6 +168,12 @@
         "icon": "$(build)"
       },
       {
+        "command": "ht32.stopBuild",
+        "category": "HT32",
+        "title": "Stop Build",
+        "icon": "$(stop-circle)"
+      },
+      {
         "command": "ht32.download",
         "category": "HT32",
         "title": "Download",
@@ -389,7 +395,12 @@
         },
         {
           "command": "ht32.build",
-          "when": "view == ht32ProjectView && ht32.hasProject",
+          "when": "view == ht32ProjectView && ht32.hasProject && !ht32.isBuilding",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ht32.stopBuild",
+          "when": "view == ht32ProjectView && ht32.hasProject && ht32.isBuilding",
           "group": "navigation@1"
         },
         {
