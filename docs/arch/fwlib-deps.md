@@ -205,6 +205,8 @@ FWLib 前綴從 `library/HT32*_Driver` 目錄名推算：`HT32F5xxxx_Driver` →
 |---|---|
 | `library/HT32[A-Za-z]+\d+xxxx_Driver/`（目錄命名格式）| series detection 失敗（Step 2 靠此辨識 STD 系列）|
 | `library/<series>_Driver/src/` | driver .c 找不到 |
+
+> **非標準 library 目錄名（如 `ARM_LIB/`）**：`fwlRootFromSourcePath` 只認 `library/`、`libraries/`、`utilities/` 三個路徑段，`ARM_LIB/` 等自訂目錄名無法偵測 FWLib root。此時 `resolveGnuArmDir` 會 fallback：掃 sources 中的 `startup_ht32(系列)xxxx_NN.s` / `system_ht32(系列)xxxx_NN.c` 推出系列（`f5xxxx` 等），回傳 bundled template 目錄。**startup .s 轉換**（`handleKeilAsm`）本身也有 `bundledGnuDirFromStartupName` fallback，不受影響。**linker.ld** 由 bundled template 提供。
 | `library/<series>_Driver/inc/` | compiler 找不到 driver header |
 | `library/HT32_USBD_Library/src/` | USB driver .c 遺失（目錄名完全固定）|
 | `library/HT32_USBD_Library/inc/` | USB include path 遺失 |

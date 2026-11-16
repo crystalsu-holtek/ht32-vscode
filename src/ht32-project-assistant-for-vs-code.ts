@@ -46,6 +46,9 @@ interface Ht32BuildTaskDef extends vscode.TaskDefinition {
   extraPath?: string[];
 }
 
+// Shared GCC diagnostic pattern: file:line:col: error|warning|note: ...
+const GCC_DIAG_RE = /^(.+?):(\d+):(\d+):\s+(?:error|warning|note):\s/;
+
 class BuildPseudoterminal implements vscode.Pseudoterminal {
   private writeEmitter = new vscode.EventEmitter<string>();
   private closeEmitter = new vscode.EventEmitter<number>();
@@ -69,8 +72,8 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
     // Convert relative file paths in GCC diagnostic lines to absolute so the problem
     // matcher (fileLocation: 'absolute') can navigate to files outside the workspace.
     const toAbsLine = (line: string): string => {
-      const m = line.match(/^(.*?):(\d+):(\d+):\s+(?:error|warning|note):/);
-      if (!m || path.isAbsolute(m[1])) return line;
+      const m = GCC_DIAG_RE.exec(line);
+      if (!m || path.isAbsolute(m[1]) || !/\.(c|cpp|s|h)$/i.test(m[1])) return line;
       return path.resolve(this.cwd, m[1]) + line.slice(m[1].length);
     };
     const flush = (data: string) => {
@@ -160,6 +163,33 @@ export async function activate(ctx: vscode.ExtensionContext) {
   prebuiltDiagCollection = vscode.languages.createDiagnosticCollection('ht32-prebuilt');
   convertDiagCollection  = vscode.languages.createDiagnosticCollection('ht32-convert');
   ctx.subscriptions.push(CHANNEL, statusItem, prebuiltDiagCollection, convertDiagCollection);
+
+  ctx.subscriptions.push(
+    vscode.window.registerTerminalLinkProvider({
+      async provideTerminalLinks(tctx: vscode.TerminalLinkContext) {
+        if (!/ht32/i.test(tctx.terminal.name)) { return []; }
+        const m = GCC_DIAG_RE.exec(tctx.line);
+        if (!m || !path.isAbsolute(m[1])) { return []; }
+        try { await fs.promises.access(m[1]); } catch { return []; }
+        const fileBase = path.basename(m[1]);
+        return [{
+          startIndex: 0,
+          length: m[1].length + 1 + m[2].length + 1 + m[3].length,
+          tooltip: `${fileBase}:${m[2]}:${m[3]}`,
+          data: { file: m[1], line: +m[2], col: +m[3] },
+        } as vscode.TerminalLink & { data: { file: string; line: number; col: number } }];
+      },
+      handleTerminalLink(link: vscode.TerminalLink & { data: { file: string; line: number; col: number } }) {
+        vscode.window.showTextDocument(vscode.Uri.file(link.data.file), {
+          selection: new vscode.Range(
+            link.data.line - 1, link.data.col - 1,
+            link.data.line - 1, link.data.col - 1,
+          ),
+          preserveFocus: false,
+        });
+      },
+    }),
+  );
 
   ctx.subscriptions.push(
     vscode.commands.registerCommand('ht32.stopBuild', () => {
@@ -1153,13 +1183,7 @@ async function startBuildTask(label: string) {
     vscode.window.showErrorMessage(`Task "${label}" not found. Generate tasks.json first.`);
     return;
   }
-  try {
-    await vscode.tasks.executeTask(t);
-  } finally {
-    if (!vscode.tasks.taskExecutions.some(e => e.task.definition.type === 'ht32-build')) {
-      setBuildRunning(false);
-    }
-  }
+  await vscode.tasks.executeTask(t);
 }
 
 const HT32_VSCODE_DIRNAME = 'HT32_VSCode';

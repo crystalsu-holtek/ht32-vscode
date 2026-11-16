@@ -43,7 +43,7 @@ gnuArmTemplate = {FWLib}/libraries/cmsis/cm4/device_support/startup/gcc/
   → patchLdStackSections()     (is49xStyle：注入 __StackTop = _estack; __HT_check_sp = _estack - _Min_Stack_Size;)
 ```
 
-找不到 FWLib linker script → 直接 throw（無 bundled fallback）。
+找不到 FWLib linker script → throw。**但 `resolveGnuArmDir` 在 library 完全未偵測到時會先嘗試從 sources 內的 `startup_ht32(系列)xxxx_NN.s` / `system_ht32(系列)xxxx_NN.c` 推出系列，回傳 bundled template 目錄，使 `generateLinkerScript` 能拿到 `linker.ld`**（適用於 FWLib 放在非標準目錄名下的專案，如 `ARM_LIB/`）。
 
 ---
 

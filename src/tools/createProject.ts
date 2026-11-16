@@ -32,7 +32,6 @@ export interface GenerateResult {
   mcu:        string;   // e.g. "cortex-m0"
   ramOrigin:  string;
   ramLength:  string;
-  outputType: 'app' | 'lib';
 }
 
 interface ParsedMk {
@@ -1549,7 +1548,7 @@ export async function generateProjectFiles(
   const elfPath = outputType === 'lib'
     ? `${bgDirName}/build/${projectName}.a`
     : `${bgDirName}/build/${projectName}.elf`;
-  return { elfPath, deviceName: displayName, mcu: armCore, ramOrigin, ramLength, outputType };
+  return { elfPath, deviceName: displayName, mcu: armCore, ramOrigin, ramLength };
 }
 
 // ─────────────────────────────────────────────────────────

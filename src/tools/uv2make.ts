@@ -1670,6 +1670,22 @@ function resolveGnuArmDir(
     }
   }
 
+  // Last resort: library 完全未偵測到時，從 sources 內的 startup/system 檔名推系列。
+  // startup_ht32f5xxxx_08.s / system_ht32f5xxxx_03.c → "f5xxxx" → bundled templates/f5xxxx/GNU_ARM
+  // 含特定晶片號的檔名（如 startup_ht32f65230_40.s）不含 "xxxx"，不會誤 match。
+  if (extPath) {
+    for (const s of sources) {
+      const base = path.basename(s);
+      const m = /^(?:startup|system)_ht32([a-z]+\dxxxx)_\d+\.[sc]$/i.exec(base);
+      if (!m) continue;
+      const seriesDir = path.join(extPath, 'templates', m[1].toLowerCase(), 'GNU_ARM');
+      if (fs.existsSync(seriesDir)) {
+        logInfo(`resolveGnuArmDir: series from filename "${base}" → bundled ${seriesDir}`);
+        return seriesDir;
+      }
+    }
+  }
+
   return undefined;
 }
 
