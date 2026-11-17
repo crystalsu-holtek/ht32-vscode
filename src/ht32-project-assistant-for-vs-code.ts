@@ -617,6 +617,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       }, detectedGcc ?? undefined);
     }),
     vscode.commands.registerCommand('ht32.download', () => smartRunTask('download')),
+    vscode.commands.registerCommand('ht32.eraseFlash', () => smartRunTask('erase')),
     vscode.commands.registerCommand('ht32.refreshStackAnalysis', () => stackProvider.refresh()),
     vscode.commands.registerCommand('ht32.refreshProjectTree', () => autoAttachProjectFromWorkspace(ctx, tree)),
 
@@ -1260,7 +1261,7 @@ async function ensureAdapterSerialFresh(bgDir: string, wsRoot: string): Promise<
  *  - 只有一個 build-gen → 直接執行
  *  - 多個 build-gen    → QuickPick 讓使用者選擇
  */
-async function smartRunTask(kind: 'build' | 'clean' | 'download') {
+async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   const root = currentWsRoot();
   if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
 
@@ -1295,8 +1296,10 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
   const buildLabel    = (d: string) => { const s = suf(d); return s ? `Build ${s}` : 'Build (make)'; };
   const cleanLabel    = (d: string) => { const s = suf(d); return s ? `Clean ${s}` : 'Clean'; };
   const downloadLabel = (d: string) => { const s = suf(d); return s ? `Download ${s}` : 'Download'; };
+  const eraseLabel    = (d: string) => { const s = suf(d); return s ? `Erase ${s}` : 'Erase Flash'; };
   const taskLabel     = (d: string) =>
-    kind === 'build' ? buildLabel(d) : kind === 'clean' ? cleanLabel(d) : downloadLabel(d);
+    kind === 'build' ? buildLabel(d) : kind === 'clean' ? cleanLabel(d) :
+    kind === 'erase' ? eraseLabel(d) : downloadLabel(d);
 
   if (kind === 'build') {
     const parent = bgParent(root);
@@ -1319,7 +1322,7 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
   }
 
   if (bgDirs.length === 1) {
-    if (kind === 'download') {
+    if (kind === 'download' || kind === 'erase') {
       await ensureAdapterSerialFresh(path.join(bgParent(root), bgDirs[0]), root);
     }
     if (kind === 'build') { await startBuildTask(taskLabel(bgDirs[0])); }
@@ -1339,10 +1342,14 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download') {
     items.push({ label: 'Clean All', description: 'Clean all projects in sequence' });
   }
 
-  const placeHolder = kind === 'build' ? 'Select project to build' : kind === 'clean' ? 'Select project to clean' : 'Select project to download';
+  const placeHolder =
+    kind === 'build'  ? 'Select project to build'  :
+    kind === 'clean'  ? 'Select project to clean'  :
+    kind === 'erase'  ? 'Select project to erase'  :
+    'Select project to download';
   const sel = await vscode.window.showQuickPick(items, { placeHolder });
   if (!sel) return;
-  if (kind === 'download') {
+  if (kind === 'download' || kind === 'erase') {
     const selectedBg = bgDirs.find(d => taskLabel(d) === sel.label);
     if (selectedBg) {
       await ensureAdapterSerialFresh(path.join(bgParent(root), selectedBg), root);
@@ -3984,6 +3991,8 @@ async function generateTasksAndLaunchAndMakefile(
   const cleanLabel      = (dir: string) => { const s = bgSuffix(dir); return s ? `Clean ${s}` : 'Clean'; };
   /** task label for Download */
   const downloadLabel   = (dir: string) => { const s = bgSuffix(dir); return s ? `Download ${s}` : 'Download'; };
+  /** task label for Erase Flash */
+  const eraseLabel      = (dir: string) => { const s = bgSuffix(dir); return s ? `Erase ${s}` : 'Erase Flash'; };
   /** task label for F5 preLaunchTask: Kill → Compile → Download → OpenOCD */
   const debugPreLaunchLabel = (dir: string) => { const s = bgSuffix(dir); return s ? `Build & Download ${s}` : 'Build & Download'; };
   /** task label for OpenOCD background server（Debug 和 Attach 共用） */
@@ -4475,6 +4484,26 @@ async function generateTasksAndLaunchAndMakefile(
           : [downloadLabel(bg)],
         dependsOrder: 'sequence',
       });
+      // Erase Only (pyocd)
+      const eraseArgs: string[] = ['erase', '-t', bgTargetId];
+      for (const p of packPathsForTask) { eraseArgs.push('--pack', p); }
+      if (pyocdYamlRef) { eraseArgs.push('--config', pyocdYamlRef); }
+      if (projSettings.adapterSerial.trim()) { eraseArgs.push('--probe', projSettings.adapterSerial.trim()); }
+      if (projSettings.adapterSpeed.trim()) {
+        eraseArgs.push('--frequency', String(Number(projSettings.adapterSpeed) * 1000));
+      }
+      eraseArgs.push('--chip');
+      if (projSettings.openocdDebugLevel >= 3)      { eraseArgs.push('-v', '-v'); }
+      else if (projSettings.openocdDebugLevel >= 2) { eraseArgs.push('-v'); }
+      taskList.push({
+        label:          eraseLabel(bg),
+        type:           'shell',
+        command:        { value: pyocdExeForDl, quoting: 'strong' },
+        args:           eraseArgs.map(a => ({ value: a, quoting: 'strong' })),
+        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
+        problemMatcher: [],
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+      });
     } else {
       // OpenOCD Download：Kill OpenOCD 確保燒錄前 probe 無人佔用
       // SkipReadID 讓 auto_obe 跳過 MCU cfg DID 驗證（HT32F493x5 無 package-generic cfg 檔）
@@ -4520,6 +4549,33 @@ async function generateTasksAndLaunchAndMakefile(
           dependsOrder: 'sequence',
         });
       }
+      // Erase Only (OpenOCD)
+      const erasePostCmds = [
+        `set_expected_name ${bgDeviceFinal} SkipReadID`,
+        'init',
+        'halt',
+        'ht_flash erase_chip',
+        'echo {Erase Flash: Done.}',
+        'shutdown',
+      ];
+      const eraseOcdArgs = buildOpenOcdArgs(
+        [interfaceCfgPath, bgTargetCfgPath],
+        bgPreConfigCmds,
+        erasePostCmds,
+        undefined,
+        projSettings.openocdDebugLevel,
+      );
+      taskList.push({
+        label:          eraseLabel(bg),
+        type:           'shell',
+        command:        { value: openocdExe, quoting: 'strong' },
+        args:           eraseOcdArgs,
+        dependsOn:      ['Kill OpenOCD'],
+        dependsOrder:   'sequence',
+        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
+        problemMatcher: [],
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+      });
     }
 
     if (projSettings.serverType === 'external') {

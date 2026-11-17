@@ -4,7 +4,7 @@
   "description": "Create, convert, and manage Holtek HT32 projects in VS Code. Supports Keil uVision (.uvprojx) and HT32-IDE (.project/.cproject) conversion, with build, flash, and debug support.",
   "version": "0.3.3",
   "publisher": "holtek",
-  "icon": "media/ht32.png",
+  "icon": "icons/ht32.png",
   "engines": {
     "vscode": "^1.106.3"
   },
@@ -180,6 +180,15 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "ht32.eraseFlash",
+        "category": "HT32",
+        "title": "Erase Flash",
+        "icon": {
+          "light": "icons/erase_light.svg",
+          "dark": "icons/erase_dark.svg"
+        }
+      },
+      {
         "command": "ht32.runClean",
         "category": "HT32",
         "title": "Clean",
@@ -262,7 +271,7 @@
         {
           "id": "ht32Assistant",
           "title": "HT32 VS Code Extension (V0.3.3)",
-          "icon": "media/ht32.svg"
+          "icon": "icons/ht32.svg"
         }
       ]
     },
@@ -419,14 +428,19 @@
           "group": "navigation@4"
         },
         {
-          "command": "ht32.openSettings",
+          "command": "ht32.eraseFlash",
           "when": "view == ht32ProjectView && ht32.hasProject",
           "group": "navigation@5"
         },
         {
-          "command": "ht32.generateTasksLaunch",
+          "command": "ht32.openSettings",
           "when": "view == ht32ProjectView && ht32.hasProject",
           "group": "navigation@6"
+        },
+        {
+          "command": "ht32.generateTasksLaunch",
+          "when": "view == ht32ProjectView && ht32.hasProject",
+          "group": "navigation@7"
         },
         {
           "command": "ht32.createProject",

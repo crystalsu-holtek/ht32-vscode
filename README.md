@@ -116,6 +116,7 @@ After installation, the **HT32 icon** appears in the Activity Bar. Click it to o
 | Debug | Start Cortex-Debug session via pyOCD or OpenOCD (Flash & Debug or Attach) |
 | Clean | Delete the `build/` output directory |
 | Download | Download firmware without starting a debug session |
+| Erase Flash | Erase the entire chip flash (chip erase) |
 | Settings | Open Project Settings |
 | Generate Build & Debug Config | Regenerate `tasks.json` and `launch.json` |
 
@@ -127,7 +128,7 @@ The **`···` (More Actions)** menu also contains:
 | Open Project | Open a `.ht32vs` project file |
 | Close Project | Close the currently loaded project |
 
-<img src="media/more_actions.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+<img src="media/more_actions.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 
@@ -386,6 +387,13 @@ For all related settings, see [Project Settings → Debugger tab](#debugger-tab)
 
 <img src="media/10.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
+### Erase Flash
+
+Erases the entire chip flash without programming new firmware. Useful when the existing firmware is corrupted or you need a clean slate.
+
+1. Confirm the debug probe is connected
+2. Click **Erase Flash** in the HT32 toolbar
+
 ### Debug
 
 1. Click **Debug** in the HT32 toolbar, or press **Ctrl+Shift+D**
@@ -603,6 +611,7 @@ After conversion or project creation, the extension auto-generates `.clangd` and
 | `HT32: Convert HT32-IDE Projects` | Import Eclipse CDT `.project` |
 | `HT32: Build` | Run build task |
 | `HT32: Download` | Download firmware |
+| `HT32: Erase Flash` | Erase the entire chip flash (chip erase) |
 | `HT32: Debug` | Start debug session |
 | `HT32: Clean` | Clean build output |
 | `HT32: Open Settings` | Open Project Settings |

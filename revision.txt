@@ -6,13 +6,14 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（10）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+  新功能（11）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
                TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
                keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
                Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
                Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
                Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）、
-               Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）
+               Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）、
+               Erase Flash（toolbar 新增按鈕，pyocd/OpenOCD 均支援，chip erase）
   修正（18）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、

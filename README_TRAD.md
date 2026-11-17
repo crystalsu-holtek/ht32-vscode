@@ -116,6 +116,7 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 | Debug | 透過 pyOCD 或 OpenOCD 啟動 Cortex-Debug 除錯（Flash & Debug 或 Attach 模式） |
 | Clean | 刪除 `build/` 輸出目錄 |
 | Download | 燒錄韌體（不啟動除錯） |
+| Erase Flash | 清除整顆晶片的 Flash（chip erase） |
 | Settings | 開啟專案設定 |
 | Generate Build & Debug Config | 重新產生 `tasks.json` 與 `launch.json` |
 
@@ -388,6 +389,13 @@ MyProject/                 ← 使用者命名的專案資料夾
 2. 點擊工具列的 **Download**，或按 **Ctrl+Alt+D**
 3. 韌體自動燒錄，終端機顯示進度
 
+### 清除 Flash（Erase Flash）
+
+清除整顆晶片的 Flash，不燒錄新韌體。適用於現有韌體損壞或需要完全清除的情況。
+
+1. 確認除錯器已連接
+2. 點擊工具列的 **Erase Flash**
+
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/10.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ### 除錯（Debug）
@@ -615,6 +623,7 @@ int main(void) {
 | `HT32: Convert HT32-IDE Projects` | 匯入 Eclipse CDT `.project` |
 | `HT32: Build` | 執行建置任務 |
 | `HT32: Download` | 燒錄韌體 |
+| `HT32: Erase Flash` | 清除整顆晶片的 Flash（chip erase） |
 | `HT32: Debug` | 啟動除錯工作階段 |
 | `HT32: Clean` | 清除編譯輸出 |
 | `HT32: Open Settings` | 開啟專案設定 |
