@@ -479,11 +479,12 @@ export function openCreateProjectPanel(
           const bgDirName = projectName as string;
           const existingBgDir = path.join(projectFolder, 'HT32_VSCode', bgDirName);
           if (fs.existsSync(existingBgDir)) {
+            const overwriteLabel = vscode.l10n.t('Overwrite');
             const answer = await vscode.window.showWarningMessage(
-              `"${bgDirName}" already exists in this folder. Overwrite?`,
-              { modal: true }, 'Overwrite'
+              vscode.l10n.t('"{0}" already exists in this folder. Overwrite?', bgDirName),
+              { modal: true }, overwriteLabel
             );
-            if (answer !== 'Overwrite') {
+            if (answer !== overwriteLabel) {
               createProjectPanel?.webview.postMessage({ type: 'resetBtn' });
               break;
             }

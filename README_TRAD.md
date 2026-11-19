@@ -1,4 +1,4 @@
-﻿[English](https://ht32-holtek.github.io/ht32-vscode/) | [中文使用手冊](https://ht32-holtek.github.io/ht32-vscode/README_TRAD)
+﻿[English](https://ht32-holtek.github.io/ht32-vscode/) | [繁體中文](https://ht32-holtek.github.io/ht32-vscode/README_TRAD) | [简体中文](https://ht32-holtek.github.io/ht32-vscode/README_SIMP)
 
 # Holtek HT32 VS Code Extension
 

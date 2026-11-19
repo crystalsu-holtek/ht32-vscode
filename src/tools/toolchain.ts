@@ -236,7 +236,7 @@ export async function locateArmGcc(): Promise<string | undefined> {
     if (!fs.existsSync(manual)) {
       if (!_warnedInvalidGccPaths.has(manual)) {
         _warnedInvalidGccPaths.add(manual);
-        vscode.window.showWarningMessage(`ht32.gccPath "${manual}" does not exist — falling back to auto-detect.`);
+        vscode.window.showWarningMessage(vscode.l10n.t('ht32.gccPath "{0}" does not exist — falling back to auto-detect.', manual));
       }
     } else if (await verifyExe(manual, ['--version'], ['arm-none-eabi-gcc'])) {
       logInfo(`use user-configured arm gcc: ${manual}`);
@@ -246,7 +246,7 @@ export async function locateArmGcc(): Promise<string | undefined> {
     } else {
       if (!_warnedInvalidGccPaths.has(manual)) {
         _warnedInvalidGccPaths.add(manual);
-        vscode.window.showWarningMessage(`ht32.gccPath "${manual}" is not arm-none-eabi-gcc — falling back to auto-detect.`);
+        vscode.window.showWarningMessage(vscode.l10n.t('ht32.gccPath "{0}" is not arm-none-eabi-gcc — falling back to auto-detect.', manual));
       }
     }
   }
@@ -274,7 +274,7 @@ async function warnIfGccTooOld(exe: string): Promise<void> {
     logWarn(`arm-none-eabi-gcc version ${major} is too old (minimum required: 8). ` +
       `Please upgrade to GCC 8 or later — the Makefile uses -ffile-prefix-map which requires GCC 8+.`);
     vscode.window.showWarningMessage(
-      `GNU Arm GCC version ${major} is too old. Holtek HT32 VS Code Extension requires GCC 8 or later (-ffile-prefix-map).`
+      vscode.l10n.t('GNU Arm GCC version {0} is too old. Holtek HT32 VS Code Extension requires GCC 8 or later (-ffile-prefix-map).', major)
     );
   }
 }
@@ -567,7 +567,7 @@ export async function ensureToolchain(
     installed = installed || !!makePath;
   }
   if (!makePath && process.platform !== 'win32') {
-    vscode.window.showWarningMessage('GNU make not found. Please install it using your system package manager (e.g. apt, yum, pacman, brew).');
+    vscode.window.showWarningMessage(vscode.l10n.t('GNU make not found. Please install it using your system package manager (e.g. apt, yum, pacman, brew).'));
   }
 
   // 如果沒有 gcc，試著用 winget 安裝
@@ -577,7 +577,7 @@ export async function ensureToolchain(
     installed = installed || !!gccPath;
   }
   if (!gccPath && process.platform !== 'win32') {
-    vscode.window.showWarningMessage('arm-none-eabi-gcc not found. Please install the GNU Arm Embedded Toolchain.');
+    vscode.window.showWarningMessage(vscode.l10n.t('arm-none-eabi-gcc not found. Please install the GNU Arm Embedded Toolchain.'));
   }
 
   if (!makePath && !gccPath) {
@@ -588,7 +588,7 @@ export async function ensureToolchain(
   updateSettingsJson(rootFolder, makePath, gccPath);
 
   if (installed && onInstalled) {
-    logInfo('Toolchain installed. Regenerating project files...');
+    logInfo(vscode.l10n.t('Toolchain installed. Regenerating project files...'));
     await onInstalled(makePath, gccPath);
   }
 
@@ -601,5 +601,5 @@ export async function ensureToolchain(
     );
   }
 
-  vscode.window.showInformationMessage('HT32 Toolchain check complete. Paths written to .vscode/settings.json.');
+  vscode.window.showInformationMessage(vscode.l10n.t('HT32 Toolchain check complete. Paths written to .vscode/settings.json.'));
 }

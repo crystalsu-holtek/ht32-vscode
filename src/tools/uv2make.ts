@@ -76,8 +76,6 @@ export type Uv2MakeOptions = {
   gcSections?:   boolean;
   /** VS Code extension root，用於查詢 bundled PDSC (dfp/) */
   extPath?: string;
-  /** Additional PDSC paths (user-provided, searched before bundled DFP) */
-  extraPdscPaths?: string[];
   /** Workspace root (parent of .vscode). If provided, elfPath is relative to this directory.
    *  Defaults to path.dirname(outDir) for backward compatibility. */
   workspaceRoot?: string;
@@ -481,7 +479,7 @@ export async function uv2make(opts: Uv2MakeOptions): Promise<Uv2MakeResult> {
 
   const t2 = doc.Project?.Targets?.Target;
   const firstTarget = Array.isArray(t2) ? t2[0] : t2;
-  const memInfoForResult = extractRomRamFromUvproj(firstTarget, opts.extPath, opts.extraPdscPaths);
+  const memInfoForResult = extractRomRamFromUvproj(firstTarget, opts.extPath);
 
   // 從 Keil startup .s 解析 heap/stack 大小（轉換前原始檔）
   // 靠 AREA STACK/HEAP + SPACE 解析，不依賴固定符號名稱（Heap_Size/Stack_Size）。
@@ -1940,7 +1938,7 @@ function extractDeviceNameFromUvproj(doc: any): string | undefined {
   return undefined;
 }
 
-function extractRomRamFromUvproj(first: any, extPath?: string, extraPdscPaths?: string[]): {
+function extractRomRamFromUvproj(first: any, extPath?: string): {
   romOrigin?: string;
   romLength?: string;
   ramOrigin?: string;
@@ -2010,7 +2008,7 @@ function extractRomRamFromUvproj(first: any, extPath?: string, extraPdscPaths?: 
       const escaped  = deviceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const devRe    = new RegExp(`<device\\s+Dname="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</device>`, 'i');
       const familyRe = new RegExp(`<subFamily\\s+DsubFamily="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</subFamily>`, 'i');
-      for (const pdscPath of getAllPdscPaths(extPath, extraPdscPaths)) {
+      for (const pdscPath of getAllPdscPaths(extPath)) {
         try {
           const pdsc  = fs.readFileSync(pdscPath, 'utf8');
           const block = devRe.exec(pdsc)?.[1] ?? familyRe.exec(pdsc)?.[1];
@@ -2765,11 +2763,8 @@ async function writeCompileCommands(outDir: string, opts: { cc?: string; mcu?: s
  * Device-specific packs contain correct flash addresses and SPIM algorithms;
  * HT32_DFP acts as a fallback for devices not covered by any device-specific pack.
  */
-export function getAllPdscPaths(extPath: string, extraPdscPaths: string[] = []): string[] {
+export function getAllPdscPaths(extPath: string): string[] {
   const results: string[] = [];
-  for (const p2 of extraPdscPaths) {
-    if (p2 && fs.existsSync(p2)) results.push(p2);
-  }
   const holtek = path.join(extPath, 'dfp', 'Holtek');
   try {
     // Device-specific packs first (have correct algorithm addresses + SPIM entries)
@@ -2803,14 +2798,14 @@ export function getAllPdscPaths(extPath: string, extraPdscPaths: string[] = []):
  * 從 bundled PDSC (HT32_DFP) 查找 deviceName 對應的 IROM1/IRAM1 起始與大小。
  * deviceName 可以是不含 package 的短名（如 "HT32F52352"）或含 package 的完整名。
  */
-export function lookupMemoryFromPdsc(deviceName: string, extPath: string, extraPdscPaths?: string[]): {
+export function lookupMemoryFromPdsc(deviceName: string, extPath: string): {
   flashOrigin?: string; flashLength?: string;
   ramOrigin?: string;   ramLength?: string;
 } {
   const escaped  = deviceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const devRe    = new RegExp(`<device\\s+Dname="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</device>`, 'i');
   const familyRe = new RegExp(`<subFamily\\s+DsubFamily="${escaped}[^"]*"[^>]*>([\\s\\S]*?)</subFamily>`, 'i');
-  for (const pdscPath of getAllPdscPaths(extPath, extraPdscPaths)) {
+  for (const pdscPath of getAllPdscPaths(extPath)) {
     try {
       const pdsc  = fs.readFileSync(pdscPath, 'utf8');
       const block = devRe.exec(pdsc)?.[1] ?? familyRe.exec(pdsc)?.[1];
@@ -3519,9 +3514,9 @@ let   _svdBundledExtPath = '';
 /**
  * Find the SVD file for a device by reading the PDSC <debug svd="..."/> attribute.
  * Inherits svd path from subFamily → family as per CMSIS-Pack spec.
- * Search order: ht32.dfpPath setting → extraPdscPaths → bundled dfp
+ * Search order: ht32.dfpPath setting → bundled dfp
  */
-export function findSvdFile(dfpPath: string, deviceName: string, extPath: string, extraPdscPaths: string[] = []): string | undefined {
+export function findSvdFile(dfpPath: string, deviceName: string, extPath: string): string | undefined {
   const stripped = deviceName.replace(/_[^_]+$/, '');
   // deviceName and PDSC Dname both use Holtek's uppercase convention; case-sensitive compare is intentional
   const matches  = (name: string) => name === deviceName || name === stripped || name.replace(/_[^_]+$/, '') === stripped;
@@ -3551,20 +3546,15 @@ export function findSvdFile(dfpPath: string, deviceName: string, extPath: string
     return undefined;
   }
 
-  // User-provided dfpPath / extraPdscPaths — skip _svdDeviceCache, always re-evaluate
-  if (dfpPath || extraPdscPaths.length > 0) {
-    const pdscPaths: string[] = [];
-    if (dfpPath) {
-      try {
-        for (const f of fs.readdirSync(dfpPath))
-          if (f.toLowerCase().endsWith('.pdsc')) pdscPaths.push(path.join(dfpPath, f));
-      } catch {}
-    }
-    for (const p of extraPdscPaths) { if (p && fs.existsSync(p)) pdscPaths.push(p); }
-    for (const p of pdscPaths) {
-      const hit = searchPdsc(p);
-      if (hit) return hit;
-    }
+  // User-provided dfpPath — skip _svdDeviceCache, always re-evaluate
+  if (dfpPath) {
+    try {
+      for (const f of fs.readdirSync(dfpPath)) {
+        if (!f.toLowerCase().endsWith('.pdsc')) continue;
+        const hit = searchPdsc(path.join(dfpPath, f));
+        if (hit) return hit;
+      }
+    } catch {}
   }
 
   // Bundled DFP — build cache on first call, O(1) thereafter

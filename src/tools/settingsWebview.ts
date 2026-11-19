@@ -160,7 +160,7 @@ export function readProjectSettings(bgDir: string): ProjectSettings {
       return s;
     } catch (e: any) {
       vscode.window.showWarningMessage(
-        `HT32: Failed to read project settings (${path.basename(bgDir)}): ${e?.message ?? e}. Using defaults.`
+        vscode.l10n.t('HT32: Failed to read project settings ({0}): {1}. Using defaults.', path.basename(bgDir), e?.message ?? e)
       );
     }
   }
@@ -526,7 +526,7 @@ export function openSettingsPanel(
       const meta = JSON.parse(fs.readFileSync(path.join(bg.dir, 'project.meta.json'), 'utf8'));
       linkerScriptsByBg[bg.name] = (meta.linkerScripts as string[] | undefined) ?? DEFAULT_LINKER_SCRIPTS;
     } catch (e) {
-      vscode.window.showWarningMessage(`HT32: Failed to read linker scripts for ${bg.name} — ${(e as Error).message ?? e}`);
+      vscode.window.showWarningMessage(vscode.l10n.t('HT32: Failed to read linker scripts for {0} — {1}', bg.name, (e as Error).message ?? e));
       linkerScriptsByBg[bg.name] = DEFAULT_LINKER_SCRIPTS;
     }
   }
@@ -596,7 +596,7 @@ export function openSettingsPanel(
             meta.linkerScripts = newScripts;
             fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
           } catch (e) {
-              vscode.window.showWarningMessage(`HT32: Failed to update linker scripts in project.meta.json — ${(e as Error).message ?? e}`);
+              vscode.window.showWarningMessage(vscode.l10n.t('HT32: Failed to update linker scripts in project.meta.json — {0}', (e as Error).message ?? e));
             }
         }
       }
@@ -606,7 +606,7 @@ export function openSettingsPanel(
       } else {
         await onSave(msg.updateConfig as boolean);
         panel?.dispose();
-        vscode.window.showInformationMessage('HT32 settings saved.');
+        vscode.window.showInformationMessage(vscode.l10n.t('HT32 settings saved.'));
       }
     } else if (msg.type === 'scanAdapters') {
       let adapters: Array<{ serial: string; label: string }> = [];
@@ -726,7 +726,7 @@ function buildHtml(
         linkerScriptsByBg[bg.name] ?? DEFAULT_LINKER_SCRIPTS
       )).join('\n')
     : `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground);margin:8px 0 16px">
-  No converted project found in the workspace. Convert a .uvprojx/.uvmpw first, then reopen this panel.
+  ${vscode.l10n.t('No converted project found in the workspace. Convert a .uvprojx/.uvmpw first, then reopen this panel.')}
 </p>` + buildProjectSection('', '', '', DEFAULT_PROJECT_SETTINGS, [], availableFlms, '', []);
 
   const saveCancelBar = (isTop: boolean) => `
@@ -735,12 +735,12 @@ function buildHtml(
     <input type="checkbox" id="${isTop ? 'updateConfigTop' : 'updateConfig'}" checked
       ${isTop ? 'onchange="document.getElementById(\'updateConfig\').checked=this.checked;document.getElementById(\'updateConfigTop\').checked=this.checked"'
               : 'onchange="document.getElementById(\'updateConfigTop\').checked=this.checked;document.getElementById(\'updateConfig\').checked=this.checked"'}>
-    Update tasks.json &amp; launch.json after save
+    ${vscode.l10n.t('Update tasks.json & launch.json after save')}
   </label>
   <div style="flex:1"></div>
   <span id="autoSaveStatus" style="font-size:0.85em;color:var(--vscode-descriptionForeground);margin-right:8px"></span>
-  <button class="btn-secondary" onclick="doCancel()">Cancel</button>
-  <button class="btn-primary"   onclick="doSave()">Save All</button>
+  <button class="btn-secondary" onclick="doCancel()">${vscode.l10n.t('Cancel')}</button>
+  <button class="btn-primary"   onclick="doSave()">${vscode.l10n.t('Save All')}</button>
 </div>`;
 
   return /* html */`<!DOCTYPE html>
@@ -900,9 +900,9 @@ function buildHtml(
 
 ${saveCancelBar(true)}
 
-${commonSection}
-
 ${projSections}
+
+${commonSection}
 
 ${saveCancelBar(false)}
 
@@ -1278,7 +1278,7 @@ window.addEventListener('message', function(event) {
   if (msg.type === 'autoSaved') {
     _isDirty = false;
     var el = document.getElementById('autoSaveStatus');
-    if (el) { el.textContent = '\u2713 Saved'; setTimeout(function() { if (el.textContent === '\u2713 Saved') el.textContent = ''; }, 2000); }
+    var _st = ${JSON.stringify('\u2713 ' + vscode.l10n.t('Saved'))}; if (el) { el.textContent = _st; setTimeout(function() { if (el.textContent === _st) el.textContent = ''; }, 2000); }
     return;
   }
   if (msg.type === 'requestFlush') {
@@ -1456,6 +1456,7 @@ function buildProjectSection(
   defaultTargetName: string = '',
   linkerScripts: string[] = DEFAULT_LINKER_SCRIPTS
 ): string {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
   const p   = bgName ? bgName + '__' : '';
   const id  = (field: string) => `${p}${field}`;
   const opt = (val: string, cur: string, label: string) =>
@@ -1509,7 +1510,7 @@ function buildProjectSection(
 
 
   const autoSection = autoLoaders.length > 0 ? `
-<p class="auto-section-label">Auto-configured (from device info, read-only):</p>
+<p class="auto-section-label">${vscode.l10n.t('Auto-configured (from device info, read-only):')}</p>
 ${autoLoaders.map(l => `<div class="loader-row auto-row" title="${esc(l.label)}">
   <span class="auto-icon">&#128274;</span>
   <span title="${esc(l.flm)}">${esc(l.flm.replace(/\.[^.]+$/, ''))}</span>
@@ -1517,10 +1518,9 @@ ${autoLoaders.map(l => `<div class="loader-row auto-row" title="${esc(l.label)}"
   <span class="auto-addr">${esc(l.end)}</span>
   <span></span>
 </div>`).join('')}
-<p class="auto-section-label">Extra loaders (editable):</p>`
+<p class="auto-section-label">${vscode.l10n.t('Extra loaders (editable):')}</p>`
   : (bgName ? `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground);margin:0 0 6px">
-  Auto flash loaders not detected. Ensure the project was converted (device name in project.settings.json).
-  If you just converted, reopen this panel after the workspace reloads.</p>` : '');
+  ${vscode.l10n.t('Auto flash loaders not detected. Ensure the project was converted (device name in project.settings.json). If you just converted, reopen this panel after the workspace reloads.')}</p>` : '');
 
   const titleHtml = bgName
     ? `<div class="proj-title"><span class="proj-badge">${esc(projectName || bgName)}</span></div>`
@@ -1534,49 +1534,48 @@ ${autoLoaders.map(l => `<div class="loader-row auto-row" title="${esc(l.label)}"
   return `${wrapOpen}
 ${titleHtml}
 <div class="tab-bar">
-  <button class="tab-btn active" id="${p}tabBtn_compiler" onclick="switchTab('${esc(bg)}','compiler')">Compiler</button>
-  <button class="tab-btn"        id="${p}tabBtn_linker"   onclick="switchTab('${esc(bg)}','linker')">Linker</button>
-  <button class="tab-btn"        id="${p}tabBtn_debugger" onclick="switchTab('${esc(bg)}','debugger')">Debugger</button>
-  <button class="tab-btn"        id="${p}tabBtn_build"    onclick="switchTab('${esc(bg)}','build')">Build</button>
+  <button class="tab-btn active" id="${p}tabBtn_compiler" onclick="switchTab('${esc(bg)}','compiler')">${vscode.l10n.t('Compiler')}</button>
+  <button class="tab-btn"        id="${p}tabBtn_linker"   onclick="switchTab('${esc(bg)}','linker')">${vscode.l10n.t('Linker')}</button>
+  <button class="tab-btn"        id="${p}tabBtn_debugger" onclick="switchTab('${esc(bg)}','debugger')">${vscode.l10n.t('Debugger')}</button>
+  <button class="tab-btn"        id="${p}tabBtn_build"    onclick="switchTab('${esc(bg)}','build')">${vscode.l10n.t('Build')}</button>
 </div>
 
 <div class="tab-panel" id="${p}tab_debugger">
 <div class="settings-group">
-<h2>Debugger</h2>
+<h2>${vscode.l10n.t('Debugger')}</h2>
 <div class="row">
-  <label>Debug Server</label>
+  <label>${vscode.l10n.t('Debug Server')}</label>
   <select id="${id('serverType')}" onchange="onServerTypeChange('${esc(bgName || '')}')">
     ${opt('pyocd',   s.serverType, 'PyOCD')}
     ${_openocdAvailable ? opt('openocd', s.serverType, 'OpenOCD') : ''}
   </select>
-  <p class="hint">PyOCD: works with CMSIS-DAP / JLink / ST-Link out of the box. OpenOCD: required for advanced target configuration; uses HLM files mapped from FLM names.</p>
 </div>
 <div class="row">
-  <label>Debug Interface</label>
+  <label>${vscode.l10n.t('Debug Interface')}</label>
   <select id="${id('debugInterface')}" onchange="onDebugInterfaceChange('${esc(bgName || '')}')">
     ${opt('CMSIS-DAP', s.debugInterface, 'CMSIS-DAP (e-Link32 / generic)')}
     ${opt('ST-Link',   s.debugInterface, 'ST-Link')}
     ${opt('J-Link',    s.debugInterface, 'J-Link')}
   </select>
   <div id="${id('jlinkOcdWarning')}" style="display:${s.debugInterface === 'J-Link' && s.serverType === 'openocd' ? 'block' : 'none'};margin-top:6px;padding:6px 10px;border-radius:4px;background:var(--vscode-inputValidation-warningBackground);border:1px solid var(--vscode-inputValidation-warningBorder);font-size:0.85em">
-    JLink + OpenOCD requires WinUSB driver via Zadig. If you see LIBUSB_ERROR_NOT_SUPPORTED, run Zadig and switch JLink to WinUSB. PyOCD does not require this driver change.
+    ${vscode.l10n.t('JLink + OpenOCD requires WinUSB driver via Zadig. If you see LIBUSB_ERROR_NOT_SUPPORTED, run Zadig and switch JLink to WinUSB. PyOCD does not require this driver change.')}
   </div>
 </div>
 <div class="row">
-  <label>Adapter Serial</label>
+  <label>${vscode.l10n.t('Adapter Serial')}</label>
   <div style="display:flex;gap:6px;align-items:center">
-    <input id="${id('adapterSerial')}" type="text" value="${esc(s.adapterSerial)}" placeholder="Empty = auto (only works when 1 probe connected)" style="flex:1" oninput="var w=document.getElementById('${id('serialNotFoundWarn')}');if(w)w.style.display='none'">
-    <button id="${id('scanBtn')}" class="btn-primary" onclick="scanAdapters('${esc(bgName || '')}')">Scan</button>
+    <input id="${id('adapterSerial')}" type="text" value="${esc(s.adapterSerial)}" placeholder="${vscode.l10n.t('Empty = auto (only works when 1 probe connected)')}" style="flex:1" oninput="var w=document.getElementById('${id('serialNotFoundWarn')}');if(w)w.style.display='none'">
+    <button id="${id('scanBtn')}" class="btn-primary" onclick="scanAdapters('${esc(bgName || '')}')">${vscode.l10n.t('Scan')}</button>
   </div>
-  <div id="${id('serialNotFoundWarn')}" style="display:none;margin-top:4px;padding:4px 8px;border-radius:3px;background:var(--vscode-inputValidation-warningBackground);border:1px solid var(--vscode-inputValidation-warningBorder);font-size:0.85em;color:var(--vscode-inputValidation-warningForeground)">&#9888; This adapter is not currently connected.</div>
+  <div id="${id('serialNotFoundWarn')}" style="display:none;margin-top:4px;padding:4px 8px;border-radius:3px;background:var(--vscode-inputValidation-warningBackground);border:1px solid var(--vscode-inputValidation-warningBorder);font-size:0.85em;color:var(--vscode-inputValidation-warningForeground)">&#9888; ${vscode.l10n.t('This adapter is not currently connected.')}</div>
   <div id="${id('adapterListResult')}" style="display:none;margin-top:6px"></div>
   <div id="${id('idcodeResult')}" style="display:none;margin-top:6px;font-family:monospace;font-size:0.82em;white-space:pre;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);padding:4px 8px;border-radius:3px;border:1px solid var(--vscode-widget-border)"></div>
-  <p class="hint">Serial number of the debug adapter. Required when multiple adapters of the same type are connected.</p>
+  <p class="hint">${vscode.l10n.t('Serial number of the debug adapter. Required when multiple adapters of the same type are connected.')}</p>
 </div>
 <div class="row">
-  <label>Adapter Speed</label>
+  <label>${vscode.l10n.t('Adapter Speed')}</label>
   <select id="${id('adapterSpeed')}">
-    ${opt('',     s.adapterSpeed, 'Default (interface cfg)')}
+    ${opt('',     s.adapterSpeed, vscode.l10n.t('Default (interface cfg)'))}
     ${opt('5',    s.adapterSpeed, '5 kHz')}
     ${opt('10',   s.adapterSpeed, '10 kHz')}
     ${opt('20',   s.adapterSpeed, '20 kHz')}
@@ -1589,52 +1588,52 @@ ${titleHtml}
     ${opt('5000', s.adapterSpeed, '5 MHz')}
     ${opt('10000',s.adapterSpeed, '10 MHz')}
   </select>
-  <p class="hint">SWD/JTAG clock speed. Reduce if you see connection errors on long cables or noisy boards.</p>
+  <p class="hint">${vscode.l10n.t('SWD/JTAG clock speed. Reduce if you see connection errors on long cables or noisy boards.')}</p>
 </div>
 <div class="row">
-  <label>Debug Level</label>
+  <label>${vscode.l10n.t('Debug Level')}</label>
   <select id="${id('openocdDebugLevel')}">
     ${opt('1', String(s.openocdDebugLevel), '1 — Warning  [pyocd: (default) / openocd: -d1] ★')}
     ${opt('2', String(s.openocdDebugLevel), '2 — Info     [pyocd: -v / openocd: (default)]')}
     ${opt('3', String(s.openocdDebugLevel), '3 — Debug    [pyocd: -v -v / openocd: -d3]')}
     ${opt('4', String(s.openocdDebugLevel), '4 — Debug IO [pyocd: -v -v / openocd: -d4]')}
   </select>
-  <p class="hint">★ Level 2 is the recommended default: matches OpenOCD INFO output and enables pyocd progress bar / pyocd_user.py logs.</p>
+  <p class="hint">${vscode.l10n.t('★ Level 2 is the recommended default: matches OpenOCD INFO output and enables pyocd progress bar / pyocd_user.py logs.')}</p>
 </div>
 <div class="row" id="${id('smartFlashRow')}" style="display:${s.serverType === 'pyocd' ? 'flex' : 'none'}">
-  <label>Smart Flash</label>
-  <label class="checkbox-label"><input type="checkbox" id="${id('smartFlash')}" ${s.smartFlash ? 'checked' : ''}> Skip unchanged pages (faster repeated download)</label>
-  <p class="hint">PyOCD only. When enabled, pyocd reads back each flash page before writing and skips identical pages. Disable if EXT flash read-back is unreliable.</p>
+  <label>${vscode.l10n.t('Smart Flash')}</label>
+  <label class="checkbox-label"><input type="checkbox" id="${id('smartFlash')}" ${s.smartFlash ? 'checked' : ''}> ${vscode.l10n.t('Skip unchanged pages (faster repeated download)')}</label>
+  <p class="hint">${vscode.l10n.t('PyOCD only. When enabled, pyocd reads back each flash page before writing and skips identical pages. Disable if EXT flash read-back is unreliable.')}</p>
 </div>
 <div class="row">
-  <label>DFP Path (for SVD auto-detection)</label>
+  <label>${vscode.l10n.t('DFP Path (for SVD auto-detection)')}</label>
   <input id="${id('dfpPath')}" type="text" value="${esc(s.dfpPath)}" placeholder="e.g. ./dfp/Holtek/HT32_DFP/1.0.76">
 </div>
 <div class="row">
-  <label>SVD File (manual override)</label>
-  <input id="${id('svdFile')}" type="text" value="${esc(s.svdFile)}" placeholder="Leave empty to auto-detect from DFP">
+  <label>${vscode.l10n.t('SVD File')}</label>
+  <input id="${id('svdFile')}" type="text" value="${esc(s.svdFile)}" placeholder="${vscode.l10n.t('Leave empty to auto-detect from DFP')}">
 </div>
 
 </div>
 <div class="settings-group">
-<h2>Flash Loaders</h2>
+<h2>${vscode.l10n.t('Flash Loaders')}</h2>
 <div class="row">
-  <label>Erase Mode</label>
+  <label>${vscode.l10n.t('Erase Mode')}</label>
   <select id="${id('eraseMode')}">
-    ${opt('erase_sector', s.eraseMode, 'Erase Sectors (default)')}
-    ${opt('erase_chip',   s.eraseMode, 'Erase Full Chip')}
+    ${opt('erase_sector', s.eraseMode, vscode.l10n.t('Erase Sectors (default)'))}
+    ${opt('erase_chip',   s.eraseMode, vscode.l10n.t('Erase Full Chip'))}
   </select>
 </div>
 ${availableFlms.length > 0 || autoLoaders.length > 0 ? `
 <div class="loader-header">
-  <span title="Enabled">En</span><span>Flash Loader</span>
-  <span>Start</span><span>End</span><span></span>
+  <span title="${vscode.l10n.t('Enabled')}">${vscode.l10n.t('En')}</span><span>${vscode.l10n.t('Flash Loader')}</span>
+  <span>${vscode.l10n.t('Start')}</span><span>${vscode.l10n.t('End')}</span><span></span>
 </div>
 ${autoSection}
-<div id="${id('loaderRows')}">${loaderRowsHtml || '<p class="no-items">No extra loaders.</p>'}</div>
-${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="addLoader(${bgName ? `'${esc(bgName)}'` : "''"})" >+ Add Loader</button>` : ''}
-<p class="hint" style="margin-top:4px">Extra loaders for external flash (SPIM, etc.). PyOCD uses the FLM from the DFP pack; OpenOCD maps to the corresponding HLM. When any loader is present, SPIM auto-detection is skipped.</p>
-` : `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground)">No SPIM flash loaders found in DFP. SPIM extra loaders are unavailable for this device.</p>`}
+<div id="${id('loaderRows')}">${loaderRowsHtml || `<p class="no-items">${vscode.l10n.t('No extra loaders.')}</p>`}</div>
+${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="addLoader(${bgName ? `'${esc(bgName)}'` : "''"})" >${vscode.l10n.t('+ Add Loader')}</button>` : ''}
+<p class="hint" style="margin-top:4px">${vscode.l10n.t('Extra loaders for external flash (SPIM, etc.). PyOCD uses the FLM from the DFP pack; OpenOCD maps to the corresponding HLM. When any loader is present, SPIM auto-detection is skipped.')}</p>
+` : `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground)">${vscode.l10n.t('No SPIM flash loaders found in DFP. SPIM extra loaders are unavailable for this device.')}</p>`}
 </div>
 
 </div><!-- /tab_debugger -->
@@ -1642,81 +1641,81 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 <div class="tab-panel active" id="${p}tab_compiler">
 <div class="settings-group">
 <div class="row">
-  <label>Optimization Level</label>
+  <label>${vscode.l10n.t('Optimization Level')}</label>
   <select id="${id('optimizationLevel')}">
-    ${opt('O0',s.optimizationLevel,'O0 — No optimization (fastest rebuild)')}
-    ${opt('O1',s.optimizationLevel,'O1 — Basic optimization')}
-    ${opt('O2',s.optimizationLevel,'O2 — Balanced')}
-    ${opt('O3',s.optimizationLevel,'O3 — Maximum optimization')}
-    ${opt('Os',s.optimizationLevel,'Os — Optimize for size')}
-    ${opt('Og',s.optimizationLevel,'Og — Optimize for debugging')}
+    ${opt('O0',s.optimizationLevel,vscode.l10n.t('O0 — No optimization (fastest rebuild)'))}
+    ${opt('O1',s.optimizationLevel,vscode.l10n.t('O1 — Basic optimization'))}
+    ${opt('O2',s.optimizationLevel,vscode.l10n.t('O2 — Balanced'))}
+    ${opt('O3',s.optimizationLevel,vscode.l10n.t('O3 — Maximum optimization'))}
+    ${opt('Os',s.optimizationLevel,vscode.l10n.t('Os — Optimize for size'))}
+    ${opt('Og',s.optimizationLevel,vscode.l10n.t('Og — Optimize for debugging'))}
   </select>
 </div>
 <div class="row">
-  <label>Debug Info</label>
+  <label>${vscode.l10n.t('Debug Info')}</label>
   <select id="${id('debugInfo')}">
-    ${opt('g3',s.debugInfo,'g3 — Full debug info + macros (default)')}
-    ${opt('g', s.debugInfo,'g — Standard debug info')}
-    ${opt('g1',s.debugInfo,'g1 — Minimal debug info (line numbers only)')}
-    ${opt('g0',s.debugInfo,'g0 — No debug info (release)')}
+    ${opt('g3',s.debugInfo,vscode.l10n.t('g3 — Full debug info + macros (default)'))}
+    ${opt('g', s.debugInfo,vscode.l10n.t('g — Standard debug info'))}
+    ${opt('g1',s.debugInfo,vscode.l10n.t('g1 — Minimal debug info (line numbers only)'))}
+    ${opt('g0',s.debugInfo,vscode.l10n.t('g0 — No debug info (release)'))}
   </select>
-  <p class="hint">Does not affect flash size — <code>.bin</code>/<code>.hex</code> strips debug sections. Only affects <code>.elf</code> file size on disk.</p>
+  <p class="hint">${vscode.l10n.t('Does not affect flash size — <code>.bin</code>/<code>.hex</code> strips debug sections. Only affects <code>.elf</code> file size on disk.')}</p>
 </div>
 <div class="row">
-  <label>Float ABI</label>
+  <label>${vscode.l10n.t('Float ABI')}</label>
   <select id="${id('floatAbi')}">
-    ${opt('soft',  s.floatAbi, 'soft — Software FP (M0/M0+/M3)')}
-    ${opt('softfp',s.floatAbi, 'softfp — Software ABI with HW FP instructions')}
-    ${opt('hard',  s.floatAbi, 'hard — Hardware FP ABI (M4F/M7 only)')}
+    ${opt('soft',  s.floatAbi, vscode.l10n.t('soft — Software FP (M0/M0+/M3)'))}
+    ${opt('softfp',s.floatAbi, vscode.l10n.t('softfp — Software ABI with HW FP instructions'))}
+    ${opt('hard',  s.floatAbi, vscode.l10n.t('hard — Hardware FP ABI (M4F/M7 only)'))}
   </select>
 </div>
 <div class="row">
-  <label>FPU</label>
+  <label>${vscode.l10n.t('FPU')}</label>
   <select id="${id('fpu')}">
-    ${opt('none',       s.fpu, 'none — No FPU (M0/M0+/M3)')}
+    ${opt('none',       s.fpu, vscode.l10n.t('none — No FPU (M0/M0+/M3)'))}
     ${opt('fpv4-sp-d16',s.fpu, 'fpv4-sp-d16 — Cortex-M4F')}
-    ${opt('fpv5-sp-d16',s.fpu, 'fpv5-sp-d16 — Cortex-M7 single-precision')}
-    ${opt('fpv5-d16',   s.fpu, 'fpv5-d16 — Cortex-M7 double-precision')}
+    ${opt('fpv5-sp-d16',s.fpu, vscode.l10n.t('fpv5-sp-d16 — Cortex-M7 single-precision'))}
+    ${opt('fpv5-d16',   s.fpu, vscode.l10n.t('fpv5-d16 — Cortex-M7 double-precision'))}
   </select>
 </div>
 <div class="row">
   <label class="checkbox-row" style="font-size:var(--vscode-font-size)">
     <input type="checkbox" id="${id('useLto')}" ${s.useLto ? 'checked' : ''}>
-    Link-time optimization (<code>-flto</code>)
+    ${vscode.l10n.t('Link-time optimization (<code>-flto</code>)')}
   </label>
-  <p class="hint">Adds <code>-flto</code> to CFLAGS and LDFLAGS. Reduces code size but increases build time.</p>
+  <p class="hint">${vscode.l10n.t('Adds <code>-flto</code> to CFLAGS and LDFLAGS. Reduces code size but increases build time.')}</p>
 </div>
 <div class="row">
-  <label>C Defines (<code>defines.list</code>)</label>
+  <label>${vscode.l10n.t('C Defines (<code>defines.list</code>)')}</label>
   <div style="display:flex;flex-direction:column;gap:0">
-    <p class="hint" style="margin:0 0 4px">Preprocessor defines passed to C/C++ compiler (<code>-D</code>). Populated automatically at conversion time.</p>
-    <div id="${id('cDefRows')}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${cDefRowsHtml || '<p class="no-items">No C defines.</p>'}</div>
-    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addDef(${bgName ? `'${esc(bgName)}'` : "''"}, 'c')">+ Add C Define</button>
+    <p class="hint" style="margin:0 0 4px">${vscode.l10n.t('Preprocessor defines passed to C/C++ compiler (<code>-D</code>). Populated automatically at conversion time.')}</p>
+    <div id="${id('cDefRows')}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${cDefRowsHtml || `<p class="no-items">${vscode.l10n.t('No C defines.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addDef(${bgName ? `'${esc(bgName)}'` : "''"}, 'c')">${vscode.l10n.t('+ Add C Define')}</button>
   </div>
 </div>
 <div class="row">
-  <label>ASM Defines (<code>adefines.list</code>)</label>
+  <label>${vscode.l10n.t('ASM Defines (<code>adefines.list</code>)')}</label>
   <div style="display:flex;flex-direction:column;gap:0">
-    <p class="hint" style="margin:0 0 4px">Preprocessor defines passed to assembler only (<code>-D</code>). Standard series: contains <code>USE_HT32_CHIP=X</code>.</p>
-    <div id="${id('aDefRows')}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${aDefRowsHtml || '<p class="no-items">No ASM defines.</p>'}</div>
-    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addDef(${bgName ? `'${esc(bgName)}'` : "''"}, 'a')">+ Add ASM Define</button>
+    <p class="hint" style="margin:0 0 4px">${vscode.l10n.t('Preprocessor defines passed to assembler only (<code>-D</code>). Standard series: contains <code>USE_HT32_CHIP=X</code>.')}</p>
+    <div id="${id('aDefRows')}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${aDefRowsHtml || `<p class="no-items">${vscode.l10n.t('No ASM defines.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addDef(${bgName ? `'${esc(bgName)}'` : "''"}, 'a')">${vscode.l10n.t('+ Add ASM Define')}</button>
   </div>
 </div>
 <div class="row">
-  <label>Include Paths</label>
+  <label>${vscode.l10n.t('Include Paths')}</label>
   <div style="display:flex;flex-direction:column;gap:0">
-    <p class="hint" style="margin:0 0 4px">All <code>-I</code> paths written to <code>includes.list</code>. Populated automatically at conversion time; add extra paths here (e.g. FreeRTOS GCC port directory).</p>
-    <div id="${id('extraIncRows')}">${incPathRowsHtml || '<p class="no-items">No include paths.</p>'}</div>
-    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addIncPath(${bgName ? `'${esc(bgName)}'` : "''"})">+ Add Include Path</button>
+    <p class="hint" style="margin:0 0 4px">${vscode.l10n.t('All <code>-I</code> paths written to <code>includes.list</code>. Populated automatically at conversion time; add extra paths here (e.g. FreeRTOS GCC port directory).')}</p>
+    <div id="${id('extraIncRows')}">${incPathRowsHtml || `<p class="no-items">${vscode.l10n.t('No include paths.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addIncPath(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add Include Path')}</button>
   </div>
 </div>
 <div class="row">
-  <label>Extra CFLAGS</label>
+  <label>${vscode.l10n.t('Extra CFLAGS')}</label>
   <input id="${id('extraCFlags')}" type="text" value="${esc(s.extraCFlags)}" placeholder="e.g. -std=gnu11 -DDEBUG">
 </div>
 <div class="row">
   <p class="hint" style="margin:0;line-height:1.7">
-    <strong>Default flags always included:</strong><br>
+    <strong>${vscode.l10n.t('Default flags always included:')}</strong><br>
     CFLAGS: <code>-mcpu=… -mthumb [-mfpu=… -mfloat-abi=…] -Os -g3 [-ffunction-sections -fdata-sections] "-ffile-prefix-map=$(CURDIR)=."</code><br>
     ASFLAGS: <code>-mcpu=… -mthumb [-mfpu=… -mfloat-abi=…] -x assembler-with-cpp "-ffile-prefix-map=$(CURDIR)=."</code>
   </p>
@@ -1729,53 +1728,53 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 <div class="row">
   <label class="checkbox-row" style="font-size:var(--vscode-font-size)">
     <input type="checkbox" id="${id('gcSections')}" ${s.gcSections ? 'checked' : ''}>
-    Dead code elimination (<code>-ffunction-sections -fdata-sections -Wl,--gc-sections</code>)
+    ${vscode.l10n.t('Dead code elimination (<code>-ffunction-sections -fdata-sections -Wl,--gc-sections</code>)')}
   </label>
-  <p class="hint">Removes unused functions and data at link time. Disable if you encounter weak symbol or coverage tool issues.</p>
+  <p class="hint">${vscode.l10n.t('Removes unused functions and data at link time. Disable if you encounter weak symbol or coverage tool issues.')}</p>
 </div>
 <div class="row">
-  <label>C Runtime Library</label>
+  <label>${vscode.l10n.t('C Runtime Library')}</label>
   <label class="checkbox-row">
     <input type="checkbox" id="${id('useNanoSpec')}" ${s.useNano ? 'checked' : ''}>
-    Use newlib-nano (<code>--specs=nano.specs</code>)
+    ${vscode.l10n.t('Use newlib-nano (<code>--specs=nano.specs</code>)')}
   </label>
   <label class="checkbox-row">
     <input type="checkbox" id="${id('printfFloat')}" ${s.printfFloat ? 'checked' : ''}>
-    Use float with nano printf (<code>-u _printf_float</code>)
+    ${vscode.l10n.t('Use float with nano printf (<code>-u _printf_float</code>)')}
   </label>
   <label class="checkbox-row">
     <input type="checkbox" id="${id('scanfFloat')}" ${s.scanfFloat ? 'checked' : ''}>
-    Use float with nano scanf (<code>-u _scanf_float</code>)
+    ${vscode.l10n.t('Use float with nano scanf (<code>-u _scanf_float</code>)')}
   </label>
   <label class="checkbox-row">
     <input type="checkbox" id="${id('useNosysSpec')}" ${s.useNosys ? 'checked' : ''}>
-    Do not use syscalls (<code>--specs=nosys.specs</code>)
+    ${vscode.l10n.t('Do not use syscalls (<code>--specs=nosys.specs</code>)')}
   </label>
 </div>
 <div class="row">
-  <label>Extra Libraries</label>
-  <p class="lib-section-label" style="margin-top:0">Libraries (-l)</p>
-  <div id="${id('libNameRows')}">${libNameRowsHtml || '<p class="no-items">No -l libraries.</p>'}</div>
-  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibName(${bgName ? `'${esc(bgName)}'` : "''"})">+ Add -l</button>
-  <p class="lib-section-label" style="margin-top:10px">Search Paths (-L)</p>
-  <div id="${id('libPathRows')}">${libPathRowsHtml || '<p class="no-items">No -L search paths.</p>'}</div>
-  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibPath(${bgName ? `'${esc(bgName)}'` : "''"})">+ Add -L</button>
+  <label>${vscode.l10n.t('Extra Libraries')}</label>
+  <p class="lib-section-label" style="margin-top:0">${vscode.l10n.t('Libraries (-l)')}</p>
+  <div id="${id('libNameRows')}">${libNameRowsHtml || `<p class="no-items">${vscode.l10n.t('No -l libraries.')}</p>`}</div>
+  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibName(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -l')}</button>
+  <p class="lib-section-label" style="margin-top:10px">${vscode.l10n.t('Search Paths (-L)')}</p>
+  <div id="${id('libPathRows')}">${libPathRowsHtml || `<p class="no-items">${vscode.l10n.t('No -L search paths.')}</p>`}</div>
+  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibPath(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -L')}</button>
 </div>
 <div class="row">
-  <label>Extra LDFLAGS</label>
+  <label>${vscode.l10n.t('Extra LDFLAGS')}</label>
   <input id="${id('extraLDFlags')}" type="text" value="${esc(s.extraLDFlags)}" placeholder="e.g. -Wl,--wrap=malloc">
 </div>
 <div class="row">
-  <label>Linker Scripts</label>
+  <label>${vscode.l10n.t('Linker Scripts')}</label>
   <div style="display:flex;flex-direction:column;gap:0">
-    <p class="hint" style="margin:0 0 4px">Paths relative to the project build directory (e.g. <code>../GNU_ARM/linker.ld</code>). Multiple scripts are linked in order.</p>
-    <div id="${id('ldRows')}">${ldRowsHtml || '<p class="no-items">No linker scripts.</p>'}</div>
-    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLinkerScript(${bgName ? `'${esc(bgName)}'` : "''"})">+ Add Linker Script</button>
+    <p class="hint" style="margin:0 0 4px">${vscode.l10n.t('Paths relative to the project build directory (e.g. <code>../GNU_ARM/linker.ld</code>). Multiple scripts are linked in order.')}</p>
+    <div id="${id('ldRows')}">${ldRowsHtml || `<p class="no-items">${vscode.l10n.t('No linker scripts.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLinkerScript(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add Linker Script')}</button>
   </div>
 </div>
 <div class="row">
   <p class="hint" style="margin:0;line-height:1.7">
-    <strong>Default LDFLAGS always included:</strong><br>
+    <strong>${vscode.l10n.t('Default LDFLAGS always included:')}</strong><br>
     <code>[-Wl,--gc-sections,]--print-memory-usage,-Map,build/xxx.map -T linker.ld --specs=nano.specs --specs=nosys.specs -Wl,--start-group,-lm,-lc,-lgcc,-lnosys -Wl,--end-group</code>
   </p>
 </div>
@@ -1784,19 +1783,18 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 
 <div class="tab-panel" id="${p}tab_build">
 <div class="settings-group">
-<h2>Build</h2>
+<h2>${vscode.l10n.t('Build')}</h2>
 <div class="row">
-  <label>Output Filename</label>
-  <input id="${id('outputName')}" type="text" value="${esc(s.outputName ?? '')}" placeholder="${defaultTargetName ? esc(defaultTargetName) + ' (current)' : 'e.g. app'}">
-  <p class="hint">Sets <code>TARGET :=</code> in the Makefile — the name of the generated <code>.elf</code> / <code>.a</code>. Leave empty to keep the original name from conversion.</p>
+  <label>${vscode.l10n.t('Output Filename')}</label>
+  <input id="${id('outputName')}" type="text" value="${esc(s.outputName ?? '')}" placeholder="${defaultTargetName ? esc(defaultTargetName) + ` ${vscode.l10n.t('(current)')}` : 'e.g. app'}">
+  <p class="hint">${vscode.l10n.t('Sets <code>TARGET :=</code> in the Makefile — the name of the generated <code>.elf</code> / <code>.a</code>. Leave empty to keep the original name from conversion.')}</p>
 </div>
 <div class="row">
-  <label>Post-Build Command</label>
+  <label>${vscode.l10n.t('Post-Build Command')}</label>
   <input id="${id('postBuildCmd')}" type="text" value="${esc(s.postBuildCmd)}" placeholder='e.g. ..\\Tools\\afterbuild_ap.bat vsc IAP_AP HT32F52352' style="font-family:monospace">
 </div>
 <div class="row">
-  <p class="hint" style="margin:0">Runs after <strong>Build</strong> completes. Working directory: <code>\${workspaceFolder}</code>.<br>
-  Adds a <strong>Post-Build</strong> task in tasks.json that chains after the build task.</p>
+  <p class="hint" style="margin:0">${vscode.l10n.t('Runs after <strong>Build</strong> completes. Working directory: <code>{0}</code>.', esc(workspaceFolder))}</p>
 </div>
 </div>
 </div><!-- /tab_build -->
@@ -1807,24 +1805,24 @@ ${wrapClose}`;
 /** Common settings section (Toolchain + Build Before Debug) — above all project sections */
 function buildCommonSection(machine: MachineSettings, detectedGccPath?: string): string {
   return `<div class="settings-group" style="margin-bottom:24px">
-<h2>Common <span class="hint" style="font-size:0.85em;font-weight:normal">(saved to User Settings)</span></h2>
+<h2 style="font-size:1.25em">${vscode.l10n.t('Common')}</h2>
 <div class="row">
-  <label>Build Before Debug (F5)</label>
-  <label class="checkbox-label"><input type="checkbox" id="buildBeforeDebug" ${machine.buildBeforeDebug !== false ? 'checked' : ''}> Build project before flashing and starting debugger</label>
-  <p class="hint">When unchecked, F5 flashes and starts the debugger without rebuilding. Use when the binary is already up to date and you want faster debug launch.</p>
+  <label>${vscode.l10n.t('Build Before Debug (F5)')}</label>
+  <label class="checkbox-label"><input type="checkbox" id="buildBeforeDebug" ${machine.buildBeforeDebug !== false ? 'checked' : ''}> ${vscode.l10n.t('Build project before flashing and starting debugger')}</label>
+  <p class="hint">${vscode.l10n.t('When unchecked, F5 flashes and starts the debugger without rebuilding. Use when the binary is already up to date and you want faster debug launch.')}</p>
 </div>
 <div class="row">
-  <label>GCC Path (arm-none-eabi-gcc)</label>
+  <label>${vscode.l10n.t('GCC Path (arm-none-eabi-gcc)')}</label>
   <div style="display:flex;gap:4px">
-    <input id="gccPath" type="text" value="${esc(machine.gccPath)}" placeholder="${detectedGccPath ? esc(detectedGccPath) : 'Leave empty to auto-detect'}" data-browse-id="gccPathBrowse" style="flex:1">
-    <button class="btn-secondary" title="Browse" style="padding:0 8px;min-width:30px" onclick="vscode.postMessage({type:'browseFile',browseId:'gccPathBrowse',currentPath:document.getElementById('gccPath').value.trim()})">&#8230;</button>
+    <input id="gccPath" type="text" value="${esc(machine.gccPath)}" placeholder="${detectedGccPath ? esc(detectedGccPath) : vscode.l10n.t('Leave empty to auto-detect')}" data-browse-id="gccPathBrowse" style="flex:1">
+    <button class="btn-secondary" title="${vscode.l10n.t('Browse')}" style="padding:0 8px;min-width:30px" onclick="vscode.postMessage({type:'browseFile',browseId:'gccPathBrowse',currentPath:document.getElementById('gccPath').value.trim()})">&#8230;</button>
   </div>
 </div>
 ${_openocdAvailable ? `<div class="row">
-  <label>OpenOCD Path</label>
+  <label>${vscode.l10n.t('OpenOCD Path')}</label>
   <div style="display:flex;gap:4px">
-    <input id="openocdPath" type="text" value="${esc(machine.openocdPath)}" placeholder="Leave empty to use bundled OpenOCD" data-browse-id="openocdPathBrowse" style="flex:1">
-    <button class="btn-secondary" title="Browse" style="padding:0 8px;min-width:30px" onclick="vscode.postMessage({type:'browseFile',browseId:'openocdPathBrowse',currentPath:document.getElementById('openocdPath').value.trim()})">&#8230;</button>
+    <input id="openocdPath" type="text" value="${esc(machine.openocdPath)}" placeholder="${vscode.l10n.t('Leave empty to use bundled OpenOCD')}" data-browse-id="openocdPathBrowse" style="flex:1">
+    <button class="btn-secondary" title="${vscode.l10n.t('Browse')}" style="padding:0 8px;min-width:30px" onclick="vscode.postMessage({type:'browseFile',browseId:'openocdPathBrowse',currentPath:document.getElementById('openocdPath').value.trim()})">&#8230;</button>
   </div>
 </div>` : ''}
 </div>`;

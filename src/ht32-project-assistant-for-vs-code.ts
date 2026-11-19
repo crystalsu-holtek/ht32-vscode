@@ -38,6 +38,23 @@ function logInfo(msg: string) { CHANNEL.appendLine(`[INFO] ${msg}`); }
 function logWarn(msg: string) { CHANNEL.appendLine(`[WARN] ${msg}`); }
 function logError(msg: string) { CHANNEL.appendLine(`[ERROR] ${msg}`); }
 
+/** ====== Shared Pseudoterminal helpers ====== */
+
+/** Accumulates streamed bytes and calls onLine for each complete line. */
+class LineSplitter {
+  private buf = '';
+  constructor(private readonly onLine: (raw: string) => void) {}
+  push(data: string): void {
+    this.buf += data;
+    let nl: number;
+    while ((nl = this.buf.indexOf('\n')) >= 0) {
+      this.onLine(this.buf.slice(0, nl).replace(/\r$/, ''));
+      this.buf = this.buf.slice(nl + 1);
+    }
+  }
+  flush(): void { if (this.buf) { this.onLine(this.buf); this.buf = ''; } }
+}
+
 /** ====== ht32-build CustomExecution ====== */
 interface Ht32BuildTaskDef extends vscode.TaskDefinition {
   make?: string;
@@ -67,8 +84,7 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
   open(_dims: vscode.TerminalDimensions | undefined): void {
     // OSC 7: tell VS Code terminal the working directory so Ctrl+Click resolves relative paths correctly
     this.writeEmitter.fire(`\x1b]7;${vscode.Uri.file(this.cwd).toString()}\x07`);
-    let errors = 0, warnings = 0;
-    let buf = '', done = false;
+    let errors = 0, warnings = 0, done = false;
     // Convert relative file paths in GCC diagnostic lines to absolute so the problem
     // matcher (fileLocation: 'absolute') can navigate to files outside the workspace.
     const toAbsLine = (line: string): string => {
@@ -76,39 +92,105 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
       if (!m || path.isAbsolute(m[1]) || !/\.(c|cpp|s|h)$/i.test(m[1])) return line;
       return path.resolve(this.cwd, m[1]) + line.slice(m[1].length);
     };
-    const flush = (data: string) => {
-      buf += data;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const raw  = buf.slice(0, nl).replace(/\r$/, '');
-        buf = buf.slice(nl + 1);
-        if (/:\d+:\d+:\s+error:/.test(raw))        errors++;
-        else if (/:\d+:\d+:\s+warning:/.test(raw)) warnings++;
-        this.writeEmitter.fire(toAbsLine(raw) + '\r\n');
-      }
-    };
+    const splitter = new LineSplitter(raw => {
+      if (/:\d+:\d+:\s+error:/.test(raw))        errors++;
+      else if (/:\d+:\d+:\s+warning:/.test(raw)) warnings++;
+      this.writeEmitter.fire(toAbsLine(raw) + '\r\n');
+    });
     const sep  = process.platform === 'win32' ? ';' : ':';
     const PATH = this.extraPath.length
       ? this.extraPath.join(sep) + sep + (process.env['PATH'] ?? '')
       : process.env['PATH'] ?? '';
     this.proc = spawn(this.make, this.makeArgs, { cwd: this.cwd, env: { ...process.env, PATH }, windowsHide: true });
-    this.proc.stdout?.on('data', (d: Buffer) => flush(d.toString()));
-    this.proc.stderr?.on('data', (d: Buffer) => flush(d.toString()));
+    this.proc.stdout?.on('data', (d: Buffer) => splitter.push(d.toString()));
+    this.proc.stderr?.on('data', (d: Buffer) => splitter.push(d.toString()));
     this.proc.on('error', (err) => {
       if (done) return;
       done = true;
       this.writeEmitter.fire(`\x1b[31mFailed to start make: ${err.message}\x1b[0m\r\n`);
       this.closeEmitter.fire(1);
     });
-    this.proc.on('close', (code, signal) => {
+    this.proc.on('close', (code) => {
       if (done) return;
       done = true;
-      if (buf) this.writeEmitter.fire(buf + '\r\n');
+      splitter.flush();
       const cancelled = this._cancelled;
       const failed    = cancelled || (code !== 0 && code !== null);
       const color = failed || errors > 0 ? '\x1b[31m' : warnings > 0 ? '\x1b[33m' : '\x1b[32m';
-      const label = cancelled ? 'Build cancelled' : failed ? 'Build failed' : 'Build complete';
+      const label = cancelled ? vscode.l10n.t('Build cancelled') : failed ? vscode.l10n.t('Build failed') : vscode.l10n.t('Build complete');
       this.writeEmitter.fire(`${color}${label}: ${errors} error(s), ${warnings} warning(s)\x1b[0m\r\n`);
+      this.closeEmitter.fire(code ?? (cancelled ? 1 : 0));
+    });
+  }
+
+  close(): void { this._cancelled = true; this.proc?.kill(); }
+}
+
+/** ====== ht32-download CustomExecution ====== */
+interface Ht32DownloadTaskDef extends vscode.TaskDefinition {
+  exe:         string;
+  args:        string[];
+  cwd:         string;
+  passthrough?: boolean;  // true = pyocd (preserve existing ANSI output, only add summary)
+}
+
+const OCD_ERROR_RE     = /Error:|couldn't open|failed to open|FAILED/i;
+const OCD_WARNING_RE   = /Warning:/i;
+const RESOLVE_EXT_RE   = /\$\{config:ht32\.internal\.extensionRoot\}/g;
+const RESOLVE_WS_RE    = /\$\{workspaceFolder\}/g;
+
+class DownloadPseudoterminal implements vscode.Pseudoterminal {
+  private writeEmitter = new vscode.EventEmitter<string>();
+  private closeEmitter = new vscode.EventEmitter<number>();
+  readonly onDidWrite = this.writeEmitter.event;
+  readonly onDidClose = this.closeEmitter.event;
+  private proc?: ReturnType<typeof spawn>;
+  private _cancelled = false;
+
+  constructor(
+    private readonly exe:         string,
+    private readonly args:        string[],
+    private readonly cwd:         string,
+    private readonly passthrough: boolean = false,
+  ) {}
+
+  open(_dims: vscode.TerminalDimensions | undefined): void {
+    // CustomExecution does not expand VS Code variables — resolve tokens at spawn time.
+    const extFwd  = extensionPath.replace(/\\/g, '/');
+    const wsRoot  = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    const resolve = (s: string) =>
+      s.replace(RESOLVE_EXT_RE, extFwd).replace(RESOLVE_WS_RE, wsRoot);
+    const resolvedExe  = resolve(this.exe);
+    const resolvedArgs = this.args.map(resolve);
+    const resolvedCwd  = resolve(this.cwd);
+    this.writeEmitter.fire(`\x1b]7;${vscode.Uri.file(resolvedCwd).toString()}\x07`);
+    let done = false;
+    const colorLine = (raw: string): string => {
+      if (OCD_ERROR_RE.test(raw))   return `\x1b[31m${raw}\x1b[0m`;
+      if (OCD_WARNING_RE.test(raw)) return `\x1b[33m${raw}\x1b[0m`;
+      return raw;
+    };
+    const splitter = new LineSplitter(raw =>
+      this.writeEmitter.fire((this.passthrough ? raw : colorLine(raw)) + '\r\n')
+    );
+    this.proc = spawn(resolvedExe, resolvedArgs, { cwd: resolvedCwd, env: process.env, windowsHide: true });
+    this.proc.stdout?.on('data', (d: Buffer) => splitter.push(d.toString()));
+    this.proc.stderr?.on('data', (d: Buffer) => splitter.push(d.toString()));
+    this.proc.on('error', (err) => {
+      if (done) return;
+      done = true;
+      this.writeEmitter.fire(`\x1b[31mFailed to start: ${err.message}\x1b[0m\r\n`);
+      this.closeEmitter.fire(1);
+    });
+    this.proc.on('close', (code) => {
+      if (done) return;
+      done = true;
+      splitter.flush();
+      const cancelled = this._cancelled;
+      const failed    = cancelled || (code !== 0 && code !== null);
+      const color = failed ? '\x1b[31m' : '\x1b[32m';
+      const label = cancelled ? vscode.l10n.t('Download cancelled') : failed ? vscode.l10n.t('Download failed') : vscode.l10n.t('Download complete');
+      this.writeEmitter.fire(`${color}${label}\x1b[0m\r\n`);
       this.closeEmitter.fire(code ?? (cancelled ? 1 : 0));
     });
   }
@@ -121,7 +203,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   extensionPath    = ctx.extensionPath;
   extensionVersion = (ctx.extension.packageJSON as any).version as string || '';
   CHANNEL.show(true);
-  logInfo('Extension activating...');
+  logInfo(vscode.l10n.t('Extension activating...'));
 
   // 只在 extensionPath 改變時（升版後首次啟動）才寫入，避免每次啟動都寫 settings.json
   // 存 forward slash：${config:ht32.internal.extensionRoot} 展開後直接給 OpenOCD TCL 用，反斜線會被 TCL 當 escape 吃掉
@@ -212,6 +294,23 @@ export async function activate(ctx: vscode.ExtensionContext) {
       );
       if (!stillRunning) { setBuildRunning(false); }
     }),
+    vscode.tasks.onDidEndTaskProcess(e => {
+      const def = e.execution.task.definition as Ht32BuildTaskDef;
+      if (def.type !== 'ht32-build') return;
+      if (e.exitCode === 0) return;
+      const buildDir = path.join(def.cwd, 'build');
+      if (!fs.existsSync(buildDir)) return;
+      try {
+        for (const f of fs.readdirSync(buildDir)) {
+          if (f.endsWith('.elf')) {
+            try {
+              fs.unlinkSync(path.join(buildDir, f));
+              logWarn(`Build failed (exit ${e.exitCode}) — deleted stale ${f}`);
+            } catch { /* non-critical */ }
+          }
+        }
+      } catch { /* build dir not readable */ }
+    }),
   );
 
   ctx.subscriptions.push(
@@ -220,7 +319,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       resolveTask(task: vscode.Task): vscode.Task | undefined {
         const def = task.definition as Ht32BuildTaskDef;
         if (!def.cwd) {
-          vscode.window.showErrorMessage('ht32-build task is missing required field "cwd". Please regenerate tasks.json.');
+          vscode.window.showErrorMessage(vscode.l10n.t('ht32-build task is missing required field "cwd". Please regenerate tasks.json.'));
           return undefined;
         }
         const resolved = new vscode.Task(
@@ -235,6 +334,31 @@ export async function activate(ctx: vscode.ExtensionContext) {
         );
         resolved.presentationOptions = task.presentationOptions;
         resolved.group = task.group;
+        return resolved;
+      },
+    })
+  );
+
+  ctx.subscriptions.push(
+    vscode.tasks.registerTaskProvider('ht32-download', {
+      provideTasks: () => [],
+      resolveTask(task: vscode.Task): vscode.Task | undefined {
+        const def = task.definition as Ht32DownloadTaskDef;
+        if (!def.exe || !def.cwd) {
+          vscode.window.showErrorMessage(vscode.l10n.t('ht32-download task is missing required fields. Please regenerate tasks.json.'));
+          return undefined;
+        }
+        const resolved = new vscode.Task(
+          def,
+          task.scope ?? vscode.TaskScope.Workspace,
+          task.name,
+          'ht32',
+          new vscode.CustomExecution(async () =>
+            new DownloadPseudoterminal(def.exe, def.args ?? [], def.cwd, def.passthrough ?? false)
+          ),
+          task.problemMatchers,
+        );
+        resolved.presentationOptions = task.presentationOptions;
         return resolved;
       },
     })
@@ -314,7 +438,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.commands.registerCommand('ht32.openRecentProject', async (filePath: string) => {
       if (!fs.existsSync(filePath)) {
-        vscode.window.showErrorMessage(`Project not found: ${filePath}`);
+        vscode.window.showErrorMessage(vscode.l10n.t('Project not found: {0}', filePath));
         const all = ctx.globalState.get<string[]>(RECENT_KEY, []);
         await ctx.globalState.update(RECENT_KEY, all.filter(p => p !== filePath));
         _recentTree?.refresh();
@@ -337,7 +461,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!root) return;
       const parent = bgParent(root);
       const current = readActiveProjectFile(bgParent(root)) || '';
-      if (!current) { vscode.window.showErrorMessage('No active project file to rename.'); return; }
+      if (!current) { vscode.window.showErrorMessage(vscode.l10n.t('No active project file to rename.')); return; }
       const currentName = path.basename(current, '.ht32vs');
       const newName = await vscode.window.showInputBox({
         title: 'Rename Project File',
@@ -361,7 +485,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         const settingsPath2 = path.join(parent, '.vscode', 'settings.json');
         try {
           const s2: any = fs.existsSync(settingsPath2) ? JSON.parse(fs.readFileSync(settingsPath2, 'utf8')) : {};
-          s2['ht32.activeProjectFile'] = newFile;
+          s2['ht32.internal.activeProjectFile'] = newFile;
           fs.writeFileSync(settingsPath2, JSON.stringify(s2, null, 2), 'utf8');
         } catch {}
         // Update recent projects list so the renamed entry doesn't disappear.
@@ -371,7 +495,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         _recentTree?.refresh();
         tree.refresh();
       } catch (e: any) {
-        vscode.window.showErrorMessage(`Rename failed: ${e.message}`);
+        vscode.window.showErrorMessage(vscode.l10n.t('Rename failed: {0}', e.message));
       }
     }),
     vscode.commands.registerCommand('ht32.addProject', async () => {
@@ -379,11 +503,11 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!root) return;
       const parent = bgParent(root);
       const activeFile = readActiveProjectFile(bgParent(root)) || '';
-      if (!activeFile) { vscode.window.showErrorMessage('No active project file.'); return; }
+      if (!activeFile) { vscode.window.showErrorMessage(vscode.l10n.t('No active project file.')); return; }
       // Read currently listed projects from .ht32vs
       const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
       const _parsed = parseHt32vsFile(ht32wsPath, e =>
-        vscode.window.showErrorMessage(`Project file "${path.basename(ht32wsPath)}" contains invalid JSON: ${e.message}`)
+        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32wsPath), e.message))
       );
       if (!_parsed) return;
       const existing: string[] = _parsed.projects ?? [];
@@ -432,12 +556,12 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const dirName = item.id ? path.basename(item.id as string) : (item.label as string);
       const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
       const parsed = parseHt32vsFile(ht32wsPath, e =>
-        vscode.window.showErrorMessage(`Project file "${path.basename(ht32wsPath)}" contains invalid JSON: ${e.message}`)
+        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32wsPath), e.message))
       );
       if (!parsed) return;
       const projects: string[] = parsed.projects ?? [];
       if (projects.length <= 1) {
-        vscode.window.showWarningMessage('Cannot remove the only remaining sub-project.');
+        vscode.window.showWarningMessage(vscode.l10n.t('Cannot remove the only remaining sub-project.'));
         return;
       }
       const updated = projects.filter(p => p !== dirName);
@@ -455,31 +579,36 @@ export async function activate(ctx: vscode.ExtensionContext) {
       vscode.commands.executeCommand('workbench.action.closeFolder');
     }),
     vscode.commands.registerCommand('ht32.openReadme', () => {
-      const readmePath = vscode.Uri.joinPath(ctx.extensionUri, 'README.md');
+      const lang = vscode.env.language;
+      const fileName = lang.startsWith('zh-tw') ? 'README_TRAD.md'
+                     : lang.startsWith('zh')    ? 'README_SIMP.md'
+                     : 'README.md';
+      const readmePath = vscode.Uri.joinPath(ctx.extensionUri, fileName);
       vscode.commands.executeCommand('markdown.showPreview', readmePath);
     }),
     vscode.commands.registerCommand('ht32.updateFromMarketplace', async () => {
       const current = ctx.extension.packageJSON.version as string;
       CHANNEL.show(true);
-      logInfo(`[Update] Checking for updates… (current: v${current})`);
+      logInfo(vscode.l10n.t('[Update] Checking for updates… (current: v{0})', current));
       const sb = vscode.window.setStatusBarMessage('$(sync~spin) Checking for updates…');
       try {
         const latest = await fetchMarketplaceVersion('holtek.ht32-vscode');
-        logInfo(`[Update] Marketplace version: v${latest}`);
+        logInfo(vscode.l10n.t('[Update] Marketplace version: v{0}', latest));
         if (semverCmp(latest, current) <= 0) {
-          vscode.window.showInformationMessage(`Holtek HT32 VS Code Extension is already up to date (v${current}).`);
+          vscode.window.showInformationMessage(vscode.l10n.t('Holtek HT32 VS Code Extension is already up to date (v{0}).', current));
         } else {
-          logInfo(`[Update] Installing v${latest}…`);
+          logInfo(vscode.l10n.t('[Update] Installing v{0}…', latest));
           await vscode.commands.executeCommand('workbench.extensions.installExtension', 'holtek.ht32-vscode');
-          logInfo(`[Update] Done.`);
-          vscode.window.showInformationMessage(`Holtek HT32 VS Code Extension updated to v${latest}.`, 'Reload Now').then(sel => {
-            if (sel === 'Reload Now') vscode.commands.executeCommand('workbench.action.reloadWindow');
+          logInfo(vscode.l10n.t('[Update] Done.'));
+          const reloadNowLabel = vscode.l10n.t('Reload Now');
+          vscode.window.showInformationMessage(vscode.l10n.t('Holtek HT32 VS Code Extension updated to v{0}.', latest), reloadNowLabel).then(sel => {
+            if (sel === reloadNowLabel) vscode.commands.executeCommand('workbench.action.reloadWindow');
           });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         logError(`[Update] ${msg}`);
-        vscode.window.showErrorMessage(`Failed to check for updates: ${msg}`);
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to check for updates: {0}', msg));
       } finally {
         sb.dispose();
       }
@@ -492,17 +621,18 @@ export async function activate(ctx: vscode.ExtensionContext) {
       });
       if (!files?.[0]) return;
       CHANNEL.show(true);
-      logInfo(`[VSIX] Installing: ${files[0].fsPath}`);
+      logInfo(vscode.l10n.t('[VSIX] Installing: {0}', files[0].fsPath));
       try {
         await vscode.commands.executeCommand('workbench.extensions.installExtension', files[0]);
-        logInfo('[VSIX] Done.');
-        vscode.window.showInformationMessage('Extension installed.', 'Reload Now').then(sel => {
-          if (sel === 'Reload Now') vscode.commands.executeCommand('workbench.action.reloadWindow');
+        logInfo(vscode.l10n.t('[VSIX] Done.'));
+        const reloadNowLabel = vscode.l10n.t('Reload Now');
+        vscode.window.showInformationMessage(vscode.l10n.t('Extension installed.'), reloadNowLabel).then(sel => {
+          if (sel === reloadNowLabel) vscode.commands.executeCommand('workbench.action.reloadWindow');
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         logError(`[VSIX] ${msg}`);
-        vscode.window.showErrorMessage(`Failed to install VSIX: ${msg}`);
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to install VSIX: {0}', msg));
       }
     }),
     vscode.commands.registerCommand('ht32.updateDevicePacks', async () => {
@@ -523,16 +653,16 @@ export async function activate(ctx: vscode.ExtensionContext) {
       for (const file of files) {
         const name = path.basename(file.fsPath);
         if (!/^Holtek\..+\.pack$/i.test(name)) {
-          logWarn(`[DFP] Skipped non-Holtek pack: ${name}`);
+          logWarn(vscode.l10n.t('[DFP] Skipped non-Holtek pack: {0}', name));
           skipped++;
           continue;
         }
         try {
           fs.copyFileSync(file.fsPath, path.join(dfpDir, name));
-          logInfo(`[DFP] Installed pack: ${name}`);
+          logInfo(vscode.l10n.t('[DFP] Installed pack: {0}', name));
           succeeded++;
         } catch (e: any) {
-          logError(`[DFP] Failed to install ${name}: ${e?.message ?? e}`);
+          logError(vscode.l10n.t('[DFP] Failed to install {0}: {1}', name, e?.message ?? e));
           failed++;
         }
       }
@@ -540,11 +670,11 @@ export async function activate(ctx: vscode.ExtensionContext) {
         await extractDfpPacksIfNeeded(ctx.extensionPath);
         const skipNote = skipped > 0 ? ` ${skipped} skipped (invalid name).` : '';
         const failNote = failed > 0 ? ` ${failed} failed — see Output.` : '';
-        vscode.window.showInformationMessage(`HT32: ${succeeded} pack(s) installed successfully.${failNote}${skipNote}`);
+        vscode.window.showInformationMessage(vscode.l10n.t('HT32: {0} pack(s) installed successfully.{1}', succeeded, failNote + skipNote));
       } else if (failed > 0) {
-        vscode.window.showWarningMessage(`HT32: All ${failed} pack installation(s) failed. Check Output.`);
+        vscode.window.showWarningMessage(vscode.l10n.t('HT32: All {0} pack installation(s) failed. Check Output.', failed));
       } else if (skipped > 0) {
-        vscode.window.showWarningMessage(`HT32: No packs installed — ${skipped} file(s) skipped (filename must match Holtek.*.pack).`);
+        vscode.window.showWarningMessage(vscode.l10n.t('HT32: No packs installed — {0} file(s) skipped (filename must match Holtek.*.pack).', skipped));
       }
     }),
     vscode.commands.registerCommand('ht32.convertUvision', () => convertUvision(ctx, tree, treeView)),
@@ -553,7 +683,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ht32.regenerateCompileCommands', () => regenerateCompileCommandsCommand()),
     vscode.commands.registerCommand('ht32.regenerateMakefile', async () => {
       const root = currentWsRoot();
-      if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
+      if (!root) { vscode.window.showErrorMessage(vscode.l10n.t('No workspace folder open.')); return; }
       const result = await pickBgDirs(root, { allowAll: true, placeHolder: 'Select project to regenerate Makefile' });
       if (!result) return;
       const { parent, targets, allBgDirs } = result;
@@ -561,10 +691,10 @@ export async function activate(ctx: vscode.ExtensionContext) {
       for (const d of targets) {
         (readProjectMeta(path.join(parent, d)) ? valid : missing).push(d);
       }
-      if (missing.length) vscode.window.showWarningMessage(`Skipped (no project.meta.json): ${missing.join(', ')}`);
+      if (missing.length) vscode.window.showWarningMessage(vscode.l10n.t('Skipped (no project.meta.json): {0}', missing.join(', ')));
       if (!valid.length) return;
       await initProjectsFromMeta(valid.map(d => path.join(parent, d)), root, { force: true });
-      vscode.window.showInformationMessage(`Makefile regenerated: ${formatTargetLabel(valid, allBgDirs)}`);
+      vscode.window.showInformationMessage(vscode.l10n.t('Makefile regenerated: {0}', formatTargetLabel(valid, allBgDirs)));
     }),
     vscode.commands.registerCommand('ht32.build', () => smartRunTask('build')),
     vscode.commands.registerCommand('ht32.runClean', () => smartRunTask('clean')),
@@ -623,7 +753,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('ht32.startDebug', async () => {
       const folder = vscode.workspace.workspaceFolders?.[0];
-      if (!folder) return vscode.window.showErrorMessage('No workspace folder.');
+      if (!folder) return vscode.window.showErrorMessage(vscode.l10n.t('No workspace folder.'));
       const launchPath = path.join(folder.uri.fsPath, '.vscode', 'launch.json');
       let allConfigs: any[] = [];
       try {
@@ -661,7 +791,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         }
       }
       if (allConfigs.length === 0) {
-        return vscode.window.showErrorMessage('No debug configurations found. Run "Generate Build & Debug Config" first.');
+        return vscode.window.showErrorMessage(vscode.l10n.t('No debug configurations found. Run "Generate Build & Debug Config" first.'));
       }
       let selectedConfig = allConfigs[0];
       if (allConfigs.length > 1) {
@@ -688,7 +818,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const ok = await vscode.debug.startDebugging(folder, selectedConfig);
       if (!ok) {
         ourDebugStartPending = false;
-        vscode.window.showErrorMessage('Failed to start debug. Check launch.json.');
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to start debug. Check launch.json.'));
       }
     })
   );
@@ -821,7 +951,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   // activeProjectFile 改變時重整 TreeView（rename 後 label 更新）
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('ht32.activeProjectFile')) {
+      if (e.affectsConfiguration('ht32.internal.activeProjectFile')) {
         tree.refresh();
       }
     })
@@ -886,7 +1016,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
 
   extractDfpPacksIfNeeded(ctx.extensionPath).catch(e => logError(`[DFP] extractDfpPacksIfNeeded: ${e?.message ?? e}`));
   checkDfpPackUpdatesInBackground(ctx.extensionPath, ctx).catch(e => logError(`[DFP] checkDfpPackUpdatesInBackground: ${e?.message ?? e}`));
-  logInfo('Extension activated.');
+  logInfo(vscode.l10n.t('Extension activated.'));
 }
 export function deactivate() {}
 
@@ -937,19 +1067,21 @@ function checkWizardExtension(ctx: vscode.ExtensionContext) {
 
   const showPrompt = () => {
     if (vscode.extensions.getExtension(WIZARD_ID)) return;
+    const installLabel = vscode.l10n.t('Install');
+    const dontShowLabel = vscode.l10n.t('Don\'t show again');
     vscode.window.showInformationMessage(
-      'Holtek Configuration Wizard is not installed. It provides a visual editor for HT32 config files (conf.h, system_ht32.c, startup.s…).',
-      'Install',
-      'Don\'t show again'
+      vscode.l10n.t('Holtek Configuration Wizard is not installed. It provides a visual editor for HT32 config files (conf.h, system_ht32.c, startup.s…).'),
+      installLabel,
+      dontShowLabel
     ).then(sel => {
-      if (sel === 'Install') {
+      if (sel === installLabel) {
         vscode.commands.executeCommand('workbench.extensions.installExtension', WIZARD_ID)
           .then(undefined, () => {
             vscode.window.showWarningMessage(
-              'Could not install Holtek Configuration Wizard from Marketplace. Please install the .vsix manually.'
+              vscode.l10n.t('Could not install Holtek Configuration Wizard from Marketplace. Please install the .vsix manually.')
             );
           });
-      } else if (sel === 'Don\'t show again') {
+      } else if (sel === dontShowLabel) {
         ctx.globalState.update(SUPPRESS_KEY, true);
       }
     });
@@ -1156,7 +1288,7 @@ async function runTask(label: string): Promise<vscode.TaskExecution | undefined>
   const tasks = await vscode.tasks.fetchTasks();
   const t = tasks.find(t => t.name === label || (t as any).detail === label || (t as any).definition?.label === label);
   if (!t) {
-    vscode.window.showErrorMessage(`Task "${label}" not found. Generate tasks.json first.`);
+    vscode.window.showErrorMessage(vscode.l10n.t('Task "{0}" not found. Generate tasks.json first.', label));
     return undefined;
   }
   return vscode.tasks.executeTask(t);
@@ -1181,7 +1313,7 @@ async function startBuildTask(label: string) {
   const tasks = await fetchTasksCached();
   const t = tasks.find(t => t.name === label || (t as any).definition?.label === label);
   if (!t) {
-    vscode.window.showErrorMessage(`Task "${label}" not found. Generate tasks.json first.`);
+    vscode.window.showErrorMessage(vscode.l10n.t('Task "{0}" not found. Generate tasks.json first.', label));
     return;
   }
   await vscode.tasks.executeTask(t);
@@ -1263,7 +1395,7 @@ async function ensureAdapterSerialFresh(bgDir: string, wsRoot: string): Promise<
  */
 async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   const root = currentWsRoot();
-  if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
+  if (!root) { vscode.window.showErrorMessage(vscode.l10n.t('No workspace folder open.')); return; }
 
   let bgDirs: string[] = [];
   try {
@@ -1288,7 +1420,7 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   }
 
   if (bgDirs.length === 0) {
-    vscode.window.showErrorMessage('No Project directory found. Convert a project first.');
+    vscode.window.showErrorMessage(vscode.l10n.t('No Project directory found. Convert a project first.'));
     return;
   }
 
@@ -1331,15 +1463,18 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   }
 
   // 多個 Project → QuickPick
-  const items: vscode.QuickPickItem[] = bgDirs.map(d => ({
+  // taskLabel is the actual task name used for lookup; label is the localized display string.
+  interface SmartItem extends vscode.QuickPickItem { readonly taskLabel: string; }
+  const items: SmartItem[] = bgDirs.map(d => ({
     label:       taskLabel(d),
+    taskLabel:   taskLabel(d),
     description: (d === BG_BASE || d === BG_BASE_OLD) ? '(active project)' : ''
   }));
   if (kind === 'build') {
-    items.push({ label: 'Build All', description: 'Build all projects in sequence' });
+    items.push({ label: vscode.l10n.t('Build All'), taskLabel: 'Build All', description: vscode.l10n.t('Build all projects in sequence') });
   }
   if (kind === 'clean') {
-    items.push({ label: 'Clean All', description: 'Clean all projects in sequence' });
+    items.push({ label: vscode.l10n.t('Clean All'), taskLabel: 'Clean All', description: vscode.l10n.t('Clean all projects in sequence') });
   }
 
   const placeHolder =
@@ -1347,16 +1482,16 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
     kind === 'clean'  ? 'Select project to clean'  :
     kind === 'erase'  ? 'Select project to erase'  :
     'Select project to download';
-  const sel = await vscode.window.showQuickPick(items, { placeHolder });
+  const sel = await vscode.window.showQuickPick(items, { placeHolder }) as SmartItem | undefined;
   if (!sel) return;
   if (kind === 'download' || kind === 'erase') {
-    const selectedBg = bgDirs.find(d => taskLabel(d) === sel.label);
+    const selectedBg = bgDirs.find(d => taskLabel(d) === sel.taskLabel);
     if (selectedBg) {
       await ensureAdapterSerialFresh(path.join(bgParent(root), selectedBg), root);
     }
   }
-  if (kind === 'build') { await startBuildTask(sel.label); }
-  else                  { await runTask(sel.label); }
+  if (kind === 'build') { await startBuildTask(sel.taskLabel); }
+  else                  { await runTask(sel.taskLabel); }
 }
 
 /** TreeView 選到 project node 時，更新 settings.json 的 --compile-commands-dir 並重啟 clangd。
@@ -1498,8 +1633,8 @@ async function resolveToolchain(
     _toolchainInstallPromise ??= (async () => {
       const missing = [!gccPath && 'arm-none-eabi-gcc', !makePathFull && 'GNU make'].filter(Boolean).join(', ');
       const sel = await vscode.window.showWarningMessage(
-        `HT32: ${missing} not found. Build will not work until the toolchain is installed.`,
-        'Install via winget'
+        vscode.l10n.t('HT32: {0} not found. Build will not work until the toolchain is installed.', missing),
+        vscode.l10n.t('Install via winget')
       );
       if (sel) await ensureToolchain(root, extensionPath, async () => { await onInstalled(); });
     })().finally(() => { _toolchainInstallPromise = undefined; });
@@ -1653,10 +1788,10 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
         });
         if (invalidErrors.length > 0 && bgNames.length > 0) {
           CHANNEL.show(true);
-          vscode.window.showWarningMessage(`Skipped ${invalidErrors.length} invalid project(s). Check "HT32 VSCode" output for details.`);
+          vscode.window.showWarningMessage(vscode.l10n.t('Skipped {0} invalid project(s). Check "HT32 VSCode" output for details.', invalidErrors.length));
         }
         if (bgNames.length === 0) {
-          const _af = vscode.workspace.getConfiguration('ht32').get<string>('activeProjectFile');
+          const _af = vscode.workspace.getConfiguration('ht32').get<string>('internal.activeProjectFile');
           if (_af) {
             const _abs = path.isAbsolute(_af) ? _af : path.join(parent, _af);
             await removeRecentProject(ctx, _abs);
@@ -1666,8 +1801,8 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
           tree.setLoading(false);
           setContextHasProject(false);
           await vscode.window.showErrorMessage(
-            `Failed to open project: ${invalidErrors.join(' | ')}`,
-            { modal: true }, 'OK'
+            vscode.l10n.t('Failed to open project: {0}', invalidErrors.join(' | ')),
+            { modal: true }, vscode.l10n.t('OK')
           );
           await ctx.globalState.update('ht32.focusHt32OnActivate', true);
           await vscode.commands.executeCommand('workbench.action.closeFolder');
@@ -1682,7 +1817,7 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
         writeMakefileToolsSettings(root, bgNames, gccP ?? undefined);
         await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false });
 
-        const _activeFile = vscode.workspace.getConfiguration('ht32').get<string>('activeProjectFile');
+        const _activeFile = vscode.workspace.getConfiguration('ht32').get<string>('internal.activeProjectFile');
         if (_activeFile) {
           const _ht32wsAbs = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
           if (fs.existsSync(_ht32wsAbs)) { await addRecentProject(ctx, _ht32wsAbs); }
@@ -1737,12 +1872,13 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
   openCreateProjectPanel(ctx, defaultFolder, async (result) => {
     const cpBgDir = path.join(computeWsOpenRoot(result.projectFolder), result.projectName);
     if (fs.existsSync(cpBgDir)) {
+      const continueLabel = vscode.l10n.t('Continue');
       const answer = await vscode.window.showWarningMessage(
-        `"${cpBgDir}" already exists. The folder will be deleted and recreated. Continue?`,
+        vscode.l10n.t('"{0}" already exists. The folder will be deleted and recreated. Continue?', cpBgDir),
         { modal: true },
-        'Continue'
+        continueLabel
       );
-      if (answer !== 'Continue') return;
+      if (answer !== continueLabel) return;
       fs.rmSync(cpBgDir, { recursive: true, force: true });
     }
     await withProgress(`Create Project: ${result.projectName}`, async () => {
@@ -1789,7 +1925,7 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 /** ====== Add New Project (Create + merge into current workspace) ====== */
 function addNewProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, treeView: vscode.TreeView<vscode.TreeItem>) {
   const wsRoot = currentWsRoot();
-  if (!wsRoot) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
+  if (!wsRoot) { vscode.window.showErrorMessage(vscode.l10n.t('No workspace folder open.')); return; }
   const lockedFolder = path.dirname(wsRoot);
   openCreateProjectPanel(ctx, lockedFolder, async (result) => {
     // ── 若現有單一專案 .ht32vs，詢問升級為 Multi-Project ──
@@ -1816,12 +1952,13 @@ function addNewProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
     const addBgDir = path.join(wsOpenRootPre, result.projectName);
     if (fs.existsSync(addBgDir)) {
+      const continueLabel = vscode.l10n.t('Continue');
       const answer = await vscode.window.showWarningMessage(
-        `"${addBgDir}" already exists. The folder will be deleted and recreated. Continue?`,
+        vscode.l10n.t('"{0}" already exists. The folder will be deleted and recreated. Continue?', addBgDir),
         { modal: true },
-        'Continue'
+        continueLabel
       );
-      if (answer !== 'Continue') return;
+      if (answer !== continueLabel) return;
       fs.rmSync(addBgDir, { recursive: true, force: true });
     }
 
@@ -1892,7 +2029,7 @@ async function openHt32vsFile(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     const settingsPath = path.join(bgParentDir, '.vscode', 'settings.json');
     let settings: any = {};
     if (fs.existsSync(settingsPath)) { try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {} }
-    settings['ht32.activeProjectFile'] = fileName;
+    settings['ht32.internal.activeProjectFile'] = fileName;
     try { fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8'); } catch {}
     tree.refresh();
     vscode.commands.executeCommand('ht32ProjectView.focus');
@@ -1903,7 +2040,7 @@ async function openHt32vsFile(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     if (fs.existsSync(settingsPath)) {
       try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
     }
-    settings['ht32.activeProjectFile'] = fileName;
+    settings['ht32.internal.activeProjectFile'] = fileName;
     try {
       fs.mkdirSync(path.join(bgParentDir, '.vscode'), { recursive: true });
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
@@ -1933,7 +2070,7 @@ async function openProjectFolderCommand(ctx: vscode.ExtensionContext, tree: Proj
     // 使用者選了 Project_xxx/ → 單一 variant（parent 必須是 HT32_VSCode/）
     const parentDir = path.dirname(selected);
     if (path.basename(parentDir).toLowerCase() !== HT32_VSCODE_DIRNAME.toLowerCase()) {
-      vscode.window.showErrorMessage(`Not an HT32 project — "${baseName}" must be inside a ${HT32_VSCODE_DIRNAME} folder.`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Not an HT32 project — "{0}" must be inside a {1} folder.', baseName, HT32_VSCODE_DIRNAME));
       return;
     }
     wsRoot = parentDir;
@@ -1946,7 +2083,7 @@ async function openProjectFolderCommand(ctx: vscode.ExtensionContext, tree: Proj
     wsRoot = path.join(selected, HT32_VSCODE_DIRNAME);
   } else {
     vscode.window.showErrorMessage(
-      `Not an HT32 project — cannot find Project*/project.meta.json in "${baseName}"`
+      vscode.l10n.t('Not an HT32 project — cannot find Project*/project.meta.json in "{0}"', baseName)
     );
     return;
   }
@@ -2045,7 +2182,7 @@ function readActiveProjectFile(bgParentDir: string): string | undefined {
   try {
     const settingsPath = path.join(computeWsOpenRoot(bgParentDir), '.vscode', 'settings.json');
     const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    return data['ht32.activeProjectFile'] || undefined;
+    return data['ht32.internal.activeProjectFile'] || undefined;
   } catch { return undefined; }
 }
 
@@ -2067,7 +2204,7 @@ function readProjectOrder(bgParentDir: string): string[] | undefined {
   const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(bgParentDir, activeFile);
   const ws = parseHt32vsFile(ht32wsPath, () =>
     vscode.window.showWarningMessage(
-      `HT32: "${path.basename(ht32wsPath)}" 格式錯誤，無法解析，將顯示所有專案。請檢查 JSON 格式是否正確。`
+      vscode.l10n.t('HT32: "{0}" has invalid JSON format and cannot be parsed. All projects will be shown. Please check the JSON format.', path.basename(ht32wsPath))
     )
   );
   if (ws && Array.isArray(ws.projects) && ws.projects.length > 0) {
@@ -2082,7 +2219,7 @@ function clearActiveProjectFileSetting(wsRoot: string): void {
   if (!fs.existsSync(settingsPath)) { return; }
   let data: any = {};
   try { data = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return; }
-  delete data['ht32.activeProjectFile'];
+  delete data['ht32.internal.activeProjectFile'];
   try { fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2)); } catch {}
 }
 
@@ -2098,7 +2235,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
   if (picked.toLowerCase().endsWith('.uvmpw')) {
     const projects = parseUvmpw(picked);
     if (projects.length === 0) {
-      vscode.window.showErrorMessage('.uvmpw contains no <project> entries.');
+      vscode.window.showErrorMessage(vscode.l10n.t('.uvmpw contains no <project> entries.'));
       return;
     }
 
@@ -2120,12 +2257,13 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
   // ── 步驟 1.6：若 HT32_VSCode 已存在，詢問是否覆蓋 ──
   const ht32vsDirUv = bgParent(wsOpenRoot);
   if (fs.existsSync(ht32vsDirUv)) {
+    const continueLabel = vscode.l10n.t('Continue');
     const answer = await vscode.window.showWarningMessage(
-      `"${ht32vsDirUv}" already exists. The folder will be deleted and recreated. Continue?`,
+      vscode.l10n.t('"{0}" already exists. The folder will be deleted and recreated. Continue?', ht32vsDirUv),
       { modal: true },
-      'Continue'
+      continueLabel
     );
-    if (answer !== 'Continue') return;
+    if (answer !== continueLabel) return;
     fs.rmSync(ht32vsDirUv, { recursive: true, force: true });
   }
 
@@ -2322,7 +2460,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
   if (!projectDirs.length) {
     vscode.window.showErrorMessage(
-      'No HT32-IDE projects found. Select a folder containing .project/.cproject files, or a parent folder with such subfolders.'
+      vscode.l10n.t('No HT32-IDE projects found. Select a folder containing .project/.cproject files, or a parent folder with such subfolders.')
     );
     return;
   }
@@ -2344,12 +2482,13 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
   try {
     const existingVsDirs = [...new Set(projectDirs.map(computeHt32IdeVsDir))].filter(d => fs.existsSync(d));
     if (existingVsDirs.length > 0) {
+      const continueLabel = vscode.l10n.t('Continue');
       const answer = await vscode.window.showWarningMessage(
-        `"${existingVsDirs[0]}" already exists. The folder will be deleted and recreated. Continue?`,
+        vscode.l10n.t('"{0}" already exists. The folder will be deleted and recreated. Continue?', existingVsDirs[0]),
         { modal: true },
-        'Continue'
+        continueLabel
       );
-      if (answer !== 'Continue') return;
+      if (answer !== continueLabel) return;
       for (const d of existingVsDirs) fs.rmSync(d, { recursive: true, force: true });
     }
   } catch { /* 推算失敗就跳過確認，讓後續 convert 正常報錯 */ }
@@ -2524,7 +2663,7 @@ async function generateTasksLaunchCommand(ctx: vscode.ExtensionContext) {
 
   await withProgress('Generate Build & Debug Config', async () => {
     await generateTasksAndLaunchAndMakefile(root);
-    vscode.window.showInformationMessage('tasks.json & launch.json updated under .vscode/');
+    vscode.window.showInformationMessage(vscode.l10n.t('tasks.json & launch.json updated under .vscode/'));
   });
 
   // Switch workspace to HT32_VSCode/ if needed (same as Convert flow)
@@ -2555,7 +2694,7 @@ async function pickBgDirs(
     const orderMap = projectOrder ? new Map(projectOrder.map((p, i) => [p, i])) : undefined;
     allBgDirs.sort((a, b) => ((orderMap?.get(a) ?? 9999) - (orderMap?.get(b) ?? 9999)) || a.localeCompare(b));
   } catch {}
-  if (allBgDirs.length === 0) { vscode.window.showErrorMessage('No Project directory found.'); return undefined; }
+  if (allBgDirs.length === 0) { vscode.window.showErrorMessage(vscode.l10n.t('No Project directory found.')); return undefined; }
 
   if (allBgDirs.length === 1) return { parent, targets: allBgDirs, allBgDirs };
 
@@ -2577,7 +2716,7 @@ function formatTargetLabel(targets: string[], allBgDirs: string[]): string {
 /** Regenerate compile_commands.json from sources.list / includes.list / defines.list */
 async function regenerateCompileCommandsCommand() {
   const root = currentWsRoot();
-  if (!root) { vscode.window.showErrorMessage('No workspace folder open.'); return; }
+  if (!root) { vscode.window.showErrorMessage(vscode.l10n.t('No workspace folder open.')); return; }
   const result = await pickBgDirs(root, { requireMakefile: true, allowAll: true, placeHolder: 'Select project to regenerate compile_commands.json' });
   if (!result) return;
   const { parent, targets, allBgDirs } = result;
@@ -2604,13 +2743,13 @@ async function regenerateCompileCommandsCommand() {
     }
     if (failed.length) {
       if (ok.length === 0 && targets.length === 1) {
-        vscode.window.showErrorMessage(`MCU not set in ${failed[0]} — configure the project first.`);
+        vscode.window.showErrorMessage(vscode.l10n.t('MCU not set in {0} — configure the project first.', failed[0]));
       } else {
-        vscode.window.showWarningMessage(`MCU not set, skipped: ${failed.join(', ')}`);
+        vscode.window.showWarningMessage(vscode.l10n.t('MCU not set, skipped: {0}', failed.join(', ')));
       }
     }
     if (ok.length) {
-      vscode.window.showInformationMessage(`compile_commands.json regenerated for ${formatTargetLabel(ok, allBgDirs)}.`);
+      vscode.window.showInformationMessage(vscode.l10n.t('compile_commands.json regenerated for {0}.', formatTargetLabel(ok, allBgDirs)));
     }
   });
 }
@@ -2661,7 +2800,7 @@ function selectTargetCfg(extPath: string, mcu?: string, deviceName?: string): st
  * Tries exact Dname match first, then strips package suffix (e.g. HT32F52341_48LQFP → HT32F52341).
  * Returns size in bytes, or undefined if not found.
  */
-function readPdscIram1(deviceName: string, extPath: string, extraPdscPaths?: string[]): { start: number; size: number } | undefined {
+function readPdscIram1(deviceName: string, extPath: string): { start: number; size: number } | undefined {
   const parser = new XMLParser({
     ignoreAttributes: false, attributeNamePrefix: '',
     isArray: (name) => ['family', 'subFamily', 'device', 'memory'].includes(name),
@@ -2670,7 +2809,7 @@ function readPdscIram1(deviceName: string, extPath: string, extraPdscPaths?: str
   // Match exact name, stripped base, or package-suffixed variant (e.g. HT32F49041_20TSSOP when looking for HT32F49041)
   const matches  = (name: string) => name === deviceName || name === stripped || name.replace(/_[^_]+$/, '') === stripped;
 
-  for (const pdscPath of getAllPdscPaths(extPath, extraPdscPaths)) {
+  for (const pdscPath of getAllPdscPaths(extPath)) {
     try {
       if (!_pdscRawCache.has(pdscPath)) { _pdscRawCache.set(pdscPath, fs.readFileSync(pdscPath, 'utf8')); }
       const doc      = parser.parse(_pdscRawCache.get(pdscPath)!);
@@ -3232,7 +3371,6 @@ function buildHlmPreConfigCmds(
   extraLoaders:  Array<{flm: string; start: string; end: string}> = [],
   adapterSerial: string = '',
   adapterSpeed:  string = '',
-  extraPdscPaths: string[] = [],
   eraseMode:     string = 'erase_sector',
   outputExtRoot?: string  // prefix for paths embedded in output strings; defaults to extPath
 ): string[] {
@@ -3261,7 +3399,7 @@ function buildHlmPreConfigCmds(
     : prefix && settingsMap[prefix]
       ? settingsMap[prefix]
       : undefined;
-  const pdscIram1   = deviceName ? readPdscIram1(deviceName, extPath, extraPdscPaths) : undefined;
+  const pdscIram1   = deviceName ? readPdscIram1(deviceName, extPath) : undefined;
   const workAreaSz  = workAreaNum !== undefined
     ? '0x' + workAreaNum.toString(16)
     : pdscIram1 !== undefined ? '0x' + pdscIram1.size.toString(16) : ramLength;
@@ -3603,11 +3741,12 @@ async function _doFindOrInstallPyocd(extPath: string): Promise<string | null | u
   }
 
   // 4. Ask user before installing
+  const installPyocdLabel = vscode.l10n.t('Install');
   const sel = await vscode.window.showWarningMessage(
-    'pyOCD not found. Install via uv to enable pyOCD debugging?',
-    'Install', 'Not Now'
+    vscode.l10n.t('pyOCD not found. Install via uv to enable pyOCD debugging?'),
+    installPyocdLabel, vscode.l10n.t('Not Now')
   );
-  if (sel !== 'Install') {
+  if (sel !== installPyocdLabel) {
     logInfo('[pyOCD] user declined installation');
     return undefined;
   }
@@ -3624,7 +3763,7 @@ async function _doFindOrInstallPyocd(extPath: string): Promise<string | null | u
   );
 
   if (!success) {
-    vscode.window.showWarningMessage('pyOCD installation failed. Install manually: pip install pyocd');
+    vscode.window.showWarningMessage(vscode.l10n.t('pyOCD installation failed. Install manually: pip install pyocd'));
     return undefined;
   }
 
@@ -3635,7 +3774,7 @@ async function _doFindOrInstallPyocd(extPath: string): Promise<string | null | u
     const pyocdExe = path.join(uvBinDir2, 'pyocd.exe');
     if (fs.existsSync(pyocdExe)) {
       logInfo(`[pyOCD] installed: ${pyocdExe}`);
-      vscode.window.showInformationMessage('pyOCD installed successfully.');
+      vscode.window.showInformationMessage(vscode.l10n.t('pyOCD installed successfully.'));
       return pyocdExe;
     }
   }
@@ -3852,7 +3991,7 @@ function runAfterBuildSync(wsRoot: string): void {
     }
     if (updatedNames.length) {
       vscode.window.showInformationMessage(
-        `afterbuild bat(s) updated: ${updatedNames.join(', ')} (originals backed up as .bak)`
+        vscode.l10n.t('afterbuild bat(s) updated: {0} (originals backed up as .bak)', updatedNames.join(', '))
       );
     }
   } catch (e: any) { logError(`afterbuildSync failed: ${e?.message ?? e}`); }
@@ -3872,6 +4011,11 @@ async function generateTasksAndLaunchAndMakefile(
   // 寫進 tasks.json / launch.json 的所有 extension 衍生路徑都用這個變數，升版後不需重新產生
   const EXT_ROOT = '${config:ht32.internal.extensionRoot}';
 
+  // ht32-download task def 保留 ${config:...} token，解析在 DownloadPseudoterminal.open() 執行時進行，
+  // 升版後 extensionPath 改變時仍能正確指向新版路徑，不需重新產生 tasks.json
+  const flattenArgs = (args: Array<string | { value: string }>): string[] =>
+    args.map(a => typeof a === 'string' ? a : a.value);
+
   // ----- tasks.json -----
   // 掃描所有 Project*/ 目錄（HT32_VSCode/ 直接下，或舊版 .vscode/ 下），各自產生 Build / Clean task
   const bgParentDir = bgParent(root);
@@ -3890,7 +4034,7 @@ async function generateTasksAndLaunchAndMakefile(
   try {
     let _s: any = {};
     try { _s = JSON.parse(fs.readFileSync(path.join(bgParentDir, '.vscode', 'settings.json'), 'utf8')); } catch {}
-    const _f: string | undefined = _s['ht32.activeProjectFile'];
+    const _f: string | undefined = _s['ht32.internal.activeProjectFile'];
     if (_f) {
       const _p = path.isAbsolute(_f) ? _f : path.join(bgParentDir, _f);
       const _ws = parseHt32vsFile(_p);
@@ -4115,7 +4259,7 @@ async function generateTasksAndLaunchAndMakefile(
     const projSettings = readProjectSettings(path.join(bgParentDir, bg));
 
     if (projSettings.serverType !== 'pyocd') {
-      logInfo(`Using OpenOCD: ${openocdExe}`);
+      logInfo(vscode.l10n.t('Using OpenOCD: {0}', openocdExe));
     }
 
     // Per-project interface cfg
@@ -4184,14 +4328,14 @@ async function generateTasksAndLaunchAndMakefile(
 
     // MCU cfg is required for flash address resolution; report error if missing
     if (bgDevice && !parseMcuCfg(bgDevice, extensionPath)) {
-      const msg = `MCU config not found for "${bgDevice}". Flash programming will not work correctly. Check the device name, or use "HT32: Update Device Packs (Online)" / "HT32: Install Device Pack from File" to add support for this MCU.`;
+      const msg = vscode.l10n.t('MCU config not found for "{0}". Flash programming will not work correctly. Check the device name, or use "HT32: Update Device Packs (Online)" / "HT32: Install Device Pack from File" to add support for this MCU.', bgDevice);
       logError(msg);
       if (isActiveBg) { vscode.window.showErrorMessage(msg); }
     }
 
     // SVD per project
     const bgSvdFile = svdFileSetting ||
-      (bgDevice ? findSvdFile(dfpPathSetting, bgDevice, extensionPath, cfg.get<string[]>('extraPdscPaths', [])) : undefined);
+      (bgDevice ? findSvdFile(dfpPathSetting, bgDevice, extensionPath) : undefined);
     if (!bgSvdFile && bgDevice && isActiveBg) {
       logWarn(`SVD file not found for device: ${bgDevice}. Set ht32.dfpPath or ht32.svdFile.`);
     }
@@ -4248,7 +4392,7 @@ async function generateTasksAndLaunchAndMakefile(
           logWarn(`Extra flash region detected in ${bg} but flashLoaders is explicitly configured (possibly empty) — skipping auto-detect.`);
         } else if (opts?.skipUI) {
           vscode.window.showWarningMessage(
-            `HT32: Extra flash region detected in "${bg}" — run "Generate Build & Debug Config" to configure the flash loader.`
+            vscode.l10n.t('HT32: Extra flash region detected in "{0}" — run "Generate Build & Debug Config" to configure the flash loader.', bg)
           );
         } else {
           const bgSpimFlm = await selectSpimFlm(bgDevice, bgMcu, extensionPath, bgSpimFlmHint, uncoveredAddrs);
@@ -4266,7 +4410,6 @@ async function generateTasksAndLaunchAndMakefile(
     const bgPreConfigCmds = buildHlmPreConfigCmds(
       bgDevice, bgRamOrigin, bgRamLength, extensionPath, undefined, enabledFlashLoaders,
       projSettings.adapterSerial, projSettings.adapterSpeed,
-      cfg.get<string[]>('extraPdscPaths', []),
       projSettings.eraseMode,
       EXT_ROOT
     );
@@ -4469,10 +4612,11 @@ async function generateTasksAndLaunchAndMakefile(
       dlArgs.push(bgElfForDl);
       taskList.push({
         label:          downloadLabel(bg),
-        type:           'shell',
-        command:        { value: pyocdExeForDl, quoting: 'strong' },
-        args:           dlArgs.map(a => ({ value: a, quoting: 'strong' })),
-        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
+        type:           'ht32-download',
+        exe:            pyocdExeForDl,
+        args:           dlArgs,
+        cwd:            '${workspaceFolder}',
+        passthrough:    true,
         problemMatcher: [],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
       });
@@ -4497,10 +4641,11 @@ async function generateTasksAndLaunchAndMakefile(
       else if (projSettings.openocdDebugLevel >= 2) { eraseArgs.push('-v'); }
       taskList.push({
         label:          eraseLabel(bg),
-        type:           'shell',
-        command:        { value: pyocdExeForDl, quoting: 'strong' },
-        args:           eraseArgs.map(a => ({ value: a, quoting: 'strong' })),
-        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
+        type:           'ht32-download',
+        exe:            pyocdExeForDl,
+        args:           eraseArgs,
+        cwd:            '${workspaceFolder}',
+        passthrough:    true,
         problemMatcher: [],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
       });
@@ -4530,12 +4675,12 @@ async function generateTasksAndLaunchAndMakefile(
       );
       taskList.push({
         label:          downloadLabel(bg),
-        type:           'shell',
-        command:        { value: openocdExe, quoting: 'strong' },
-        args:           dlArgs,
+        type:           'ht32-download',
+        exe:            openocdExe,
+        args:           flattenArgs(dlArgs),
+        cwd:            '${workspaceFolder}',
         dependsOn:      ['Kill OpenOCD'],
         dependsOrder:   'sequence',
-        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
         problemMatcher: [],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
       });
@@ -4567,12 +4712,12 @@ async function generateTasksAndLaunchAndMakefile(
       );
       taskList.push({
         label:          eraseLabel(bg),
-        type:           'shell',
-        command:        { value: openocdExe, quoting: 'strong' },
-        args:           eraseOcdArgs,
+        type:           'ht32-download',
+        exe:            openocdExe,
+        args:           flattenArgs(eraseOcdArgs),
+        cwd:            '${workspaceFolder}',
         dependsOn:      ['Kill OpenOCD'],
         dependsOrder:   'sequence',
-        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
         problemMatcher: [],
         presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
       });
@@ -4820,7 +4965,7 @@ async function refreshTasksConfig(tree: ProjectTreeProvider, root: string, conte
   try {
     await generateTasksAndLaunchAndMakefile(root, { regenMakefile: false, skipUI: true });
   } catch (e: any) {
-    vscode.window.showErrorMessage(`HT32: Failed to update build config after ${context} — ${e?.message ?? e}`);
+    vscode.window.showErrorMessage(vscode.l10n.t('HT32: Failed to update build config after {0} — {1}', context, e?.message ?? e));
   }
 }
 
@@ -4861,7 +5006,7 @@ function registerTreeEditCommands(
     const input = await vscode.window.showInputBox({ prompt, placeHolder });
     if (!input?.trim()) return;
     if (input.includes('/')) {
-      vscode.window.showErrorMessage('Group name cannot contain "/". Use the right-click menu to create nested sub-groups.');
+      vscode.window.showErrorMessage(vscode.l10n.t('Group name cannot contain "/". Use the right-click menu to create nested sub-groups.'));
       return;
     }
     const groupKey = parentPath ? `${parentPath}/${input.trim()}` : input.trim();
@@ -4869,7 +5014,7 @@ function registerTreeEditCommands(
     const meta = readProjectMeta(buildGenDir);
     if (!meta) return;
     if (!meta.groups) meta.groups = {};
-    if (meta.groups[groupKey]) { vscode.window.showWarningMessage(`Group "${groupKey}" already exists.`); return; }
+    if (meta.groups[groupKey]) { vscode.window.showWarningMessage(vscode.l10n.t('Group "{0}" already exists.', groupKey)); return; }
     meta.groups[groupKey] = [];
     persistMeta(buildGenDir, meta);
     tree.refresh();
@@ -4933,7 +5078,7 @@ function registerTreeEditCommands(
     const parsed = parseGroupItemId(item.id || '');
     if (!parsed) return;
     if (parsed.isFolder) {
-      vscode.window.showErrorMessage(`Cannot add files to a folder node. Expand "${parsed.groupName}" and right-click a group inside it instead.`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Cannot add files to a folder node. Expand "{0}" and right-click a group inside it instead.', parsed.groupName));
       return;
     }
     const { buildGenDir, groupName } = parsed;
@@ -4953,7 +5098,7 @@ function registerTreeEditCommands(
     const parsed = parseGroupItemId(item.id || '');
     if (!parsed) return;
     if (parsed.isFolder) {
-      vscode.window.showErrorMessage(`Cannot add files to a folder node. Expand "${parsed.groupName}" and right-click a group inside it instead.`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Cannot add files to a folder node. Expand "{0}" and right-click a group inside it instead.', parsed.groupName));
       return;
     }
     const { buildGenDir, groupName } = parsed;
@@ -4995,29 +5140,32 @@ function registerTreeEditCommands(
 
       const meta = readProjectMeta(buildGenDir);
       if (!meta?.groups?.[groupName]) {
-        vscode.window.showErrorMessage(`Cannot remove file: project data may be out of sync. Try reloading the window (Ctrl+Shift+P → Developer: Reload Window).`);
+        vscode.window.showErrorMessage(vscode.l10n.t('Cannot remove file: project data may be out of sync. Try reloading the window (Ctrl+Shift+P → Developer: Reload Window).'));
         return;
       }
 
+      const removeLabel = vscode.l10n.t('Remove from Project');
+      const removeDeleteLabel = vscode.l10n.t('Remove + Delete File');
       const choice = await vscode.window.showWarningMessage(
-        `What do you want to do with "${fileName}"?`,
+        vscode.l10n.t('What do you want to do with "{0}"?', fileName),
         { modal: true },
-        'Remove from Project',
-        'Remove + Delete File'
+        removeLabel,
+        removeDeleteLabel
       );
       if (!choice) return;
 
-      if (choice === 'Remove + Delete File') {
+      if (choice === removeDeleteLabel) {
+        const deleteLabel = vscode.l10n.t('Delete');
         const confirm = await vscode.window.showWarningMessage(
-          `"${fileName}" will be permanently moved to the recycle bin. This cannot be undone.`,
+          vscode.l10n.t('"{0}" will be permanently moved to the recycle bin. This cannot be undone.', fileName),
           { modal: true },
-          'Delete'
+          deleteLabel
         );
-        if (confirm !== 'Delete') return;
+        if (confirm !== deleteLabel) return;
         try {
           await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { useTrash: true });
         } catch (e) {
-          vscode.window.showErrorMessage(`Failed to delete "${fileName}": ${e}`);
+          vscode.window.showErrorMessage(vscode.l10n.t('Failed to delete "{0}": {1}', fileName, String(e)));
           return;
         }
       }
@@ -5045,10 +5193,12 @@ function registerTreeEditCommands(
         ? `"${groupName}" (${subCount} sub-group${subCount > 1 ? 's' : ''}, ${totalFiles} file${totalFiles !== 1 ? 's' : ''})`
         : `"${groupName}" (${totalFiles} file${totalFiles !== 1 ? 's' : ''})`;
 
-      const firstOptions: string[] = ['Remove from Project'];
-      if (totalFiles > 0) firstOptions.push('Remove + Delete All Files');
+      const removeFromProjectLabel = vscode.l10n.t('Remove from Project');
+      const removeDeleteAllLabel = vscode.l10n.t('Remove + Delete All Files');
+      const firstOptions: string[] = [removeFromProjectLabel];
+      if (totalFiles > 0) firstOptions.push(removeDeleteAllLabel);
       const choice = await vscode.window.showWarningMessage(
-        `What do you want to do with group ${groupLabel}?`,
+        vscode.l10n.t('What do you want to do with group {0}?', groupLabel),
         { modal: true },
         ...firstOptions
       ) as string | undefined;
@@ -5056,13 +5206,14 @@ function registerTreeEditCommands(
 
       const projectRoot = bgDirToProjectRoot(buildGenDir);
 
-      if (choice === 'Remove + Delete All Files') {
+      if (choice === removeDeleteAllLabel) {
+        const deleteAllLabel = vscode.l10n.t('Delete All');
         const confirm = await vscode.window.showWarningMessage(
-          `All ${totalFiles} file${totalFiles !== 1 ? 's' : ''} in group "${groupName}" will be permanently moved to the recycle bin. This cannot be undone.`,
+          vscode.l10n.t('All {0} file(s) in group "{1}" will be permanently moved to the recycle bin. This cannot be undone.', totalFiles, groupName),
           { modal: true },
-          'Delete All'
+          deleteAllLabel
         );
-        if (confirm !== 'Delete All') return;
+        if (confirm !== deleteAllLabel) return;
 
         for (const key of affectedKeys) {
           for (const f of (meta.groups[key] ?? [])) {
@@ -5103,7 +5254,7 @@ function registerTreeEditCommands(
     const bgName = path.basename(bgDir);
     const bgParentDir = path.dirname(bgDir);
     let ht32vsName = '';
-    try { ht32vsName = JSON.parse(fs.readFileSync(path.join(bgParentDir, '.vscode', 'settings.json'), 'utf8'))['ht32.activeProjectFile'] ?? ''; } catch {}
+    try { ht32vsName = JSON.parse(fs.readFileSync(path.join(bgParentDir, '.vscode', 'settings.json'), 'utf8'))['ht32.internal.activeProjectFile'] ?? ''; } catch {}
     if (!ht32vsName) return;
     const ht32vsPath = path.join(bgParentDir, ht32vsName);
     let projects: string[] = [];
@@ -5271,7 +5422,7 @@ function writeOrUpdateProjectFile(bgParentDir: string, bgDirs: string[], project
   if (fs.existsSync(settingsPath)) {
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
   }
-  settings['ht32.activeProjectFile'] = projectName + '.ht32vs';
+  settings['ht32.internal.activeProjectFile'] = projectName + '.ht32vs';
   try {
     fs.mkdirSync(path.join(bgParentDir, '.vscode'), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
@@ -5362,7 +5513,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // If ht32.activeProjectFile is set, read the .ht32vs file and filter to listed projects only.
     let wsAllowedDirs: Set<string> | undefined;
     let wsProjectOrder: string[] | undefined;
-    const _activeFile: string | undefined = _settingsData['ht32.activeProjectFile'];
+    const _activeFile: string | undefined = _settingsData['ht32.internal.activeProjectFile'];
     if (_activeFile) {
       const _ht32wsPath = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
       const _ws = parseHt32vsFile(_ht32wsPath);
@@ -5487,7 +5638,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (!this.root) {
       if (this._loading && !el) {
-        const item = new vscode.TreeItem('Loading project...', vscode.TreeItemCollapsibleState.None);
+        const item = new vscode.TreeItem(vscode.l10n.t('Loading project...'), vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('loading~spin');
         return [item];
       }
@@ -5500,7 +5651,7 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       const vscodeDir = path.join(this.root!, '.vscode');
       if (fs.existsSync(vscodeDir)) {
         let _activeFile = '';
-        try { _activeFile = JSON.parse(fs.readFileSync(path.join(computeWsOpenRoot(this.root!), '.vscode', 'settings.json'), 'utf8'))['ht32.activeProjectFile'] || ''; } catch {}
+        try { _activeFile = JSON.parse(fs.readFileSync(path.join(computeWsOpenRoot(this.root!), '.vscode', 'settings.json'), 'utf8'))['ht32.internal.activeProjectFile'] || ''; } catch {}
         const _rootLabel = _activeFile ? path.basename(_activeFile, '.ht32vs') : '.vscode';
         const vscodeItem = new vscode.TreeItem(_rootLabel, vscode.TreeItemCollapsibleState.Expanded);
         vscodeItem.contextValue = _activeFile ? 'vscodeRoot' : 'vscodeRootFolder';
@@ -5865,16 +6016,16 @@ async function _doExtractDfpPacks(extPath: string): Promise<void> {
       const [, packName, version] = m;
       const targetDir = path.join(dfpDir, 'Holtek', packName, version);
       progress.report({ message: `${packFile} (${i + 1}/${pending.length})` });
-      logInfo(`[DFP] Extracting ${packFile} → Holtek/${packName}/${version}/`);
+      logInfo(vscode.l10n.t('[DFP] Extracting {0} → Holtek/{1}/{2}/', packFile, packName, version));
       const tempDir = targetDir + '._tmp';
       try {
         if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
         fs.mkdirSync(tempDir, { recursive: true });
         new AdmZip(path.join(dfpDir, packFile)).extractAllTo(tempDir, true);
         fs.renameSync(tempDir, targetDir);
-        logInfo(`[DFP] Extracted: ${packFile}`);
+        logInfo(vscode.l10n.t('[DFP] Extracted: {0}', packFile));
       } catch (e: any) {
-        logError(`[DFP] Failed to extract ${packFile}: ${e?.message ?? e}`);
+        logError(vscode.l10n.t('[DFP] Failed to extract {0}: {1}', packFile, e?.message ?? e));
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
       }
       progress.report({ increment: 100 / pending.length });
@@ -5902,7 +6053,7 @@ async function updateDevicePacks(extPath: string, showProgress: boolean): Promis
   }
   if (pidxList.length === 0) {
     logError('[DFP] fetchHoltekPidx returned no entries — check Holtek.pidx structure or network.');
-    if (showProgress) vscode.window.showWarningMessage('HT32: Could not retrieve pack list from Holtek. Check Output for details.');
+    if (showProgress) vscode.window.showWarningMessage(vscode.l10n.t('HT32: Could not retrieve pack list from Holtek. Check Output for details.'));
     return false;
   }
 
@@ -5932,20 +6083,20 @@ async function updateDevicePacks(extPath: string, showProgress: boolean): Promis
     const localV = localLatestByName.get(f.name.match(/^Holtek\.(.+?)\.([\d.]+)\.pack$/i)![1]);
     return !localV || semverCmp(f.version, localV) > 0;
   });
-  if (missing.length === 0) { logInfo('[DFP] All packs up to date.'); return true; }
+  if (missing.length === 0) { logInfo(vscode.l10n.t('[DFP] All packs up to date.')); return true; }
 
   const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>) => {
     let succeeded = 0, failed = 0;
     for (let i = 0; i < missing.length; i++) {
       const f = missing[i];
       progress?.report({ message: `${f.name} (${i + 1}/${missing.length})` });
-      logInfo(`[DFP] Downloading ${f.name}…`);
+      logInfo(vscode.l10n.t('[DFP] Downloading {0}…', f.name));
       try {
         await downloadFileTo(f.download_url, path.join(dfpDir, f.name));
-        logInfo(`[DFP] Downloaded ${f.name}`);
+        logInfo(vscode.l10n.t('[DFP] Downloaded {0}', f.name));
         succeeded++;
       } catch (e: any) {
-        logError(`[DFP] Failed to download ${f.name}: ${e?.message ?? e}`);
+        logError(vscode.l10n.t('[DFP] Failed to download {0}: {1}', f.name, e?.message ?? e));
         failed++;
       }
       progress?.report({ increment: 100 / missing.length });
@@ -5953,10 +6104,10 @@ async function updateDevicePacks(extPath: string, showProgress: boolean): Promis
     if (succeeded > 0) {
       await extractDfpPacksIfNeeded(extPath);
       vscode.window.showInformationMessage(
-        `HT32: ${succeeded} pack(s) installed successfully.${failed > 0 ? ` ${failed} failed — see Output.` : ''}`
+        vscode.l10n.t('HT32: {0} pack(s) installed successfully.{1}', succeeded, failed > 0 ? ` ${failed} failed — see Output.` : '')
       );
     } else if (failed > 0) {
-      vscode.window.showWarningMessage(`HT32: All ${failed} pack download(s) failed. Check Output for details.`);
+      vscode.window.showWarningMessage(vscode.l10n.t('HT32: All {0} pack download(s) failed. Check Output for details.', failed));
     }
     return succeeded > 0;
   };

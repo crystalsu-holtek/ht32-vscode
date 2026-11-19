@@ -5,6 +5,7 @@
   "version": "0.3.3",
   "publisher": "holtek",
   "icon": "icons/ht32.png",
+  "l10n": "./l10n",
   "engines": {
     "vscode": "^1.106.3"
   },
@@ -266,6 +267,47 @@
         "title": "Refresh Project Tree"
       }
     ],
+    "configuration": {
+      "title": "HT32 VS Code Extension (V0.3.3)",
+      "properties": {
+        "ht32.internal.activeProjectFile": {
+          "type": "string",
+          "scope": "resource",
+          "default": "",
+          "markdownDescription": "%ht32.config.activeProjectFile%"
+        },
+        "ht32.internal.extensionRoot": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%ht32.config.extensionRoot%"
+        },
+        "ht32.gccPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%ht32.config.gccPath%"
+        },
+        "ht32.openocdPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%ht32.config.openocdPath%"
+        },
+        "ht32.makePath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%ht32.config.makePath%"
+        },
+        "ht32.buildBeforeDebug": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "markdownDescription": "%ht32.config.buildBeforeDebug%"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -279,11 +321,11 @@
       "ht32Assistant": [
         {
           "id": "ht32ProjectView",
-          "name": "PROJECTS"
+          "name": "%ht32.view.projects%"
         },
         {
           "id": "ht32RecentView",
-          "name": "RECENT PROJECTS",
+          "name": "%ht32.view.recentProjects%",
           "when": "ht32.hasRecent && !ht32.hasProject"
         }
       ],
@@ -479,6 +521,16 @@
           "args":      { "type": "array", "items": { "type": "string" }, "description": "make arguments" },
           "extraPath": { "type": "array", "items": { "type": "string" }, "description": "Directories to prepend to PATH" }
         }
+      },
+      {
+        "type": "ht32-download",
+        "required": ["exe", "cwd"],
+        "properties": {
+          "exe":         { "type": "string",                            "description": "Full path to executable (openocd or pyocd)" },
+          "cwd":         { "type": "string",                            "description": "Working directory (workspace root)" },
+          "args":        { "type": "array", "items": { "type": "string" }, "description": "Command arguments" },
+          "passthrough": { "type": "boolean",                           "description": "Pass output through unchanged (for tools with their own ANSI coloring, e.g. pyocd)" }
+        }
       }
     ],
     "jsonValidation": [
@@ -487,225 +539,6 @@
         "url": "./schemas/ht32vs.schema.json"
       }
     ],
-    "configuration": {
-      "title": "Holtek HT32 VS Code Extension",
-      "properties": {
-        "ht32.internal.extensionRoot": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "markdownDescription": "*(Managed automatically — do not edit manually.)* Absolute path to the installed extension directory. Updated on each activation to reflect the current version, so that generated tasks.json / launch.json remain valid after extension updates."
-        },
-        "ht32.activeProjectFile": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Active .ht32vs project file (relative to HT32_VSCode/). Controls which projects are shown in the TreeView."
-        },
-        "ht32.gccPath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Path to arm-none-eabi-gcc. Leave empty to auto-detect."
-        },
-        "ht32.makePath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Path to make. Leave empty to auto-detect."
-        },
-        "ht32.optimizationLevel": {
-          "type": "string",
-          "default": "Os",
-          "enum": [
-            "O0",
-            "O1",
-            "O2",
-            "O3",
-            "Os",
-            "Og"
-          ],
-          "enumDescriptions": [
-            "No optimization (fastest rebuild)",
-            "Basic optimization",
-            "Balanced optimization (recommended)",
-            "Maximum optimization",
-            "Optimize for size",
-            "Optimize for debugging experience"
-          ],
-          "description": "Compiler optimization level (-O flag)."
-        },
-        "ht32.floatAbi": {
-          "type": "string",
-          "default": "soft",
-          "enum": [
-            "soft",
-            "softfp",
-            "hard"
-          ],
-          "enumDescriptions": [
-            "Software FP (required for M0/M0+/M3)",
-            "Software ABI with hardware FP instructions",
-            "Hardware FP ABI (M4F/M7 only)"
-          ],
-          "description": "Floating-point ABI (-mfloat-abi). Must match all linked libraries."
-        },
-        "ht32.fpu": {
-          "type": "string",
-          "default": "none",
-          "enum": [
-            "none",
-            "fpv4-sp-d16",
-            "fpv5-sp-d16",
-            "fpv5-d16"
-          ],
-          "enumDescriptions": [
-            "No FPU (M0/M0+/M3)",
-            "Cortex-M4F single-precision",
-            "Cortex-M7 single-precision",
-            "Cortex-M7 double-precision"
-          ],
-          "description": "FPU type (-mfpu). Only applies when Float ABI is softfp or hard."
-        },
-        "ht32.specs": {
-          "type": "string",
-          "default": "nano",
-          "enum": [
-            "nano",
-            "standard",
-            "nosys"
-          ],
-          "enumDescriptions": [
-            "newlib-nano + nosys (smallest, recommended for MCU)",
-            "Full newlib",
-            "nosys only (no nano)"
-          ],
-          "description": "C runtime library (--specs)."
-        },
-        "ht32.debugInterface": {
-          "type": "string",
-          "default": "e-Link32 Pro",
-          "enum": [
-            "e-Link32 Pro",
-            "e-Link32 Lite",
-            "ST-Link",
-            "J-Link"
-          ],
-          "description": "Debug probe interface used by OpenOCD."
-        },
-        "ht32.openocdPath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "OpenOCD path override. Leave empty to use bundled OpenOCD."
-        },
-        "ht32.buildBeforeDebug": {
-          "type": "boolean",
-          "default": true,
-          "scope": "machine",
-          "description": "When false, F5 flashes and starts the debugger without rebuilding."
-        },
-        "ht32.dfpPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to HT32 device pack root. Used to auto-locate SVD files for peripheral register view."
-        },
-        "ht32.svdFile": {
-          "type": "string",
-          "default": "",
-          "description": "SVD file path for peripheral register view. Leave empty to auto-detect."
-        },
-        "ht32.extraCFlags": {
-          "type": "string",
-          "default": "",
-          "description": "Extra flags appended to CFLAGS (e.g. -flto -DDEBUG)."
-        },
-        "ht32.extraLDFlags": {
-          "type": "string",
-          "default": "",
-          "description": "Extra flags appended to LDFLAGS (e.g. -u _printf_float)."
-        },
-        "ht32.eraseMode": {
-          "type": "string",
-          "default": "erase_sector",
-          "enum": [
-            "erase_sector",
-            "erase_chip",
-            "none"
-          ],
-          "enumDescriptions": [
-            "Erase Sectors — only erases sectors being programmed",
-            "Erase Full Chip (default) — erases entire flash before programming",
-            "Do Not Erase — skip erase step"
-          ],
-          "description": "Flash erase behavior when downloading firmware to the device."
-        },
-        "ht32.openocdDebugLevel": {
-          "type": "number",
-          "default": 0,
-          "enum": [
-            0,
-            1,
-            2,
-            3
-          ],
-          "enumDescriptions": [
-            "Off (default)",
-            "Error + Warn",
-            "Info (recommended for troubleshooting)",
-            "Debug (very verbose)"
-          ],
-          "description": "OpenOCD verbosity level. Increase when flash download fails."
-        },
-        "ht32.spimLoader": {
-          "type": "string",
-          "default": "",
-          "description": "External SPI flash loader override. Leave empty for auto-detection."
-        },
-        "ht32.extraPdscPaths": {
-          "type": "array",
-          "default": [],
-          "scope": "machine",
-          "description": "Additional PDSC file paths (e.g. pre-release device packs). Searched before the bundled HT32_DFP.",
-          "items": {
-            "type": "string"
-          }
-        },
-        "ht32.flashLoaders": {
-          "type": "array",
-          "default": [],
-          "scope": "resource",
-          "description": "Additional external flash loaders (e.g. SPI flash). When non-empty, overrides auto-detection.",
-          "items": {
-            "type": "object",
-            "required": [
-              "hlm",
-              "start",
-              "end"
-            ],
-            "properties": {
-              "hlm": {
-                "type": "string",
-                "description": "Flash loader filename"
-              },
-              "start": {
-                "type": "string",
-                "description": "Flash start address (hex, e.g. 0x08400000)"
-              },
-              "end": {
-                "type": "string",
-                "description": "Flash end address (hex, e.g. 0x093FFFFF)"
-              },
-              "enabled": {
-                "type": "boolean",
-                "default": true,
-                "description": "Enable or disable this loader"
-              }
-            }
-          }
-        }
-      }
-    },
     "keybindings": [
       {
         "command": "ht32.treeDelete",
@@ -736,17 +569,17 @@
     "viewsWelcome": [
       {
         "view": "ht32ProjectView",
-        "contents": "[Create Project](command:ht32.createProject)\n[Open Project](command:ht32.openProject)\n\n[View README](command:ht32.openReadme)\n",
+        "contents": "%ht32.viewsWelcome.start%",
         "when": "!ht32.hasProject"
       },
       {
         "view": "ht32ProjectView",
-        "contents": "Convert Project\n\n[Convert a uVision Project](command:ht32.convertUvision)\n[Convert HT32-IDE Projects](command:ht32.convertHt32Ide)\n",
+        "contents": "%ht32.viewsWelcome.convert%",
         "when": "!ht32.hasProject"
       },
       {
         "view": "ht32ProjectView",
-        "contents": "Updates\n\n[Online Update (Extension)](command:ht32.updateFromMarketplace)\n[Install from VSIX](command:ht32.installFromVsix)\n\n[Online Update (Device Packs)](command:ht32.updateDevicePacks)\n[Install from Pack Files](command:ht32.installPackFile)\n",
+        "contents": "%ht32.viewsWelcome.updates%",
         "when": "!ht32.hasProject"
       }
     ]
