@@ -1326,9 +1326,10 @@ const BG_BASE_OLD = 'build-gen';   // kept for sort priority in existing old-lay
 
 /** bg dir → config name suffix（與 generateTasksAndLaunchAndMakefile 內的 bgSuffix 邏輯相同） */
 function bgDirSuffix(dir: string): string {
-  const m = dir.match(/^(?:Project_|build-gen-)(\w+)$/);
+  const m = dir.match(/^(?:Project_|build-gen-)(\w+)$/i);
   if (m) return m[1].toUpperCase();
-  if (dir === BG_BASE || dir === BG_BASE_OLD) return '';
+  const dirLc = dir.toLowerCase();
+  if (dirLc === BG_BASE.toLowerCase() || dirLc === BG_BASE_OLD.toLowerCase()) return '';
   return dir.toUpperCase();
 }
 

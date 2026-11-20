@@ -419,7 +419,7 @@ export function openCreateProjectPanel(
   if (createProjectPanel) { createProjectPanel.reveal(); return; }
 
   createProjectPanel = vscode.window.createWebviewPanel(
-    'ht32CreateProject', 'Create HT32 Project',
+    'ht32CreateProject', vscode.l10n.t('Create HT32 Project'),
     vscode.ViewColumn.One,
     { enableScripts: true, retainContextWhenHidden: true }
   );
@@ -436,7 +436,7 @@ export function openCreateProjectPanel(
           ? vscode.Uri.file(currentFwlib) : undefined;
         const uris = await vscode.window.showOpenDialog({
           canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
-          openLabel: 'Select FWLib Root', defaultUri,
+          openLabel: vscode.l10n.t('Select FWLib Root'), defaultUri,
         });
         if (!uris?.length) return;
         const p = uris[0].fsPath;
@@ -448,7 +448,7 @@ export function openCreateProjectPanel(
       case 'fwlibChanged': {
         const fwlibPath = msg.path as string;
         if (fwlibPath && !fs.existsSync(fwlibPath)) {
-          createProjectPanel?.webview.postMessage({ type: 'fwlibError', message: `Directory not found: ${fwlibPath}` });
+          createProjectPanel?.webview.postMessage({ type: 'fwlibError', message: vscode.l10n.t('Directory not found: {0}', fwlibPath) });
           const stored = ctx.globalState.get<FwlibStoredEntry[]>(FWLIB_PATHS_KEY) ?? [];
           await ctx.globalState.update(FWLIB_PATHS_KEY, stored.filter(e => e.fwlibPath !== fwlibPath));
           createProjectPanel?.webview.postMessage({ type: 'recentRemoved', path: fwlibPath });
@@ -466,7 +466,7 @@ export function openCreateProjectPanel(
           : defaultFolder ? vscode.Uri.file(defaultFolder) : vscode.workspace.workspaceFolders?.[0]?.uri;
         const uris = await vscode.window.showOpenDialog({
           canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
-          openLabel: 'Select Project Folder', defaultUri,
+          openLabel: vscode.l10n.t('Select Project Folder'), defaultUri,
         });
         if (!uris?.length) return;
         createProjectPanel?.webview.postMessage({ type: 'folderResolved', path: uris[0].fsPath });
@@ -518,7 +518,7 @@ export function openCreateProjectPanel(
     if (!series) {
       createProjectPanel?.webview.postMessage({
         type: 'mcuList', series: null, mcus: [],
-        error: `Cannot detect FWLib series in "${path.basename(fwlibPath)}"`,
+        error: vscode.l10n.t('Cannot detect FWLib series in "{0}"', path.basename(fwlibPath)),
       });
       return;
     }
@@ -538,6 +538,39 @@ function buildCreateProjectHtml(stored: FwlibStoredEntry[], defaultFolder: strin
   const storedJson = JSON.stringify(stored.map(e => ({ path: e.fwlibPath, label: e.label })));
   const defaultFolderJson = JSON.stringify(defaultFolder);
   const lockedFolderJson  = JSON.stringify(lockedFolder ?? null);
+
+  const s = {
+    title:           vscode.l10n.t('Create HT32 Project'),
+    subtitle:        vscode.l10n.t('Generate a new HT32 project with Makefile and VS Code build/debug configuration.'),
+    secFwlib:        vscode.l10n.t('FWLib'),
+    lblFwlibPath:    vscode.l10n.t('FWLib Root Path'),
+    phFwlibPath:     vscode.l10n.t('Path to HT32 FWLib root…'),
+    browse:          vscode.l10n.t('Browse…'),
+    recent:          vscode.l10n.t('Recent'),
+    secMcu:          vscode.l10n.t('MCU'),
+    secProject:      vscode.l10n.t('Project'),
+    lblOutputType:   vscode.l10n.t('Output Type'),
+    execElf:         vscode.l10n.t('Executable (.elf)'),
+    libA:            vscode.l10n.t('Library (.a)'),
+    lblProjectName:  vscode.l10n.t('Project Name'),
+    phProjectName:   vscode.l10n.t('e.g. Project_52352'),
+    hintProjectName: vscode.l10n.t('Used for ELF/HEX filename. Allowed: letters, digits, _ - .'),
+    lblFolder:       vscode.l10n.t('Project Folder'),
+    phFolder:        vscode.l10n.t('Select folder…'),
+    generate:        vscode.l10n.t('Generate'),
+    cancel:          vscode.l10n.t('Cancel'),
+    generating:      vscode.l10n.t('Generating…'),
+    selectFwFirst:   vscode.l10n.t('— Select FWLib first —'),
+    typeToSelect:    vscode.l10n.t('Type to select…'),
+    errorPH:         vscode.l10n.t('— Error —'),
+  };
+  const stringsJson = JSON.stringify({
+    generate:      s.generate,
+    generating:    s.generating,
+    selectFwFirst: s.selectFwFirst,
+    typeToSelect:  s.typeToSelect,
+    errorPH:       s.errorPH,
+  }).replace(/<\/script>/gi, '<\\/script>');
 
   const recentRows = stored.map((e, i) => `
     <div class="recent-item" onclick="selectRecent(${i})" title="${escHtml(e.fwlibPath)}">
@@ -645,31 +678,31 @@ function buildCreateProjectHtml(stored: FwlibStoredEntry[], defaultFolder: strin
 </style>
 </head>
 <body>
-<h1>Create HT32 Project</h1>
-<p class="hint" style="margin:0 0 4px">Generate a new HT32 project with Makefile and VS Code build/debug configuration.</p>
+<h1>${escHtml(s.title)}</h1>
+<p class="hint" style="margin:0 0 4px">${escHtml(s.subtitle)}</p>
 
 <div id="errorBox"></div>
 
-<h2>FWLib</h2>
+<h2>${escHtml(s.secFwlib)}</h2>
 <div class="row">
-  <label class="field">FWLib Root Path</label>
+  <label class="field">${escHtml(s.lblFwlibPath)}</label>
   <div class="flex">
-    <input type="text" id="fwlibPath" placeholder="Path to HT32 FWLib root…" oninput="onFwlibInput()">
-    <button class="btn-secondary" onclick="browseFwlib()">Browse…</button>
+    <input type="text" id="fwlibPath" placeholder="${escHtml(s.phFwlibPath)}" oninput="onFwlibInput()">
+    <button class="btn-secondary" onclick="browseFwlib()">${escHtml(s.browse)}</button>
   </div>
   <div id="seriesBadge"></div>
   <div id="fwlibErrorMsg" style="display:none;color:var(--vscode-inputValidation-errorForeground);font-size:0.85em;margin-top:2px;"></div>
 </div>
 ${stored.length > 0 ? `<div class="row">
-  <span class="hint">Recent</span>
+  <span class="hint">${escHtml(s.recent)}</span>
   <div id="recentList" class="recent-list">${recentRows}</div>
 </div>` : ''}
 
-<h2>MCU</h2>
+<h2>${escHtml(s.secMcu)}</h2>
 <div class="row">
   <div class="mcu-combo">
     <input type="text" id="mcuInput" disabled autocomplete="off"
-      placeholder="— Select FWLib first —"
+      placeholder="${escHtml(s.selectFwFirst)}"
       oninput="onMcuInput()" onfocus="onMcuFocus()" onblur="onMcuBlur()" onkeydown="onMcuKey(event)">
     <button type="button" id="mcuArrow" disabled tabindex="-1"
       onmousedown="event.preventDefault();document.getElementById('mcuInput').focus();onMcuFocus();"
@@ -678,30 +711,30 @@ ${stored.length > 0 ? `<div class="row">
   </div>
 </div>
 
-<h2>Project</h2>
+<h2>${escHtml(s.secProject)}</h2>
 <div class="row">
-  <label class="field">Output Type</label>
+  <label class="field">${escHtml(s.lblOutputType)}</label>
   <div class="radio-group">
-    <label><input type="radio" name="outputType" value="app" checked onchange="checkReady()"> Executable (.elf)</label>
-    <label><input type="radio" name="outputType" value="lib" onchange="checkReady()"> Library (.a)</label>
+    <label><input type="radio" name="outputType" value="app" checked onchange="checkReady()"> ${escHtml(s.execElf)}</label>
+    <label><input type="radio" name="outputType" value="lib" onchange="checkReady()"> ${escHtml(s.libA)}</label>
   </div>
 </div>
 <div class="row">
-  <label class="field">Project Name</label>
-  <input type="text" id="projectName" placeholder="e.g. Project_52352" oninput="onNameInput(this)">
-  <p class="hint" style="margin-top:3px">Used for ELF/HEX filename. Allowed: letters, digits, _ - .</p>
+  <label class="field">${escHtml(s.lblProjectName)}</label>
+  <input type="text" id="projectName" placeholder="${escHtml(s.phProjectName)}" oninput="onNameInput(this)">
+  <p class="hint" style="margin-top:3px">${escHtml(s.hintProjectName)}</p>
 </div>
 <div class="row">
-  <label class="field">Project Folder</label>
+  <label class="field">${escHtml(s.lblFolder)}</label>
   <div class="flex">
-    <input type="text" id="projectFolder" placeholder="Select folder…" oninput="folderManuallyEdited=true;checkReady()">
-    <button class="btn-secondary" id="browseFolderBtn" onclick="browseFolder()">Browse…</button>
+    <input type="text" id="projectFolder" placeholder="${escHtml(s.phFolder)}" oninput="folderManuallyEdited=true;checkReady()">
+    <button class="btn-secondary" id="browseFolderBtn" onclick="browseFolder()">${escHtml(s.browse)}</button>
   </div>
 </div>
 
 <div class="footer">
-  <button class="btn-primary" id="generateBtn" onclick="generate()" disabled>Generate</button>
-  <button class="btn-secondary" onclick="cancel()">Cancel</button>
+  <button class="btn-primary" id="generateBtn" onclick="generate()" disabled>${escHtml(s.generate)}</button>
+  <button class="btn-secondary" onclick="cancel()">${escHtml(s.cancel)}</button>
 </div>
 
 <script>
@@ -709,6 +742,7 @@ const vscode = acquireVsCodeApi();
 const STORED = ${storedJson};
 const DEFAULT_FOLDER = ${defaultFolderJson};
 const LOCKED_FOLDER  = ${lockedFolderJson};
+const STRINGS = ${stringsJson};
 let currentSeries = null;
 let currentMcus   = [];
 let mcuSelectedValue = '';
@@ -783,13 +817,13 @@ function updateMcuList(series, mcus, error) {
 
   if (error) {
     badge.innerHTML = '<span class="badge err">' + e(error) + '</span>';
-    inp.placeholder = '— Error —';
+    inp.placeholder = STRINGS.errorPH;
     inp.value = ''; inp.disabled = true;
     document.getElementById('mcuArrow').disabled = true;
     mcuSelectedValue = '';
   } else if (!series) {
     badge.innerHTML = '';
-    inp.placeholder = '— Select FWLib first —';
+    inp.placeholder = STRINGS.selectFwFirst;
     inp.value = ''; inp.disabled = true;
     document.getElementById('mcuArrow').disabled = true;
     mcuSelectedValue = '';
@@ -797,7 +831,7 @@ function updateMcuList(series, mcus, error) {
     badge.innerHTML = '<span class="badge">' + e(series) + '</span>';
     inp.disabled = false;
     document.getElementById('mcuArrow').disabled = false;
-    inp.placeholder = 'Type to select…';
+    inp.placeholder = STRINGS.typeToSelect;
     if (currentMcus.length > 0) {
       setMcuValue(currentMcus[0].displayName);
     } else {
@@ -939,7 +973,7 @@ function generate() {
   const outputType    = document.querySelector('input[name="outputType"]:checked')?.value || 'app';
   const btn = document.getElementById('generateBtn');
   btn.disabled = true;
-  btn.textContent = 'Generating…';
+  btn.textContent = STRINGS.generating;
   document.getElementById('errorBox').style.display = 'none';
   vscode.postMessage({ type: 'generate', fwlibPath, series: currentSeries,
     chipSuffix, displayName, projectName, projectFolder, outputType, usePrintf: false });
@@ -979,14 +1013,14 @@ window.addEventListener('message', ev => {
   } else if (msg.type === 'resetBtn') {
     const btn = document.getElementById('generateBtn');
     btn.disabled = false;
-    btn.textContent = 'Generate';
+    btn.textContent = STRINGS.generate;
   } else if (msg.type === 'error') {
     const box = document.getElementById('errorBox');
     box.textContent = msg.message;
     box.style.display = 'block';
     const btn = document.getElementById('generateBtn');
     btn.disabled = false;
-    btn.textContent = 'Generate';
+    btn.textContent = STRINGS.generate;
   }
 });
 </script>
