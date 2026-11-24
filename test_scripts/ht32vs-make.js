@@ -17,6 +17,7 @@ Module.prototype.require = function (id) {
     },
     workspace: { getConfiguration: () => ({ get: (_k, d) => d, inspect: () => undefined }) },
     ProgressLocation: { Notification: 15 },
+    l10n: { t: (s) => s },
   };
   return _origReq.apply(this, arguments);
 };

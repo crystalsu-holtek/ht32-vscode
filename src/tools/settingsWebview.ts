@@ -348,7 +348,7 @@ export async function scanAdapters(debugInterface: string): Promise<Array<{ seri
 }
 
 /** Locate pyocd without prompting to install. Returns the exe path, or undefined if not found. */
-async function findPyocdExeQuick(extPath: string): Promise<string | undefined> {
+export async function findPyocdExeQuick(extPath: string): Promise<string | undefined> {
   const inPath = await new Promise<boolean>(resolve => {
     const proc = spawn('pyocd', ['--version'], { timeout: 3000 });
     proc.on('close', (code) => resolve(code === 0));
@@ -396,7 +396,7 @@ export async function scanPyocdProbes(pyocdExe: string): Promise<Array<{ serial:
 /** Run OpenOCD briefly to read adapter/target info.
  *  Native (JLink/CMSIS-DAP): inline swj_newdap + dap create + dap info.
  *  HLA (ST-Link): transport hla_swd + HLMm0x.cfg + targets (dap info unsupported for HLA). */
-async function runOpenocdProbe(exe: string, ifaceCfg: string, serial: string, speed: string): Promise<string> {
+export async function runOpenocdProbe(exe: string, ifaceCfg: string, serial: string, speed: string): Promise<string> {
   const scriptsRoot = path.dirname(path.dirname(ifaceCfg));
   const isHla = ifaceCfg.toLowerCase().includes('stlink');
   const targetCfg = path.join(scriptsRoot, 'target', 'HLMm0x.cfg');
@@ -485,12 +485,14 @@ async function runOpenocdProbe(exe: string, ifaceCfg: string, serial: string, sp
   });
 }
 
-/** Map debug interface name to interface cfg path (mirrors selectInterfaceCfg in main extension) */
-function selectIfaceCfgForProbe(debugInterface: string, openocdRoot: string): string {
+/** Map debug interface name to interface cfg path. Shared by settings panel and adapter-ready check. */
+export function selectIfaceCfgForProbe(debugInterface: string, openocdRoot: string): string {
   switch (debugInterface) {
-    case 'ST-Link': return `${openocdRoot}/scripts/interface/stlink.cfg`;
-    case 'J-Link':  return `${openocdRoot}/scripts/interface/jlink.cfg`;
-    default:        return `${openocdRoot}/scripts/interface/cmsis-dap.cfg`;
+    case 'ST-Link':       return `${openocdRoot}/scripts/interface/stlink.cfg`;
+    case 'J-Link':        return `${openocdRoot}/scripts/interface/jlink.cfg`;
+    case 'e-Link32 Pro':
+    case 'e-Link32 Lite': return `${openocdRoot}/scripts/interface/htlink.cfg`;
+    default:              return `${openocdRoot}/scripts/interface/cmsis-dap.cfg`;
   }
 }
 
@@ -707,10 +709,10 @@ function buildHtml(
   linkerScriptsByBg: Record<string, string[]> = {},
   detectedGccPath?: string
 ): string {
-  const flmsJson    = JSON.stringify(availableFlms);
-  const addrMapJson = JSON.stringify(flmAddrMap);
-  const bgNamesJson = JSON.stringify(bgDirs.map(b => b.name));
-  const bgDirsJson  = JSON.stringify(Object.fromEntries(bgDirs.map(b => [b.name, b.dir])));
+  const flmsJson    = escScript(JSON.stringify(availableFlms));
+  const addrMapJson = escScript(JSON.stringify(flmAddrMap));
+  const bgNamesJson = escScript(JSON.stringify(bgDirs.map(b => b.name)));
+  const bgDirsJson  = escScript(JSON.stringify(Object.fromEntries(bgDirs.map(b => [b.name, b.dir]))));
 
   const commonSection = buildCommonSection(machine, detectedGccPath);
 
@@ -1845,4 +1847,7 @@ function loaderRowHtml(l: FlashLoaderEntry, availableFlms: string[], _prefix: st
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+function escScript(s: string): string {
+  return s.replace(/<\/script>/gi, '<\\/script>');
 }

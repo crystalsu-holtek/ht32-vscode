@@ -39,6 +39,7 @@ const vscodeMock = {
   Uri: { file: p => ({ fsPath: p, toString: () => p }) },
   ProgressLocation: { Notification: 15 },
   ExtensionContext: {},
+  l10n: { t: (s) => s },
 };
 const Module = require('module');
 const _origReq = Module.prototype.require;

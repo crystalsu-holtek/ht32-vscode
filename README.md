@@ -421,6 +421,107 @@ Use this when the target board is already running and you don't need to reflash.
 
 <br>
 
+## Cortex-Debug Operation Guide
+
+Cortex-Debug is the debug interface used by this extension. It provides breakpoint management, variable watching, memory inspection, and peripheral register viewing.
+
+### Debug Toolbar
+
+A floating toolbar appears at the top of the screen when a debug session is active:
+
+| Button | Shortcut | Description |
+|--------|----------|-------------|
+| Continue / Pause | F5 | When paused: Continue execution to the next breakpoint. When running: Pause execution. **Same button, toggles state** |
+| Step Over | F10 | Execute the next line without entering called functions |
+| Step Into | F11 | Step into the next function call |
+| Step Out | Shift+F11 | Step out of the current function and return to the caller |
+| Restart | — | Re-flash and restart the debug session from the beginning |
+| Stop | Shift+F5 | Terminate the debug session |
+
+---
+
+### Breakpoints
+
+- **Click** on the left of a line number to set a breakpoint (red dot); click again to remove it
+- **Conditional breakpoint**: Right-click the red dot → **Edit Breakpoint** to enter a trigger condition (e.g. `i == 10`)
+
+---
+
+### Watch
+
+The **WATCH** section in the Run & Debug panel lets you monitor any expression:
+
+1. Click **＋**
+2. Enter a variable name or C expression (e.g. `myVar`, `buf[0]`, `*(uint32_t*)0x20000000`)
+3. Values update automatically each time the debugger halts
+
+---
+
+### Memory View
+
+Click **＋** in the **MEMORY** panel to add a memory window. Two prompts appear in sequence:
+
+| Step | Prompt | Input | Example |
+|------|--------|-------|---------|
+| ① | Enter address to watch | Start address (hex) | `0x20000000` |
+| ② | Enter a hex/dec constant or a C-expression for size | Number of bytes to display | `256`, `0x100`, `sizeof(myBuf)` |
+
+> **Note:** The second prompt asks for the **display length** (how many bytes to show), not a second address.  
+> You can enter a decimal (`256`), hex (`0x100`), or a C-expression (`sizeof(myBuf)`, `MY_BUF_SIZE`) — Cortex-Debug evaluates the expression via the debugger to determine the display range.
+
+**Switch display format:** Use the toolbar above the Memory View to change data width:
+
+| Button | Format | Description |
+|--------|--------|-------------|
+| `1` | Byte | 8-bit per cell |
+| `2` | HWord | 16-bit per cell |
+| `4` | Word | 32-bit per cell |
+| `8` | DWord | 64-bit per cell |
+
+**Remove a memory window:** Click the **×** next to the Memory View title.
+
+---
+
+### Peripherals
+
+The **PERIPHERALS** panel lists all MCU peripheral registers based on the SVD file. Expand any IP node to read its register values in real time.
+
+#### Read failure when IP clock is not yet enabled
+
+When you expand an IP node, Cortex-Debug immediately tries to read all of its registers. If the firmware has not yet enabled the clock for that IP, the hardware denies the access and the Output panel shows:
+
+```
+Error: Failed to read memory at 0x4xxxxxxx
+```
+
+**Cause:** Every HT32 IP has an independent APB/AHB clock gate. While the clock is off, the memory-mapped registers of that IP cannot be read.
+
+**How to handle it:**
+
+| Situation | Action |
+|-----------|--------|
+| Firmware has not yet reached clock initialization | Let execution pass `RCU_APBxPeripClockConfig(RCU_APBx_Periph_XXX, ENABLE)` before expanding the node |
+| You don't need to inspect this IP | **Collapse** the node to stop the repeated error messages |
+| You want to inspect the IP from the start | Enable the IP clock at the top of `main()`, or set a breakpoint at the clock init call and expand the node after halting there |
+
+> This is normal hardware behavior — it is not a bug in the debugger or the extension.
+
+---
+
+### Call Stack
+
+The **CALL STACK** panel shows the current function call chain. Click any frame to jump to that location in the editor and inspect its local variables.
+
+---
+
+### Disassembly
+
+Right-click in the code editor → **Open Disassembly View** to see the corresponding assembly instructions. Useful when stepping at the instruction level with Step Into.
+
+---
+
+<br>
+
 ## Stack Usage Analysis
 
 The **HT32 Stack Usage Analysis** panel (in the Run & Debug view) updates automatically every time the debugger halts (breakpoint, step, manual pause). It is the GCC/OpenOCD equivalent of Keil's stack analysis window.

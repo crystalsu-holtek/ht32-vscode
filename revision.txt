@@ -6,15 +6,16 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（11）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+  新功能（12）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
                TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
                keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
                Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
                Add/Delete/Reorder project 自動更新 tasks.json（refreshTasksConfig）、
                Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）、
                Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）、
-               Erase Flash（toolbar 新增按鈕，pyocd/OpenOCD 均支援，chip erase）
-  修正（18）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+               Erase Flash（toolbar 新增按鈕，pyocd/OpenOCD 均支援，chip erase）、
+               pyOCD 斷線偵測（電源移除自動彈 modal，支援重新連線或停止除錯）
+  修正（21）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
               Add/Delete project 不再彈工具鏈安裝 UI（skipUI）、
@@ -23,7 +24,10 @@ v0.3.3  (from v0.3.2)
               Build terminal Ctrl+Click 補 OSC 7（修正彈 quick pick 而非跳檔案，含空格路徑修正）、
               runOpenocdProbe 雙 resolve 競爭（settled/done() guard）、
               Build Problems 面板 error 跳轉修正（workspace 外檔案彈 quick pick 而非直接開啟）、
-              Build 按下後啟動加速（task cache 避免每次重掃所有 provider）
+              Build 按下後啟動加速（task cache 避免每次重掃所有 provider）、
+              pickAdapterPanel webview JSON 未轉義（XSS）、
+              queryInfo 越界不回應（webview 永久 loading）、
+              ensureAdapterReady 二重掃描 USB 介面卡
 
 詳細
 新功能
@@ -87,6 +91,19 @@ v0.3.3  (from v0.3.2)
   managed prefixes：--compile-commands-dir= / --query-driver=
 - pyocd.yaml 保留使用者自訂 key（case-insensitive）：
   generatePyocdFiles 過濾 managed key 時雙邊 toLowerCase，避免大小寫不同的 key 重複
+- pyOCD 斷線偵測（電源移除 / SWD 中斷自動通知）：
+  pyocd_user.py did_connect() 掛入 Python logging handler，攔截 pyocd WARNING 層的
+  "No ACK" / "transfer fault" / "transfer error" / "probe error" 等訊息，
+  寫入 signal file（%TEMP%\ht32_pyocd_<hash8>.log），extension 以 fs.watchFile 輪詢偵測；
+  hash8 為 outDir 的 MD5 前 8 碼，不同專案使用不同 signal file，支援同時 debug 兩塊板子；
+  signal file 路徑以 literal string 嵌入 pyocd_user.py（於 generatePyocdFiles 生成時決定），
+  同時寫入 launch.json env.HT32_PYOCD_LOG 供 extension 以 getSignalFile(session) 讀取；
+  偵測到寫入後 300ms grace period（排除 intentional stop）→ handlePyocdDisconnect：
+    modal dialog「Reconnect」/「Stop Debugging」；
+    Reconnect：stopDebugging → 等 terminate（3s timeout）→ 500ms probe release →
+    讀 launch.json → 找 name 中 \bDebug\b→Attach 的 config → startDebugging；
+  session 結束時 fs.unwatchFile 正確清除所有 pyocd session 的 watcher（包含非 active session）；
+  繞過 onDidWriteTerminalData 的 window-focus throttle 問題（window inactive 時嚴重延遲）
 
 - TreeView 統一 Remove/Delete 對話框（Del 鍵 / 右鍵選單）：
   新增 ht32.treeDelete 命令，取代原本分散的 treeRemoveGroup / treeRemoveFile / treeDeleteFile；
@@ -165,6 +182,16 @@ v0.3.3  (from v0.3.2)
   error handler 加入 clearTimeout(killer)，避免 killer 在 error 後繼續觸發；
   修正：原本 error handler 直接呼叫 resolve()，若 Node 同時 fire 'error' + 'close'，
   Promise 被 resolve 兩次（第二次靜默失效但行為不確定）
+- pickAdapterPanel webview JSON 未轉義（XSS）：
+  i18n 與 rows 物件注入 <script> 前補 escScript()（將 </script> 轉義為 <\/script>）；
+  rows 包含使用者 USB 裝置 serial number，若值含 </script> 會提早結束 script block；
+  新增模組層級 escScript() helper（與 settingsWebview.ts、createProject.ts 相同實作）
+- queryInfo 越界時 webview 永久 loading：
+  pickAdapterPanel onDidReceiveMessage queryInfo 分支加入 !sel 防衛；
+  msg.idx 超出 adapters 範圍時回傳 text:'?' 並 return，避免 sel.serial throw
+- ensureAdapterReady 二重掃描 USB 介面卡：
+  scanAdapters() 提升至函式開頭呼叫一次；stored serial 存在時直接用同一結果驗證，
+  serial 過期才 fall through；修正：原本 stored 過期時先後呼叫兩次 scanAdapters()
 
 ================================================================================
 

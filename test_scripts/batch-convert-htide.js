@@ -13,6 +13,9 @@
 // Coverage note: to exercise the Type-3 conversion branch (pure local folder, no <linkedResources>),
 // include at least one Type-3 project in <examples-dir>. STD/49x FWLib examples only cover branches
 // 1 and 2 of computeHt32IdeWsRoot; Type-3 projects (self-contained, no linked resources) cover branch 3.
+// Type-4 (mixed): type-1 file links for Library/User + a real local Startup/ subdirectory with no
+// <link> entry in .project (e.g. HT32IDE/HT32-IDE_VSC_TEST layout). Include such a project to verify
+// that the startup .S file appears in GNU_ARM/ and sources.list after conversion.
 
 'use strict';
 
@@ -27,6 +30,7 @@ Module.prototype.require = function (id) {
       showInformationMessage: () => Promise.resolve(undefined),
     },
     workspace: { getConfiguration: () => ({ get: (_, d) => d }) },
+    l10n: { t: (s) => s },
   };
   return _origReq.apply(this, arguments);
 };

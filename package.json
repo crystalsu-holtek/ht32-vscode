@@ -531,6 +531,15 @@
           "args":        { "type": "array", "items": { "type": "string" }, "description": "Command arguments" },
           "passthrough": { "type": "boolean",                           "description": "Pass output through unchanged (for tools with their own ANSI coloring, e.g. pyocd)" }
         }
+      },
+      {
+        "type": "ht32-postbuild",
+        "required": ["command", "cwd"],
+        "properties": {
+          "command":   { "type": "string",                            "description": "Post-build shell command (e.g. arm-none-eabi-objcopy ...)" },
+          "cwd":       { "type": "string",                            "description": "Working directory (workspace root)" },
+          "extraPath": { "type": "array", "items": { "type": "string" }, "description": "Directories to prepend to PATH" }
+        }
       }
     ],
     "jsonValidation": [

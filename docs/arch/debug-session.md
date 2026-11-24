@@ -138,6 +138,70 @@ conf/Settings.ini [SRAM] → PDSC IRAM1 size → 0x20000（最終 fallback）
 
 ---
 
+### pyOCD 斷線偵測（MCU 電源移除）
+
+**問題背景：**  
+pyocd 在 freerun 時不主動輪詢 SWD，session 不會自動終止。MCU 掉電後 liveWatch 的 `-var-update` 仍持續發送，pyocd 吞掉讀取錯誤、傳回舊值，debug session 看起來正常運作但 MCU 已死。
+
+**偵測機制：**  
+pyocd 在 SWD transfer 失敗時透過 Python logger 輸出 WARNING 訊息（例如 `No ACK received`），這些訊息會出現在 gdb-server terminal。Extension 利用 `pyocd_user.py` 的 `did_connect` hook 在 pyocd 內部掛載一個 logging handler，將符合條件的錯誤訊息寫入 signal file，Extension 再用 `fs.watchFile` 監聽。
+
+**實作細節：**
+
+`pyocd_user.py` `did_connect` 加入（extension 自動產生，路徑在 config 生成時嵌入）：
+```python
+_sig = r"C:/Users/<user>/AppData/Local/Temp/ht32_pyocd_<hash8>.log"  # 嵌入 literal
+class _DCFilter(logging.Filter):
+    def filter(self, r):
+        m = r.getMessage().lower()
+        return any(x in m for x in ["no ack", "transfer fault", "transfer error", "probe error", "cannot step", "core not halted"])
+_h = logging.FileHandler(_sig, mode="a", encoding="utf-8")
+_h.setLevel(logging.WARNING)
+_h.addFilter(_DCFilter())
+logging.getLogger("pyocd").addHandler(_h)
+```
+
+Extension `onDidStartDebugSession`（pyocd session）：
+```typescript
+const sigFile = getSignalFile(session);  // 讀 session.configuration.env.HT32_PYOCD_LOG
+try { fs.writeFileSync(sigFile, '', 'utf8'); } catch {}  // 清空
+fs.unwatchFile(sigFile);  // 防止重複 listener
+fs.watchFile(sigFile, { persistent: false, interval: 300 }, (curr) => {
+  if (curr.mtimeMs <= activePyocdSignalMtime) { return; }
+  activePyocdSignalMtime = curr.mtimeMs;
+  if (disconnectNotifyPending || activePyocdSession?.id !== session.id) { return; }
+  try { if (!fs.readFileSync(sigFile, 'utf8').trim()) { return; } } catch { return; }
+  disconnectNotifyPending = true;
+  // 300 ms grace：排除 intentional stop 造成的 session 終止
+  setTimeout(() => {
+    if (activePyocdSession?.id !== session.id) { return; }
+    handlePyocdDisconnect(session).catch(() => {});
+  }, 300);
+});
+```
+
+`onDidTerminateDebugSession`：`fs.unwatchFile(getSignalFile(session))` 停止 polling（僅對 active session 清除 module-level 狀態）。
+
+**為何不用 `fs.watch`：**  
+Windows 上 `fs.watch` 對跨 process（Python FileHandler）寫入的 temp 檔案不可靠，`fs.watchFile`（polling mode，300ms interval）穩定可偵測。
+
+**Signal file 路徑（per-project）：**  
+`generatePyocdFiles` 在 config 生成時計算 `outDir` 的 MD5 hash 前 8 碼：  
+`ht32_pyocd_<hash8>.log`（例：`ht32_pyocd_3e05f924.log`）。  
+路徑以 literal string 嵌入 `pyocd_user.py`，同時寫入 `launch.json` 的 `env.HT32_PYOCD_LOG`。  
+Extension 透過 `getSignalFile(session)` 讀取 `session.configuration.env.HT32_PYOCD_LOG`，兩端始終指向相同檔案。  
+不同 outDir 的專案 hash 不同，支援多板同時除錯。
+
+**重新連線流程（`handlePyocdDisconnect`）：**
+1. Modal dialog：「MCU 通訊中斷，可能是電源移除或 SWD 連線問題。」  
+   按鈕：「重新連線」/ 「停止除錯」
+2. **重新連線**：`stopDebugging` → 等 terminate（3s timeout）→ 500ms probe release → 讀 `.vscode/launch.json` → 找 `name.replace(/\bDebug\b/, 'Attach')` 的 config → `startDebugging`
+3. **停止除錯**：`stopDebugging`
+
+**OpenOCD 不需要此機制**：OpenOCD 偵測到 SWD 中斷後會自動重連或報錯終止 session，不需要 extension 介入。
+
+---
+
 ### `servertype: "openocd"`
 
 cortex-debug 完全管理 OpenOCD 生命週期。OpenOCD 跑在 cortex-debug 建立的 **gdb-server** terminal 中，

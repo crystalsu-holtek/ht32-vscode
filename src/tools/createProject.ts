@@ -534,10 +534,14 @@ function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function escScript(s: string): string {
+  return s.replace(/<\/script>/gi, '<\\/script>');
+}
+
 function buildCreateProjectHtml(stored: FwlibStoredEntry[], defaultFolder: string, lockedFolder?: string): string {
-  const storedJson = JSON.stringify(stored.map(e => ({ path: e.fwlibPath, label: e.label })));
-  const defaultFolderJson = JSON.stringify(defaultFolder);
-  const lockedFolderJson  = JSON.stringify(lockedFolder ?? null);
+  const storedJson        = escScript(JSON.stringify(stored.map(e => ({ path: e.fwlibPath, label: e.label }))));
+  const defaultFolderJson = escScript(JSON.stringify(defaultFolder));
+  const lockedFolderJson  = escScript(JSON.stringify(lockedFolder ?? null));
 
   const s = {
     title:           vscode.l10n.t('Create HT32 Project'),
@@ -564,13 +568,13 @@ function buildCreateProjectHtml(stored: FwlibStoredEntry[], defaultFolder: strin
     typeToSelect:    vscode.l10n.t('Type to select…'),
     errorPH:         vscode.l10n.t('— Error —'),
   };
-  const stringsJson = JSON.stringify({
+  const stringsJson = escScript(JSON.stringify({
     generate:      s.generate,
     generating:    s.generating,
     selectFwFirst: s.selectFwFirst,
     typeToSelect:  s.typeToSelect,
     errorPH:       s.errorPH,
-  }).replace(/<\/script>/gi, '<\\/script>');
+  }));
 
   const recentRows = stored.map((e, i) => `
     <div class="recent-item" onclick="selectRecent(${i})" title="${escHtml(e.fwlibPath)}">

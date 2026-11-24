@@ -31,6 +31,7 @@ const vscodeMock = {
     getConfiguration: () => ({ get: (k, d) => d, inspect: () => undefined }),
   },
   ProgressLocation: { Notification: 15 },
+  l10n: { t: (s) => s },
 };
 const Module = require('module');
 const _origReq = Module.prototype.require;

@@ -305,13 +305,18 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
   }
 
   // ── Type-2: folder links (shared-library / copy_PARENT style) ────────────
-  // Scan folder links whenever they exist — independent of any type-1 file links.
-  // Projects may mix individually-listed files (type-1) with folder-linked libraries (type-2).
-  // Also scan when there are NO linked resources at all: pure local-folder projects
-  // (e.g. Config/Library/Startup/User as real subdirectories) have no <linkedResources>
-  // in .project, so hasType2Links would be false even though sourceEntries define real dirs.
-  const hasType2Links = links.some(l => String(l.type ?? '') === '2');
-  if ((hasType2Links || links.length === 0) && sourceEntries) {
+  // Eclipse CDT spec: each sourceEntry name either maps to a type-2 folder link in .project,
+  // or (when no link exists) is a real local subdirectory of projectDir.
+  // Groups covered only by individual type-1 file links have their sources already resolved
+  // above and do not need folder scanning — but we must not suppress warnings for entries
+  // that have NEITHER type-1 coverage NOR a resolvable folder (genuinely missing).
+  // Always enter this block when sourceEntries exists so that per-entry logic runs for all
+  // entries — both for folder scanning and for missing-folder diagnostics.
+  const type1GroupNames = new Set(links
+    .filter(l => String(l.type ?? '') === '1')
+    .map(l => String(l.name ?? '').split('/')[0].toLowerCase())
+    .filter(Boolean));
+  if (sourceEntries) {
     // Build variable map from <variableList>
     const variables: any[] = doc?.projectDescription?.variableList?.variable ?? [];
     const variableMap = new Map<string, string>();
@@ -353,9 +358,16 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
     for (const entry of sourceEntries) {
       if (!entry.name) continue;
       const entryKey = entry.name.toLowerCase();
+      const isCoveredByType1 = type1GroupNames.has(entryKey);
+      // Groups covered by type-1 file links have their sources already resolved individually;
+      // skip folder scanning for them to avoid unintended duplicates.
+      // Note: if a group has BOTH type-1 file links AND a type-2 folder link, the type-2 folder
+      // scan is also skipped — files in that folder not individually listed in type-1 links will be
+      // absent from the build. This edge case is not known to occur in real HT32-IDE projects.
+      if (isCoveredByType1) continue;
       let folderAbs: string | undefined = folderLinkMap.get(entryKey);
       if (!folderAbs) {
-        // Not a virtual link — check if it exists as a real sub-directory of projectDir
+        // No type-2 link — check if it exists as a real sub-directory of projectDir.
         const localDir = path.join(projectDir, entry.name);
         if (fs.existsSync(localDir)) folderAbs = localDir.replace(/\\/g, '/');
       }

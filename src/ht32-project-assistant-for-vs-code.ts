@@ -2,11 +2,12 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { exec as cpExec, spawn, ExecException, ExecOptions } from 'child_process';
 import { XMLParser } from 'fast-xml-parser';
 import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles, LOG_WRITE } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
-import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot } from './tools/settingsWebview';
+import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot, selectIfaceCfgForProbe, runOpenocdProbe, findPyocdExeQuick, scanPyocdProbes } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
 import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
@@ -22,6 +23,21 @@ let _recentTree: RecentTreeProvider | undefined;  // set in activate()
 // Debug session tracking — only sessions started via ht32.startDebug are tracked
 let ourDebugStartPending = false;
 const ourDebugSessionIds = new Set<string>();
+
+// pyOCD disconnect detection (per-session flag prevents duplicate dialogs)
+let activePyocdSession: vscode.DebugSession | undefined;
+let disconnectNotifyPending = false;
+let activePyocdSignalMtime = 0;  // last mtime of signal file; non-zero = watching
+const PYOCD_SIGNAL_FILE = path.join(os.tmpdir(), 'ht32_pyocd_disconnect.log');
+
+function getSignalFile(session: vscode.DebugSession): string {
+  return (session.configuration.env as Record<string, string> | undefined)?.HT32_PYOCD_LOG
+    ?? PYOCD_SIGNAL_FILE;
+}
+
+function escScript(s: string): string {
+  return s.replace(/<\/script>/gi, '<\\/script>');
+}
 
 let statusItem: vscode.StatusBarItem;
 let buildRunning = false;
@@ -198,6 +214,67 @@ class DownloadPseudoterminal implements vscode.Pseudoterminal {
   close(): void { this._cancelled = true; this.proc?.kill(); }
 }
 
+/** ====== ht32-postbuild CustomExecution ====== */
+interface Ht32PostBuildTaskDef extends vscode.TaskDefinition {
+  command:    string;
+  cwd:        string;
+  extraPath?: string[];
+}
+
+class PostBuildPseudoterminal implements vscode.Pseudoterminal {
+  private writeEmitter = new vscode.EventEmitter<string>();
+  private closeEmitter = new vscode.EventEmitter<number>();
+  readonly onDidWrite = this.writeEmitter.event;
+  readonly onDidClose = this.closeEmitter.event;
+  private proc?: ReturnType<typeof spawn>;
+  private _cancelled = false;
+
+  constructor(
+    private readonly command:    string,
+    private readonly cwd:        string,
+    private readonly extraPath:  string[] = [],
+  ) {}
+
+  open(_dims: vscode.TerminalDimensions | undefined): void {
+    const wsRoot     = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    const resolvedCwd = this.cwd.replace(RESOLVE_WS_RE, wsRoot);
+    this.writeEmitter.fire(`\x1b]7;${vscode.Uri.file(resolvedCwd).toString()}\x07`);
+    this.writeEmitter.fire(`\x1b[2m${this.command}\x1b[0m\r\n`);
+    let done = false;
+    const splitter = new LineSplitter(raw => this.writeEmitter.fire(raw + '\r\n'));
+    const isWin = process.platform === 'win32';
+    const sep   = isWin ? ';' : ':';
+    const PATH  = this.extraPath.length
+      ? this.extraPath.join(sep) + sep + (process.env['PATH'] ?? '')
+      : process.env['PATH'] ?? '';
+    this.proc = spawn(
+      isWin ? 'cmd' : 'sh', [isWin ? '/c' : '-c', this.command],
+      { cwd: resolvedCwd, env: { ...process.env, PATH }, windowsHide: true },
+    );
+    this.proc.stdout?.on('data', (d: Buffer) => splitter.push(d.toString()));
+    this.proc.stderr?.on('data', (d: Buffer) => splitter.push(d.toString()));
+    this.proc.on('error', (err) => {
+      if (done) return;
+      done = true;
+      this.writeEmitter.fire(`\x1b[31mFailed to start: ${err.message}\x1b[0m\r\n`);
+      this.closeEmitter.fire(1);
+    });
+    this.proc.on('close', (code) => {
+      if (done) return;
+      done = true;
+      splitter.flush();
+      const cancelled = this._cancelled;
+      const failed    = cancelled || (code !== 0 && code !== null);
+      const color = failed ? '\x1b[31m' : '\x1b[32m';
+      const label = cancelled ? vscode.l10n.t('Post-build cancelled') : failed ? vscode.l10n.t('Post-build failed') : vscode.l10n.t('Post-build complete');
+      this.writeEmitter.fire(`${color}${label}\x1b[0m\r\n`);
+      this.closeEmitter.fire(code ?? (cancelled ? 1 : 0));
+    });
+  }
+
+  close(): void { this._cancelled = true; this.proc?.kill(); }
+}
+
 /** ====== activate / deactivate ====== */
 export async function activate(ctx: vscode.ExtensionContext) {
   extensionPath    = ctx.extensionPath;
@@ -355,6 +432,31 @@ export async function activate(ctx: vscode.ExtensionContext) {
           'ht32',
           new vscode.CustomExecution(async () =>
             new DownloadPseudoterminal(def.exe, def.args ?? [], def.cwd, def.passthrough ?? false)
+          ),
+          task.problemMatchers,
+        );
+        resolved.presentationOptions = task.presentationOptions;
+        return resolved;
+      },
+    })
+  );
+
+  ctx.subscriptions.push(
+    vscode.tasks.registerTaskProvider('ht32-postbuild', {
+      provideTasks: () => [],
+      resolveTask(task: vscode.Task): vscode.Task | undefined {
+        const def = task.definition as Ht32PostBuildTaskDef;
+        if (!def.command || !def.cwd) {
+          vscode.window.showErrorMessage(vscode.l10n.t('ht32-postbuild task is missing required fields. Please regenerate tasks.json.'));
+          return undefined;
+        }
+        const resolved = new vscode.Task(
+          def,
+          task.scope ?? vscode.TaskScope.Workspace,
+          task.name,
+          'ht32',
+          new vscode.CustomExecution(async () =>
+            new PostBuildPseudoterminal(def.command, def.cwd, def.extraPath ?? [])
           ),
           task.problemMatchers,
         );
@@ -800,19 +902,12 @@ export async function activate(ctx: vscode.ExtensionContext) {
         selectedConfig = allConfigs.find((c: any) => c.name === picked) ?? allConfigs[0];
       }
 
-      // Verify the stored adapter serial is still connected; if stale, clear it and
-      // regenerate tasks/launch so future runs are also clean.
+      // Verify adapter serial, prompt if multiple adapters connected, patch in-memory config.
       const bgDirName = bgDirFromConfigName(selectedConfig.name, _debugParent);
       const bgDir = path.join(bgParent(folder.uri.fsPath), bgDirName);
-      const serialFresh = await ensureAdapterSerialFresh(bgDir, folder.uri.fsPath);
-      if (!serialFresh) {
-        // Also strip from this session's in-memory config so startDebugging uses auto-detect.
-        const preConfigCmds: string[] = selectedConfig.openOCDPreConfigLaunchCommands ?? [];
-        selectedConfig = {
-          ...selectedConfig,
-          openOCDPreConfigLaunchCommands: preConfigCmds.filter((cmd: string) => !cmd.startsWith('adapter serial ')),
-        };
-      }
+      const adapterResult = await ensureAdapterReady(bgDir, folder.uri.fsPath);
+      if (adapterResult === false) return;  // user cancelled adapter selection
+      selectedConfig = patchConfigSerial(selectedConfig, adapterResult.serial);
 
       ourDebugStartPending = true;
       const ok = await vscode.debug.startDebugging(folder, selectedConfig);
@@ -885,6 +980,30 @@ export async function activate(ctx: vscode.ExtensionContext) {
         ourDebugSessionIds.add(session.id);
         vscode.commands.executeCommand('workbench.view.debug');
       }
+      // Track active pyOCD session; watch signal file written by pyocd_user.py on disconnect
+      if (session.configuration.type === 'cortex-debug' &&
+          session.configuration.servertype === 'pyocd') {
+        activePyocdSession = session;
+        disconnectNotifyPending = false;
+        // Clear signal file then poll every 300 ms; pyocd_user.py writes to it on "No ACK" / transfer fault
+        // fs.watch is unreliable for cross-process temp file changes on Windows; fs.watchFile uses polling
+        const sigFile = getSignalFile(session);
+        try { fs.writeFileSync(sigFile, '', 'utf8'); } catch {}
+        activePyocdSignalMtime = 0;
+        fs.unwatchFile(sigFile);
+        fs.watchFile(sigFile, { persistent: false, interval: 300 }, (curr) => {
+          if (curr.mtimeMs <= activePyocdSignalMtime) { return; }
+          activePyocdSignalMtime = curr.mtimeMs;
+          if (disconnectNotifyPending || activePyocdSession?.id !== session.id) { return; }
+          try { if (!fs.readFileSync(sigFile, 'utf8').trim()) { return; } } catch { return; }
+          disconnectNotifyPending = true;
+          // 300 ms grace: let intentional stop clear activePyocdSession first
+          setTimeout(() => {
+            if (activePyocdSession?.id !== session.id) { return; }
+            handlePyocdDisconnect(session).catch(() => {});
+          }, 300);
+        });
+      }
     })
   );
 
@@ -900,6 +1019,17 @@ export async function activate(ctx: vscode.ExtensionContext) {
         // Fire twice: VS Code auto-switches focus after session ends, so we override after it settles
         setTimeout(focusHt32, 300);
         setTimeout(focusHt32, 700);
+      }
+      // Always stop polling for any terminating pyocd session, then clear module-level state
+      // only if it was the active one (prevents leaked watchers when two boards are debugged).
+      if (session.configuration.type === 'cortex-debug' &&
+          session.configuration.servertype === 'pyocd') {
+        fs.unwatchFile(getSignalFile(session));
+        if (activePyocdSession?.id === session.id) {
+          activePyocdSession = undefined;
+          disconnectNotifyPending = false;
+          activePyocdSignalMtime = 0;
+        }
       }
     })
   );
@@ -1019,6 +1149,49 @@ export async function activate(ctx: vscode.ExtensionContext) {
   logInfo(vscode.l10n.t('Extension activated.'));
 }
 export function deactivate() {}
+
+async function handlePyocdDisconnect(session: vscode.DebugSession): Promise<void> {
+  const btnReconnect: vscode.MessageItem = { title: vscode.l10n.t('Reconnect') };
+  const btnStop: vscode.MessageItem     = { title: vscode.l10n.t('Stop Debugging'), isCloseAffordance: true };
+  const choice = await vscode.window.showWarningMessage(
+    vscode.l10n.t('MCU communication lost. Possible causes: power removed or SWD connection issue.'),
+    { modal: true },
+    btnReconnect,
+    btnStop
+  );
+  if (choice === btnReconnect) {
+    await vscode.debug.stopDebugging(session);
+    // Wait for session to fully terminate
+    await new Promise<void>(resolve => {
+      const d = vscode.debug.onDidTerminateDebugSession(s => {
+        if (s.id === session.id) { d.dispose(); resolve(); }
+      });
+      setTimeout(() => { d.dispose(); resolve(); }, 3000);
+    });
+    await new Promise(r => setTimeout(r, 500));  // probe release delay
+    const wsFolder = session.workspaceFolder;
+    if (!wsFolder) { return; }
+    const launchJsonPath = path.join(wsFolder.uri.fsPath, '.vscode', 'launch.json');
+    try {
+      const raw = fs.readFileSync(launchJsonPath, 'utf8');
+      // Strip line and block comments before parsing
+      const stripped = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const parsed = JSON.parse(stripped);
+      const configs: any[] = parsed.configurations ?? [];
+      const attachName = (session.configuration.name as string ?? '').replace(/\bDebug\b/, 'Attach');
+      const attachConfig = configs.find((c: any) => c.name === attachName) ?? null;
+      if (attachConfig) {
+        await vscode.debug.startDebugging(wsFolder, attachConfig);
+      } else {
+        vscode.window.showErrorMessage(vscode.l10n.t('Attach configuration not found: "{0}"', attachName));
+      }
+    } catch (e: any) {
+      vscode.window.showErrorMessage(vscode.l10n.t('Reconnect failed: {0}', e?.message ?? String(e)));
+    }
+  } else {
+    await vscode.debug.stopDebugging(session);
+  }
+}
 
 async function ensureClangd(): Promise<void> {
   const clangdExt = vscode.extensions.getExtension('llvm-vs-code-extensions.vscode-clangd');
@@ -1372,22 +1545,234 @@ function computeWsOpenRoot(root: string): string {
 }
 
 /**
- * Checks whether the stored adapter serial for bgDir is still connected.
- * If stale: clears adapterSerial in project.settings.json, regenerates tasks/launch
- * so the files are clean for future runs, shows a warning, and returns false.
- * Returns true when serial is empty (auto-detect) or the adapter is present.
+ * Ensures the debug adapter for bgDir is ready to use.
+ *
+ * - Stored serial still connected  → returns { serial, changed: false }
+ * - Stored serial stale            → clears settings, falls through to multi-adapter check
+ * - 0 or 1 adapter, no stored SN  → returns { serial: '', changed: false } (auto-detect)
+ * - 2+ adapters, no stored SN     → shows QuickPick; if user picks one with real serial,
+ *                                    stores it and regenerates tasks/launch
+ * - User cancels QuickPick        → returns false
  */
-async function ensureAdapterSerialFresh(bgDir: string, wsRoot: string): Promise<boolean> {
+/** Webview panel for picking one adapter from multiple connected adapters.
+ *  Each row has an [Info] button that probes the adapter via OpenOCD (causes LED to flash)
+ *  and shows FW/Target inline — independent of whether the project uses pyocd or openocd.
+ *  Returns the selected adapter, or undefined if cancelled. */
+async function pickAdapterPanel(
+  adapters: Array<{ serial: string; label: string }>,
+  debugInterface: string,
+  ocdExe: string,
+  ocdRoot: string,
+  adapterSpeed: string,
+): Promise<{ serial: string; label: string } | undefined> {
+  return new Promise(resolve => {
+    const panel = vscode.window.createWebviewPanel(
+      'ht32AdapterPick',
+      vscode.l10n.t('Select Debug Adapter'),
+      vscode.ViewColumn.Active,
+      { enableScripts: true, retainContextWhenHidden: false },
+    );
+
+    const nonce = crypto.randomUUID().replace(/-/g, '');
+    const i18n = {
+      title:       vscode.l10n.t('Select Debug Adapter'),
+      subtitle:    vscode.l10n.t('Multiple debug adapters detected. Click Info to identify before selecting.'),
+      info:        vscode.l10n.t('Info'),
+      querying:    vscode.l10n.t('Reading adapter info…'),
+      cancel:      vscode.l10n.t('Cancel'),
+      noSerial:    vscode.l10n.t('(no unique serial)'),
+    };
+    const rows = adapters.map(a => ({
+      serial:       a.serial,
+      label:        a.label || i18n.noSerial,
+      displayLabel: a.serial
+        ? `${a.label || vscode.l10n.t('Adapter')} (${a.serial.slice(-8)})`
+        : (a.label || vscode.l10n.t('Adapter')),
+    }));
+
+    panel.webview.html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
+         color: var(--vscode-foreground); background: var(--vscode-sideBar-background);
+         padding: 24px; margin: 0; }
+  .container { border: 1px solid var(--vscode-panel-border); border-radius: 4px;
+               padding: 20px 24px; max-width: 520px; background: var(--vscode-editor-background); }
+  h3   { margin: 0 0 6px 0; font-size: 1.1em; }
+  .sub { color: var(--vscode-descriptionForeground); margin-bottom: 18px; font-size: 0.95em; }
+  #mainGrid { display: grid; grid-template-columns: 1fr auto;
+              gap: 5px 8px; align-items: center; margin: 14px 0; }
+  .adapter-name { border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+                  padding: 6px 10px; font-weight: 500; }
+  .probe-area { grid-column: 1 / -1; font-family: var(--vscode-editor-font-family);
+                font-size: 0.95em; background: var(--vscode-textCodeBlock-background);
+                border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+                padding: 8px 12px; white-space: pre; display: none; }
+  .probe-loading { color: var(--vscode-descriptionForeground); font-style: italic; }
+  .footer-selects { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0; }
+  button { padding: 5px 14px; cursor: pointer; border-radius: 2px; font-size: var(--vscode-font-size);
+           border: 1px solid var(--vscode-button-border, transparent); }
+  .btn-info   { background: var(--vscode-button-secondaryBackground);
+                color: var(--vscode-button-secondaryForeground); }
+  .btn-info:hover   { background: var(--vscode-button-secondaryHoverBackground); }
+  .btn-select { background: var(--vscode-button-background);
+                color: var(--vscode-button-foreground); }
+  .btn-select:hover { background: var(--vscode-button-hoverBackground); }
+  .btn-cancel { background: var(--vscode-button-secondaryBackground);
+                color: var(--vscode-button-secondaryForeground); }
+  .btn-cancel:hover { background: var(--vscode-button-secondaryHoverBackground); }
+</style>
+</head>
+<body>
+<div class="container">
+<h3 id="title"></h3>
+<div class="sub" id="sub"></div>
+<div id="mainGrid"></div>
+</div>
+<script nonce="${nonce}">
+  const vsc = acquireVsCodeApi();
+  const i18n = ${escScript(JSON.stringify(i18n))};
+  const rows = ${escScript(JSON.stringify(rows))};
+
+  document.getElementById('title').textContent = i18n.title;
+  document.getElementById('sub').textContent   = i18n.subtitle;
+
+  const grid = document.getElementById('mainGrid');
+
+  // Probe result area (spans both grid columns, hidden until queried)
+  const probeEl = document.createElement('div');
+  probeEl.className = 'probe-area';
+
+  // Adapter rows: name (col 1) + Info button (col 2)
+  rows.forEach((r, i) => {
+    const nameEl = document.createElement('span');
+    nameEl.className = 'adapter-name';
+    nameEl.textContent = r.displayLabel;
+    grid.appendChild(nameEl);
+
+    const infoBtn = document.createElement('button');
+    infoBtn.className = 'btn-info';
+    infoBtn.textContent = i18n.info;
+    infoBtn.disabled = !r.serial;
+    infoBtn.onclick = () => {
+      probeEl.style.display = 'block';
+      probeEl.className = 'probe-area probe-loading';
+      probeEl.textContent = i18n.querying;
+      vsc.postMessage({ command: 'queryInfo', idx: i });
+    };
+    grid.appendChild(infoBtn);
+  });
+
+  grid.appendChild(probeEl);
+
+  // Footer row: select buttons (col 1) + Cancel (col 2) — same grid, so col 2 aligns with Info
+  const selectsEl = document.createElement('div');
+  selectsEl.className = 'footer-selects';
+  rows.forEach((r, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'btn-select';
+    btn.textContent = r.displayLabel;
+    btn.onclick = () => vsc.postMessage({ command: 'select', idx: i });
+    selectsEl.appendChild(btn);
+  });
+  grid.appendChild(selectsEl);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn-cancel';
+  cancelBtn.textContent = i18n.cancel;
+  cancelBtn.onclick = () => vsc.postMessage({ command: 'cancel' });
+  grid.appendChild(cancelBtn);
+
+  window.addEventListener('message', e => {
+    const msg = e.data;
+    if (msg.command === 'infoResult') {
+      probeEl.style.display = 'block';
+      probeEl.className = 'probe-area';
+      probeEl.textContent = msg.text;
+    }
+  });
+</script>
+</body>
+</html>`;
+
+    let settled = false;
+    const done = (val: { serial: string; label: string } | undefined) => {
+      if (!settled) { settled = true; resolve(val); }
+    };
+
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      if (msg.command === 'select') {
+        done(adapters[msg.idx]);  // resolve before dispose — onDidDispose fires after
+        panel.dispose();
+      } else if (msg.command === 'cancel') {
+        done(undefined);
+        panel.dispose();
+      } else if (msg.command === 'queryInfo') {
+        const sel = adapters[msg.idx as number];
+        if (!sel) { panel.webview.postMessage({ command: 'infoResult', text: '?' }); return; }
+        const ifaceCfg = selectIfaceCfgForProbe(debugInterface, ocdRoot);
+        const text = await runOpenocdProbe(ocdExe, ifaceCfg, sel.serial, adapterSpeed);
+        panel.webview.postMessage({ command: 'infoResult', text });
+      }
+    });
+    panel.onDidDispose(() => done(undefined));
+  });
+}
+
+async function ensureAdapterReady(
+  bgDir: string,
+  wsRoot: string,
+): Promise<{ serial: string; changed: boolean } | false> {
   const projSettings = readProjectSettings(bgDir);
-  const serial = projSettings.adapterSerial?.trim();
-  if (!serial) return true;
+  const debugInterface = projSettings.debugInterface ?? 'CMSIS-DAP';
+  const stored = projSettings.adapterSerial?.trim() ?? '';
 
-  const adapters = await scanAdapters(projSettings.debugInterface ?? 'CMSIS-DAP');
-  if (adapters.some(a => a.serial === serial)) return true;
+  const adapters = await scanAdapters(debugInterface);
+  if (stored) {
+    if (adapters.some(a => a.serial === stored)) return { serial: stored, changed: false };
+    // Stale serial: clear silently and fall through to multi-adapter check
+    writeProjectSettings(bgDir, { ...projSettings, adapterSerial: '' });
+  }
+  if (adapters.length <= 1) return { serial: '', changed: false };
 
-  writeProjectSettings(bgDir, { ...projSettings, adapterSerial: '' });
-  await generateTasksAndLaunchAndMakefile(wsRoot);
-  return false;
+  const ocdRoot = path.join(extensionPath, 'openocd').replace(/\\/g, '/');
+  const ocdExe  = (vscode.workspace.getConfiguration('ht32').get<string>('openocdPath', '').trim())
+                  || `${ocdRoot}/bin/openocd.exe`;
+
+  const sel = await pickAdapterPanel(
+    adapters, debugInterface, ocdExe, ocdRoot, projSettings.adapterSpeed ?? '',
+  );
+  if (!sel) return false;
+
+  if (sel.serial) {
+    const fresh = readProjectSettings(bgDir);
+    writeProjectSettings(bgDir, { ...fresh, adapterSerial: sel.serial });
+    // Regenerate tasks/launch in background — caller uses in-memory config for this run
+    generateTasksAndLaunchAndMakefile(wsRoot).catch(() => { /* ignore */ });
+  }
+  return { serial: sel.serial, changed: !!sel.serial };
+}
+
+/** Patch adapter serial in a cortex-debug launch config (in-memory, not launch.json). */
+function patchConfigSerial(config: any, serial: string): any {
+  if ((config.servertype ?? '') === 'pyocd') {
+    const raw: string[] = config.serverArgs ?? [];
+    const args: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === '--probe') { i++; continue; }  // drop existing --probe <value>
+      args.push(raw[i]);
+    }
+    if (serial) args.push('--probe', serial);
+    return { ...config, serverArgs: args };
+  }
+  // openocd (and anything else using openOCDPreConfigLaunchCommands)
+  const cmds: string[] = (config.openOCDPreConfigLaunchCommands ?? [])
+    .filter((c: string) => !c.startsWith('adapter serial '));
+  if (serial) cmds.push(`adapter serial ${serial}`);
+  return { ...config, openOCDPreConfigLaunchCommands: cmds };
 }
 
 /** Build / Clean 按鈕的智慧路由：
@@ -1456,7 +1841,8 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
 
   if (bgDirs.length === 1) {
     if (kind === 'download' || kind === 'erase') {
-      await ensureAdapterSerialFresh(path.join(bgParent(root), bgDirs[0]), root);
+      const r = await ensureAdapterReady(path.join(bgParent(root), bgDirs[0]), root);
+      if (r === false) return;
     }
     if (kind === 'build') { await startBuildTask(taskLabel(bgDirs[0])); }
     else                  { await runTask(taskLabel(bgDirs[0])); }
@@ -1488,7 +1874,8 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   if (kind === 'download' || kind === 'erase') {
     const selectedBg = bgDirs.find(d => taskLabel(d) === sel.taskLabel);
     if (selectedBg) {
-      await ensureAdapterSerialFresh(path.join(bgParent(root), selectedBg), root);
+      const r = await ensureAdapterReady(path.join(bgParent(root), selectedBg), root);
+      if (r === false) return;
     }
   }
   if (kind === 'build') { await startBuildTask(sel.taskLabel); }
@@ -2756,15 +3143,7 @@ async function regenerateCompileCommandsCommand() {
 }
 
 /** Map debug interface setting → interface cfg absolute path */
-function selectInterfaceCfg(debugInterface: string, openocdRoot: string): string {
-  switch (debugInterface) {
-    case 'ST-Link':      return `${openocdRoot}/scripts/interface/stlink.cfg`;
-    case 'J-Link':       return `${openocdRoot}/scripts/interface/jlink.cfg`;
-    case 'e-Link32 Pro':
-    case 'e-Link32 Lite': return `${openocdRoot}/scripts/interface/htlink.cfg`;  // legacy values
-    default:             return `${openocdRoot}/scripts/interface/cmsis-dap.cfg`;
-  }
-}
+// selectInterfaceCfg → moved to settingsWebview.ts as selectIfaceCfgForProbe (shared)
 
 /**
  * Map MCU device name → HLM target cfg file (under openocd/scripts/target/).
@@ -3564,7 +3943,11 @@ function generatePyocdFiles(
   internalFlashEnd: number, // from parseMcuCfg; used for RAM work area reference
   smartFlash: boolean,      // pyocd smart_flash: skip unchanged pages
   eraseMode: string,        // 'erase_chip' → chip / 'erase_sector' → sector
-): void {
+): string {
+  // Derive a stable 8-char hex tag from outDir so each project gets its own signal file
+  // without changing on every regeneration.
+  const outDirHash = require('crypto').createHash('md5').update(outDir).digest('hex').slice(0, 8) as string;
+  const signalFile = path.join(os.tmpdir(), `ht32_pyocd_${outDirHash}.log`);
   // Always generate pyocd_user.py: needed for RAM work area setup and EXT flash region
   // registration via _add_ext_region (when ext loaders are configured).
   const userScriptAbs = path.join(outDir, 'pyocd_user.py').replace(/\\/g, '/');
@@ -3650,6 +4033,19 @@ function generatePyocdFiles(
     '',
     '',
     'def did_connect(board):',
+    '    # HT32 disconnect detection: write to signal file on SWD error so extension detects MCU power loss',
+    '    try:',
+    `        _sig = "${signalFile.replace(/\\/g, '/')}"`,
+    '        class _DCFilter(logging.Filter):',
+    '            def filter(self, r):',
+    '                m = r.getMessage().lower()',
+    '                return any(x in m for x in ["no ack", "transfer fault", "transfer error", "probe error", "cannot step", "core not halted"])',
+    '        _h = logging.FileHandler(_sig, mode="a", encoding="utf-8")',
+    '        _h.setLevel(logging.WARNING)',
+    '        _h.addFilter(_DCFilter())',
+    '        logging.getLogger("pyocd").addHandler(_h)',
+    '    except Exception:',
+    '        pass',
     '    try:',
     '        for r in board.target.memory_map.regions:',
     '            if r.type.name == "FLASH":',
@@ -3685,6 +4081,7 @@ function generatePyocdFiles(
     '',
   ];
   fs.writeFileSync(path.join(outDir, 'pyocd_user.py'), pyLines.join('\n'), 'utf8');
+  return signalFile;
 }
 
 /**
@@ -3804,10 +4201,11 @@ function buildPyocdServerConfigs(params: {
   serverpath:       string | undefined;  // absolute path to pyocd.exe; undefined = use PATH
   debugBuildTask:   string;
   cwd:              string;
+  signalFile:       string;              // per-project signal file path; read by extension on session start
 }): [object, object] {
   const { configName, attachName, bgExecutable, elfAbsPath, bgTargetId, bgSvdEntry,
           packPaths, pyocdYamlRef, adapterSerial, adapterSpeed,
-          debugLevel, gdbPath, serverpath, debugBuildTask, cwd } = params;
+          debugLevel, gdbPath, serverpath, debugBuildTask, cwd, signalFile } = params;
 
   const serverArgs: string[] = ['-t', bgTargetId];
   for (const p of packPaths) { serverArgs.push('--pack', p); }
@@ -3822,7 +4220,6 @@ function buildPyocdServerConfigs(params: {
   // level <= 1: no flag — pyocd default is already WARNING (level 0 removed)
   serverArgs.push('--elf', elfAbsPath);
 
-
   const PYOCD_READY_REGEX = '[Gg][Dd][Bb].*[Ss]erver.*[Pp]ort[: ]*[0-9]';
 
   const base: Record<string, unknown> = {
@@ -3833,6 +4230,7 @@ function buildPyocdServerConfigs(params: {
     internalConsoleOptions:        'neverOpen',
     cwd:                           cwd,
     executable:                    bgExecutable,
+    env:                           { HT32_PYOCD_LOG: signalFile },
     ...bgSvdEntry,
     ...(serverpath ? { serverpath } : {}),
     ...(gdbPath ? { gdbPath } : {}),
@@ -4148,14 +4546,6 @@ async function generateTasksAndLaunchAndMakefile(
   const compileLabel   = (dir: string) => { const s = bgSuffix(dir); return s ? `Compile ${s}` : 'Compile'; };
   const postBuildLabel = (dir: string) => { const s = bgSuffix(dir); return s ? `Post-Build ${s}` : 'Post-Build'; };
 
-  /** .bat 檔在 PowerShell 下需要 cmd /c，自動補上（避免使用者自己寫） */
-  const wrapPostBuildCmd = (cmd: string) => {
-    const t = cmd.trim();
-    if (/^cmd\b/i.test(t)) return t;                       // 已有 cmd，不重複加
-    if (/\.bat(\s|$)/i.test(t.split(/\s+/)[0])) return `cmd /c ${t}`;  // .bat 自動加
-    return t;
-  };
-
   const buildBeforeDebug = cfg.get<boolean>('buildBeforeDebug', true);
   const taskList: any[] = [];
   for (const bg of bgDirs) {
@@ -4172,16 +4562,17 @@ async function generateTasksAndLaunchAndMakefile(
         args:           ['-j', '--output-sync=line', '--no-print-directory'],
         extraPath:      extraPathDirs,
         problemMatcher: [makeGccProblemMatcher()],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false },
       });
-      // "Post-Build X" = bat only
+      // "Post-Build X" = CustomExecution（彩色狀態訊息）
       taskList.push({
         label:          postBuildLabel(bg),
-        type:           'shell',
-        command:        wrapPostBuildCmd(postBuildCmd),
-        options:        { cwd: '${workspaceFolder}', ...(envForTasks ? { env: envForTasks } : {}) },
+        type:           'ht32-postbuild',
+        command:        postBuildCmd,
+        cwd:            '${workspaceFolder}',
+        extraPath:      extraPathDirs,
         problemMatcher: [],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
       });
       // "Build X" = compound：先 Compile 再 Post-Build
       taskList.push({
@@ -4201,7 +4592,7 @@ async function generateTasksAndLaunchAndMakefile(
         extraPath:      extraPathDirs,
         problemMatcher: [makeGccProblemMatcher()],
         group:          { kind: 'build', isDefault: (bg === BG_BASE || bg === BG_BASE_OLD) },
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true },
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false },
       });
     }
     taskList.push({
@@ -4211,7 +4602,7 @@ async function generateTasksAndLaunchAndMakefile(
       args:           ['-C', bgCwdOf(bg), 'clean'],
       options:        { cwd: bgCwdOf(bg), ...(envForTasks ? { env: envForTasks } : {}) },
       problemMatcher: [],
-      presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+      presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
     });
   }
   // 多個 build-gen 時加 Build All / Clean All（依序編譯，Build X 已內含 Post-Build）
@@ -4264,7 +4655,7 @@ async function generateTasksAndLaunchAndMakefile(
     }
 
     // Per-project interface cfg
-    const interfaceCfgPath = selectInterfaceCfg(projSettings.debugInterface, bundledOpenOcdRoot);
+    const interfaceCfgPath = selectIfaceCfgForProbe(projSettings.debugInterface, bundledOpenOcdRoot);
 
     // Per-project flash loaders（有設定時跳過 SPIM auto-detect）
     const enabledFlashLoaders = projSettings.flashLoaders
@@ -4453,13 +4844,6 @@ async function generateTasksAndLaunchAndMakefile(
       p.replace(/\\/g, '/').startsWith(extPathFwd + '/')
         ? p.replace(/\\/g, '/').replace(extPathFwd, EXT_ROOT)
         : p.replace(/\\/g, '/'));
-    if (projSettings.serverType === 'pyocd') {
-      const iniMap      = readSettingsIni(extensionPath);
-      const waPrefix    = (bgDevice ?? '').replace(/_[^_]+$/, '');
-      const pdscIram1   = bgDevice ? readPdscIram1(bgDevice, extensionPath) : undefined;
-      const workAreaSz  = (bgDevice ? iniMap[bgDevice] : undefined) ?? iniMap[waPrefix] ?? pdscIram1?.size ?? 0x20000;
-      generatePyocdFiles(path.join(bgParentDir, bg), packPaths, enabledFlashLoaders, workAreaSz, bgInternalFlashEnd, projSettings.smartFlash, projSettings.eraseMode);
-    }
     // pyocd.yaml + pyocd_user.py are always generated; yaml is always referenced via --config
     const pyocdYamlRef = projSettings.serverType === 'pyocd'
       ? (bgRel ? `\${workspaceFolder}/${bgRel}/${bg}/pyocd.yaml` : `\${workspaceFolder}/${bg}/pyocd.yaml`)
@@ -4467,7 +4851,12 @@ async function generateTasksAndLaunchAndMakefile(
 
     if (projSettings.serverType === 'pyocd') {
       // pyOCD branch — cortex-debug manages pyocd-gdbserver lifecycle
-      const elfAbsPath = bgExecutable.replace('${workspaceFolder}', root.replace(/\\/g, '/'));
+      const iniMap      = readSettingsIni(extensionPath);
+      const waPrefix    = (bgDevice ?? '').replace(/_[^_]+$/, '');
+      const pdscIram1   = bgDevice ? readPdscIram1(bgDevice, extensionPath) : undefined;
+      const workAreaSz  = (bgDevice ? iniMap[bgDevice] : undefined) ?? iniMap[waPrefix] ?? pdscIram1?.size ?? 0x20000;
+      const signalFile  = generatePyocdFiles(path.join(bgParentDir, bg), packPaths, enabledFlashLoaders, workAreaSz, bgInternalFlashEnd, projSettings.smartFlash, projSettings.eraseMode);
+      const elfAbsPath  = bgExecutable.replace('${workspaceFolder}', root.replace(/\\/g, '/'));
       const [debugCfg, attachCfg] = buildPyocdServerConfigs({
         configName,
         attachName,
@@ -4484,6 +4873,7 @@ async function generateTasksAndLaunchAndMakefile(
         serverpath:     pyocdServerPath,
         debugBuildTask: debugPreLaunchLabel(bg),
         cwd:            bgCwdOf(bg),
+        signalFile,
       });
       configurations.push(debugCfg, attachCfg);
     } else if (projSettings.serverType === 'openocd') {
@@ -4619,7 +5009,7 @@ async function generateTasksAndLaunchAndMakefile(
         cwd:            '${workspaceFolder}',
         passthrough:    true,
         problemMatcher: [],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
       });
       // F5 preLaunchTask：Build → Download (pyocd flash exits cleanly, no Kill OpenOCD needed)
       taskList.push({
@@ -4648,7 +5038,7 @@ async function generateTasksAndLaunchAndMakefile(
         cwd:            '${workspaceFolder}',
         passthrough:    true,
         problemMatcher: [],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
       });
     } else {
       // OpenOCD Download：Kill OpenOCD 確保燒錄前 probe 無人佔用
@@ -4683,7 +5073,7 @@ async function generateTasksAndLaunchAndMakefile(
         dependsOn:      ['Kill OpenOCD'],
         dependsOrder:   'sequence',
         problemMatcher: [],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
       });
       if (projSettings.serverType !== 'external') {
         // F5 preLaunchTask：Build → Download (Download already dependsOn Kill OpenOCD)
@@ -4720,7 +5110,7 @@ async function generateTasksAndLaunchAndMakefile(
         dependsOn:      ['Kill OpenOCD'],
         dependsOrder:   'sequence',
         problemMatcher: [],
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false }
       });
     }
 
@@ -4766,7 +5156,7 @@ async function generateTasksAndLaunchAndMakefile(
             endsPattern:   'HT32_VSCode:READY',
           }
         },
-        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, focus: true }
+        presentation:   { reveal: 'always', panel: 'dedicated', clear: true, showReuseMessage: false, focus: true }
       });
 
       // Attach preLaunchTask：Kill → OpenOCD（不 build，不 reset）

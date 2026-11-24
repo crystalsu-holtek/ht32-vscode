@@ -9,7 +9,7 @@ HT32-IDE（Eclipse CDT）的專案由兩個檔案組成：
 
 ---
 
-## 三種專案結構
+## 四種專案結構
 
 ### 類型一：Type-1 個別 file link（`PARENT-N-PROJECT_LOC`）
 
@@ -66,8 +66,9 @@ Holtek 官方 FWLib 範例專案的標準格式。`.project` 裡每個 `.c/.h/.S
 - 我們有 walk-up 解析邏輯（`resolveEclipseVariableValue()`）：
   從 projectDir 往上找到同名資料夾，不依賴硬編碼路徑
 
-**解析方式：** `parseProjectFile()` 偵測到 `hasType2Links` 為 true 時，
+**解析方式：** `parseProjectFile()` 若存在 `sourceEntries`，
 建立 `folderLinkMap`（虛擬名稱 → 實體路徑），再對每個 sourceEntry 呼叫 `scanSourceFolder()`。
+Type-2 folder link 的名稱會出現在 `folderLinkMap` 中，直接對應到實體資料夾。
 
 ---
 
@@ -105,16 +106,61 @@ fallback 到 `path.join(projectDir, entry.name)` 找到本地資料夾。
 
 ---
 
+### 類型四：Type-1 file link + 本地 Startup/ 子目錄（混合型）
+
+Library 和 User 群組使用 Type-1 個別檔案連結，
+但 `Startup/` 是專案目錄下真實存在的子目錄，`.project` 裡沒有對應的 `<link>`。
+
+```xml
+<linkedResources>
+  <link>
+    <name>Library/ht32f5xxxx_gpio.c</name>
+    <type>1</type>
+    <locationURI>PARENT-3-PROJECT_LOC/library/.../ht32f5xxxx_gpio.c</locationURI>
+  </link>
+  <!-- ... 其他 Library/User 檔案 ... -->
+  <!-- 注意：Startup 完全沒有 <link>，它是 projectDir/Startup/ 的真實子目錄 -->
+</linkedResources>
+```
+
+搭配 `.cproject` 的 sourceEntries：
+
+```xml
+<sourceEntries>
+  <entry name="Library"/>
+  <entry name="Startup"/>
+  <entry name="User"/>
+</sourceEntries>
+```
+
+**特徵：**
+- `Library`、`User` 由 type-1 file links 逐一解析，不走資料夾掃描
+- `Startup` 在 `.project` 的 `<linkedResources>` 裡**沒有任何對應的連結**，
+  但 `projectDir/Startup/` 目錄確實存在（包含 startup `.S` 檔）
+- 若沒有正確處理，`Startup` 群組會被跳過，導致 `Reset_Handler` 缺失、build 失敗
+
+**解析方式：** `parseProjectFile()` 先收集所有 type-1 file link 所屬的群組名稱
+（`type1GroupNames`），對 sourceEntries 逐一判斷：
+- `Library`、`User` → 已由 type-1 覆蓋，跳過資料夾掃描
+- `Startup` → 不在 `type1GroupNames` 也不在 `folderLinkMap`，
+  fallback 到 `path.join(projectDir, 'Startup')` 找到本地目錄後掃描
+
+> **邊界情況：** 若某個群組同時有 type-1 file links 又有 type-2 folder link，
+> type-2 資料夾掃描會被跳過——該資料夾中沒被 type-1 個別列出的檔案將不會出現在 build 裡。
+> 此情況在已知的 HT32-IDE 專案中未曾出現。
+
+---
+
 ## 對照表
 
-| | 類型一 | 類型二 | 類型三 |
-|---|---|---|---|
-| `.project` 有 `<linkedResources>` | ✓ | ✓ | ✗ |
-| link type | `1`（個別檔） | `2`（整個資料夾） | — |
-| 路徑寫法 | `PARENT-N-PROJECT_LOC/...` | 自訂變數（如 `copy_PARENT`） | 無，本地子目錄 |
-| Library 範圍 | 只列用到的 Driver | 整個 Library 資料夾 | 整個 Library 資料夾 |
-| 換電腦是否有問題 | 通常沒問題 | 有問題（硬編碼絕對路徑） | 沒問題 |
-| 觸發掃描的條件 | — | `hasType2Links === true` | `links.length === 0` |
+| | 類型一 | 類型二 | 類型三 | 類型四 |
+|---|---|---|---|---|
+| `.project` 有 `<linkedResources>` | ✓ | ✓ | ✗ | ✓（部分群組） |
+| link type | `1`（個別檔） | `2`（整個資料夾） | — | `1`（Library/User）+ 無（Startup） |
+| 路徑寫法 | `PARENT-N-PROJECT_LOC/...` | 自訂變數（如 `copy_PARENT`） | 無，本地子目錄 | 混合：file link + 本地子目錄 |
+| Library 範圍 | 只列用到的 Driver | 整個 Library 資料夾 | 整個 Library 資料夾 | 只列用到的 Driver |
+| 換電腦是否有問題 | 通常沒問題 | 有問題（硬編碼絕對路徑） | 沒問題 | 通常沒問題 |
+| sourceEntries 中 Startup 的解析 | 不走 | type-2 folder link | 本地子目錄 fallback | 本地子目錄 fallback |
 
 ---
 
@@ -150,7 +196,7 @@ arm-none-eabi-objcopy -O binary HT32F61031_TWS_Charging_Case.elf HT32F61031_TWS_
 
 ## sourceEntries 的角色
 
-`.cproject` 的 `sourceEntries` 對類型二和類型三都是相同的角色：
+`.cproject` 的 `sourceEntries` 對類型二、三、四都是相同的角色：
 定義「要掃描哪些資料夾名稱」以及「排除哪些檔案」。
 
 ```xml
