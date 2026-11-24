@@ -108,7 +108,7 @@ function resolveStdDisplayName(defines: string[], chipSuffix: string, defaultPre
 // MCU listing
 // ─────────────────────────────────────────────────────────
 
-export function listStdMcus(fwlibPath: string, extPath?: string): Array<{chipSuffix: string; displayName: string; mkPath: string}> {
+export function listStdMcus(fwlibPath: string, extPath?: string): Array<{chipSuffix: string; displayName: string; mkPath: string; armCore: string}> {
   const fwlGnuDir     = path.join(fwlibPath, 'project_template', 'IP', 'Example', 'GNU_ARM');
   const bundledGnuDir = extPath ? bundledGnuDirFromFwlRoot(fwlibPath, extPath) : undefined;
   const gnuDir        = fs.existsSync(fwlGnuDir) ? fwlGnuDir : bundledGnuDir;
@@ -121,17 +121,20 @@ export function listStdMcus(fwlibPath: string, extPath?: string): Array<{chipSuf
         const mkPath = path.join(gnuDir, f);
         const chipSuffix = f.replace(/\.mk$/, '');
         const defines: string[] = [];
+        let armCore = 'cortex-m0';
         try {
-          for (const m of fs.readFileSync(mkPath, 'utf8').matchAll(/^C_OPTION\s*\+=\s*-D(\w+)/mg))
+          const mkText = fs.readFileSync(mkPath, 'utf8');
+          for (const m of mkText.matchAll(/^C_OPTION\s*\+=\s*-D(\w+)/mg))
             defines.push(m[1]);
+          armCore = /^ARM_CORE\s*=\s*(\S+)/m.exec(mkText)?.[1]?.trim() ?? 'cortex-m0';
         } catch { /* keep default */ }
-        return { chipSuffix, displayName: resolveStdDisplayName(defines, chipSuffix, defaultPrefix), mkPath };
+        return { chipSuffix, displayName: resolveStdDisplayName(defines, chipSuffix, defaultPrefix), mkPath, armCore };
       })
       .sort((a, b) => a.chipSuffix.localeCompare(b.chipSuffix));
   } catch { return []; }
 }
 
-export function list49xMcus(fwlibPath: string): Array<{chipSuffix: string; displayName: string; ldPath: string}> {
+export function list49xMcus(fwlibPath: string): Array<{chipSuffix: string; displayName: string; ldPath: string; armCore: string}> {
   const gccDir_         = find49xGccDir(fwlibPath) ?? path.join(fwlibPath, 'libraries', 'cmsis', 'cm4', 'device_support', 'startup', 'gcc');
   const linkerDir       = path.join(gccDir_, 'linker');
   const deviceSupportDir = path.join(fwlibPath, 'libraries', 'cmsis', 'cm4', 'device_support');
@@ -163,16 +166,16 @@ export function list49xMcus(fwlibPath: string): Array<{chipSuffix: string; displ
       }
     } catch { /* no device header — fallback below */ }
 
-    const result: Array<{chipSuffix: string; displayName: string; ldPath: string}> = [];
+    const result: Array<{chipSuffix: string; displayName: string; ldPath: string; armCore: string}> = [];
     for (const [chipModel, ldPath] of Object.entries(ldMap)) {
       const pkgs = variants[chipModel];
       if (pkgs.length > 0) {
         for (const displayName of pkgs) {
-          result.push({ chipSuffix: chipModel, displayName, ldPath });
+          result.push({ chipSuffix: chipModel, displayName, ldPath, armCore: 'cortex-m4' });
         }
       } else {
         // Fallback when no header found
-        result.push({ chipSuffix: chipModel, displayName: `${chipModel}_100LQFP`, ldPath });
+        result.push({ chipSuffix: chipModel, displayName: `${chipModel}_100LQFP`, ldPath, armCore: 'cortex-m4' });
       }
     }
     return result.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -524,8 +527,8 @@ export function openCreateProjectPanel(
     }
     const extPath = ctx.extensionUri.fsPath;
     const mcus = series === 'std'
-      ? listStdMcus(fwlibPath, extPath).map(m => ({ chipSuffix: m.chipSuffix, displayName: m.displayName }))
-      : list49xMcus(fwlibPath).map(m => ({ chipSuffix: m.chipSuffix, displayName: m.displayName }));
+      ? listStdMcus(fwlibPath, extPath).map(m => ({ chipSuffix: m.chipSuffix, displayName: m.displayName, armCore: m.armCore }))
+      : list49xMcus(fwlibPath).map(m => ({ chipSuffix: m.chipSuffix, displayName: m.displayName, armCore: m.armCore }));
     createProjectPanel?.webview.postMessage({ type: 'mcuList', series, mcus, suggestFolder: fwlibPath });
   }
 }
@@ -713,6 +716,7 @@ ${stored.length > 0 ? `<div class="row">
       style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:2px 6px;color:var(--vscode-input-foreground);opacity:0.7">▾</button>
     <div id="mcuDropdown" class="mcu-dropdown"></div>
   </div>
+  <div id="coreBadge"></div>
 </div>
 
 <h2>${escHtml(s.secProject)}</h2>
@@ -819,6 +823,8 @@ function updateMcuList(series, mcus, error) {
   const inp   = document.getElementById('mcuInput');
   const badge = document.getElementById('seriesBadge');
 
+  const coreBadge = document.getElementById('coreBadge');
+  coreBadge.innerHTML = '';
   if (error) {
     badge.innerHTML = '<span class="badge err">' + e(error) + '</span>';
     inp.placeholder = STRINGS.errorPH;
@@ -832,7 +838,8 @@ function updateMcuList(series, mcus, error) {
     document.getElementById('mcuArrow').disabled = true;
     mcuSelectedValue = '';
   } else {
-    badge.innerHTML = '<span class="badge">' + e(series) + '</span>';
+    const seriesLabel = series === 'std' ? 'Standard Series' : series === '49x' ? '49x Series' : series;
+    badge.innerHTML = '<span class="badge">' + e(seriesLabel) + '</span>';
     inp.disabled = false;
     document.getElementById('mcuArrow').disabled = false;
     inp.placeholder = STRINGS.typeToSelect;
@@ -860,6 +867,10 @@ function setMcuValue(displayName) {
   onMcuChange();
 }
 
+function formatCore(c) {
+  return c.replace(/^cortex-m(\d+)(plus)?$/, (_, n, p) => 'Cortex-M' + n + (p ? '+' : ''));
+}
+
 function onMcuChange() {
   if (!nameManuallyEdited) {
     const m = currentMcus.find(x => x.displayName === mcuSelectedValue);
@@ -868,6 +879,13 @@ function onMcuChange() {
       const suffix = m.chipSuffix.replace(/^HT32[A-Za-z]/i, '') || m.chipSuffix;
       document.getElementById('projectName').value = 'Project_' + suffix;
     }
+  }
+  const coreBadge = document.getElementById('coreBadge');
+  const sel = currentMcus.find(x => x.displayName === mcuSelectedValue);
+  if (sel && sel.armCore) {
+    coreBadge.innerHTML = '<span class="badge">' + e(formatCore(sel.armCore)) + '</span>';
+  } else {
+    coreBadge.innerHTML = '';
   }
   checkReady();
 }

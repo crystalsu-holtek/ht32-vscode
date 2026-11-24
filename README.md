@@ -1,4 +1,4 @@
-﻿[中文使用手冊](https://ht32-holtek.github.io/ht32-vscode/README_TRAD) | [English](https://ht32-holtek.github.io/ht32-vscode/)
+﻿[English](https://ht32-holtek.github.io/ht32-vscode/) | [繁體中文](https://ht32-holtek.github.io/ht32-vscode/README_TRAD) | [简体中文](https://ht32-holtek.github.io/ht32-vscode/README_SIMP)
 
 # Holtek HT32 VS Code Extension
 
@@ -72,6 +72,7 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 
 1. VS Code → Extensions → `...` → **Install from VSIX...**
 2. Select `ht32-vscode-x.x.x.vsix`
+> **Note:** Click **Reload Window** in the prompt at the bottom-right to apply the installation.
 
 > **Note:** VS Code resolves extension dependencies from the Marketplace automatically.
 > If a required dependency is not published on the Marketplace, the installation will fail.
@@ -89,8 +90,24 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 
 1. Search `Holtek HT32 VS Code Extension` in the Extensions view (searching `holtek` or `ht32` also works)
 2. Click **Install**
+> **Note:** Click **Reload Window** in the prompt at the bottom-right to apply the installation.
 
 <img src="media/3.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+
+---
+
+<br>
+
+**Option C — From the HT32 panel (updating an existing installation)**
+
+The **Update Extension** section at the bottom of the HT32 panel provides two shortcuts:
+
+| Button | Description |
+|--------|-------------|
+| **Online Update** | Download and install the latest version from the Marketplace automatically |
+| **Install from VSIX** | Manually select a `.vsix` file to install a specific version |
+
+> **Note:** Click **Reload Window** in the prompt at the bottom-right to apply the installation.
 
 ---
 
@@ -100,7 +117,7 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 
 After installation, the **HT32 icon** appears in the Activity Bar. Click it to open the HT32 panel.
 
-**When no project is open:** shows **Create Project** and **Open Project** buttons, a **View README** link, **Convert a uVision Project** and **Convert HT32-IDE Projects** buttons, and an **Updates** section with **Online Update (Extension)**, **Install from VSIX**, **Online Update (Device Packs)**, and **Install from Pack Files** shortcuts. If any projects have been opened before, a **Recent Projects** list appears below for quick access.
+**When no project is open:** shows **Create Project** and **Open Project** buttons, a **View README** link, **Convert a uVision Project** and **Convert HT32-IDE Projects** buttons, and an **Updates** section with **Update Device Packs** (**Online Update**, **Install from Pack Files**) and **Update Extension** (**Online Update**, **Install from VSIX**) shortcuts. If any projects have been opened before, a **Recent Projects** list appears below for quick access.
 
 <img src="media/4.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -153,8 +170,7 @@ Hovering over the root node reveals:
 |--------|---------|
 | Tree root (`.ht32vs`) | Rename Project File |
 | Sub-project node | Move Up, Move Down, Open Folder in Explorer, Remove Project, Add Group |
-| Group | Add Sub-Group, Add New Files, Add Existing Files, Remove / Delete... |
-| Group folder | Add Sub-Group, Remove / Delete... |
+| Group | Add New Files, Add Existing Files, Add Group (adds a sub-group under this group), Remove / Delete... |
 | File | File Settings (exclude / execute-only / ROM region), Remove / Delete... |
 | Linker file (`.ld`) | Remove / Delete... |
 
@@ -239,8 +255,8 @@ MyProject/
 
 ```
 MyProject/                 ← user-named project folder
-├── .clangd                ← auto-generated on project open (clangd config)
 └── HT32_VSCode/           ← VS Code workspace root
+    ├── .clangd            ← auto-generated on project open (clangd config)
     ├── .vscode/
     │   ├── tasks.json
     │   ├── launch.json
@@ -260,7 +276,6 @@ MyProject/                 ← user-named project folder
         └── GNU_ARM/       ← generated GCC support files
             ├── startup_ht32fxxxx_gcc_xx.s
             ├── linker.ld
-            ├── syscalls.c
             └── ht32_stack_analysis.c
 ```
 
@@ -599,6 +614,7 @@ Open via the **Settings** button in the HT32 toolbar. The panel has four tabs.
 | Search Paths (-L) | Directories where GCC looks for libraries (`-L"dir"`). Add the folder containing your `.a` files here, then reference the library by name in Libraries (-l) above. |
 | Extra LDFLAGS | Additional flags passed directly to the linker. Common examples: `-Wl,--wrap=FunctionName` (intercept/replace a function), `-Wl,--defsym=__heap_size=0x400` (override a linker symbol). See the [GNU ld manual](https://sourceware.org/binutils/docs/ld/) for all available options. |
 | Linker Scripts | Linker script paths relative to the build directory |
+
 <img src="media/15-3.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
@@ -635,6 +651,7 @@ Open via the **Settings** button in the HT32 toolbar. The panel has four tabs.
 |---------|-------------|
 | Output Filename | Custom output filename for the generated `.elf` / `.a` (leave empty to keep the converted name) |
 | Post-Build Command | Command to run after a successful build (working dir: `${workspaceFolder}` = `HT32_VSCode/`) |
+
 <img src="media/15-4.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 <br>
@@ -648,6 +665,7 @@ Shown at the top of the Settings panel, above all project sections. Settings her
 | Build Before Debug (F5) | When unchecked, F5 flashes and starts the debugger without rebuilding (default: checked) |
 | GCC Path | `arm-none-eabi-gcc` path (blank = auto-detect) |
 | OpenOCD Path | OpenOCD path (blank = use bundled OpenOCD) |
+
 <img src="media/15-5.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---

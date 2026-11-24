@@ -14,8 +14,8 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 
 | # | 區域 | 說明 |
 |---|------|------|
-| **1** | HT32 Activity Bar 圖示 | 點擊開啟 HT32 面板 |
-| **2** | Project File Tree | 原始碼群組：右鍵可新增/移除檔案與群組 |
+| **1** | HT32 活動列圖示 | 點擊開啟 HT32 面板 |
+| **2** | 專案檔案樹 | 原始碼群組：右鍵可新增/移除檔案與群組 |
 | **3** | 工具列 | 快速操作按鈕：**Build**、**Clean**、**Download**、**Debug**、**Settings** 等<br>工具列最右側的 **`···`（更多動作）** 按鈕內含 **Open Project**、**Close Project** 與 **Create Project** |
 | **4** | 編輯器 | 主程式碼編輯區：顯示任何開啟中的原始檔 |
 | **5** | Configuration Wizard 控制項 | 開啟含有 Configuration Wizard 語法的檔案時出現於右上角<br>**預覽圖示**：可直接開啟視覺化精靈<br>**Text Editor ▼** 下拉選單：可切換文字編輯器與精靈視圖 |
@@ -72,6 +72,7 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 
 1. VS Code → 擴充功能 → `...` → **Install from VSIX...**
 2. 選取 `ht32-vscode-x.x.x.vsix`
+> **注意：** 安裝完成後請點選右下角提示的 **Reload Window** 重新載入視窗。
 
 > **注意：** VS Code 會自動從 Marketplace 尋找並安裝擴充功能的相依套件。
 > 若相依套件尚未發布至 Marketplace，安裝將會失敗。
@@ -89,8 +90,24 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 
 1. 擴充功能搜尋欄輸入 `Holtek HT32 VS Code Extension`（或直接搜尋 `holtek` / `ht32` 即可找到）
 2. 點擊 **Install**
+> **注意：** 安裝完成後請點選右下角提示的 **Reload Window** 重新載入視窗。
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/3.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+
+---
+
+<br>
+
+**方法三：從 HT32 面板更新（已安裝舊版時）**
+
+HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
+
+| 按鈕 | 說明 |
+|------|------|
+| **線上更新** | 自動從 Marketplace 下載最新版本並安裝 |
+| **從 VSIX 安裝** | 手動選取 `.vsix` 檔案安裝指定版本 |
+
+> **注意：** 安裝完成後請點選右下角提示的 **Reload Window** 重新載入視窗。
 
 ---
 
@@ -100,9 +117,9 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 
 安裝後，左側**活動列**出現 **HT32 圖示**，點擊展開 HT32 面板。
 
-**專案未開啟時**，主畫面依序顯示建立與開啟專案的按鈕、查看說明文件的連結、轉換 uVision 與 HT32-IDE 專案的按鈕，以及線上更新擴充功能、從 VSIX 安裝、線上更新 Device Packs 與從檔案安裝 Pack 的快速入口。若曾開啟過專案，下方會列出最近開啟清單，點擊即可直接開啟。
+**專案未開啟時**，主畫面依序顯示建立與開啟專案的按鈕、查看說明文件的連結、轉換 uVision 與 HT32-IDE 專案的按鈕，以及更新裝置套件（線上更新、從 Pack 檔案安裝）與更新擴充功能（線上更新、從 VSIX 安裝）的快速入口。若曾開啟過專案，下方會列出最近開啟清單，點擊即可直接開啟。
 
-<img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/4.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+<img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/4-t.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---
 
@@ -153,8 +170,7 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 |------|------|
 | 樹狀根節點（`.ht32vs`） | Rename Project File（重新命名）|
 | 子專案節點 | Move Up（上移）、Move Down（下移）、Open Folder in Explorer（開啟專案資料夾）、Remove Project（從清單移除）、Add Group（新增群組） |
-| 群組 | Add Sub-Group（新增子群組）、Add New Files（新建檔案）、Add Existing Files（加入現有檔案）、Remove / Delete...（移除或刪除） |
-| 群組資料夾 | Add Sub-Group（新增子群組）、Remove / Delete...（移除或刪除） |
+| 群組 | Add New Files（新建檔案）、Add Existing Files（加入現有檔案）、Add Group（在此群組下新增子群組）、Remove / Delete...（移除或刪除） |
 | 檔案 | File Settings（排除編譯 / Execute-only / ROM region）、Remove / Delete...（移除或從磁碟刪除） |
 | Linker 檔案（`.ld`） | Remove / Delete...（移除或從磁碟刪除） |
 
@@ -233,7 +249,7 @@ MyProject/
 
 > **Library (.a)：** 產生靜態函式庫而非可執行檔。建立後只有一個空的 `.c` 檔作為起點——加入你的原始碼並實作函式庫內容即可。
 
-<img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/6.jpg" width="450" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
+<img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/6-t.jpg" width="450" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 <br>
 
@@ -241,8 +257,8 @@ MyProject/
 
 ```
 MyProject/                 ← 使用者命名的專案資料夾
-├── .clangd                ← 開啟專案時自動產生（clangd 設定）
 └── HT32_VSCode/           ← VS Code workspace root
+    ├── .clangd            ← 開啟專案時自動產生（clangd 設定）
     ├── .vscode/
     │   ├── tasks.json
     │   ├── launch.json
@@ -262,7 +278,6 @@ MyProject/                 ← 使用者命名的專案資料夾
         └── GNU_ARM/       ← 自動產生的 GCC 支援檔案
             ├── startup_ht32fxxxx_gcc_xx.s
             ├── linker.ld
-            ├── syscalls.c
             └── ht32_stack_analysis.c
 ```
 
@@ -605,6 +620,7 @@ int main(void) {
 | Search Paths (-L) | GCC 搜尋函式庫的目錄（`-L"dir"`）。將含有 `.a` 檔的資料夾加入此處，再於上方 Libraries (-l) 填入對應的庫名。 |
 | Extra LDFLAGS | 直接傳給連結器的附加旗標。常見用途：`-Wl,--wrap=FunctionName`（攔截並替換特定函式）、`-Wl,--defsym=__heap_size=0x400`（覆蓋連結器符號值）。完整選項請參考 [GNU ld manual](https://sourceware.org/binutils/docs/ld/)。 |
 | Linker Scripts | 連結腳本路徑（相對於 build 目錄） |
+
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-3.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ---

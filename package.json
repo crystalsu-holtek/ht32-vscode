@@ -53,137 +53,137 @@
       {
         "command": "ht32.openReadme",
         "category": "HT32",
-        "title": "View README",
+        "title": "%ht32.command.openReadme.title%",
         "icon": "$(book)"
       },
       {
         "command": "ht32.createProject",
         "category": "HT32",
-        "title": "Create Project",
+        "title": "%ht32.command.createProject.title%",
         "icon": "$(new-folder)"
       },
       {
         "command": "ht32.openProject",
         "category": "HT32",
-        "title": "Open Project",
+        "title": "%ht32.command.openProject.title%",
         "icon": "$(folder-library)"
       },
       {
         "command": "ht32.openProjectFolder",
         "category": "HT32",
-        "title": "Open Project (Folder)",
+        "title": "%ht32.command.openProjectFolder.title%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "ht32.renameProjectFile",
         "category": "HT32",
-        "title": "Rename Project File",
+        "title": "%ht32.command.renameProjectFile.title%",
         "icon": "$(edit)"
       },
       {
         "command": "ht32.addNewProject",
         "category": "HT32",
-        "title": "Add New Project",
+        "title": "%ht32.command.addNewProject.title%",
         "icon": "$(new-folder)"
       },
       {
         "command": "ht32.addProject",
         "category": "HT32",
-        "title": "Add Existing Project",
+        "title": "%ht32.command.addProject.title%",
         "icon": "$(new-collection)"
       },
       {
         "command": "ht32.treeRevealProjectFolder",
         "category": "HT32",
-        "title": "Open Folder in Explorer",
+        "title": "%ht32.command.treeRevealProjectFolder.title%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "ht32.deleteProject",
         "category": "HT32",
-        "title": "Remove Project",
+        "title": "%ht32.command.deleteProject.title%",
         "icon": "$(remove)"
       },
       {
         "command": "ht32.clearRecentProjects",
         "category": "HT32",
-        "title": "Clear Recent Projects",
+        "title": "%ht32.command.clearRecentProjects.title%",
         "icon": "$(clear-all)"
       },
       {
         "command": "ht32.updateFromMarketplace",
         "category": "HT32",
-        "title": "Update Extension (Online)",
+        "title": "%ht32.command.updateFromMarketplace.title%",
         "icon": "$(cloud-download)"
       },
       {
         "command": "ht32.updateDevicePacks",
         "category": "HT32",
-        "title": "Update Device Packs (Online)",
+        "title": "%ht32.command.updateDevicePacks.title%",
         "icon": "$(cloud-download)"
       },
       {
         "command": "ht32.installPackFile",
         "category": "HT32",
-        "title": "Install Device Pack from File",
+        "title": "%ht32.command.installPackFile.title%",
         "icon": "$(package)"
       },
       {
         "command": "ht32.installFromVsix",
         "category": "HT32",
-        "title": "Install Extension from VSIX",
+        "title": "%ht32.command.installFromVsix.title%",
         "icon": "$(package)"
       },
       {
         "command": "ht32.convertUvision",
         "category": "HT32",
-        "title": "Convert uVision Project",
+        "title": "%ht32.command.convertUvision.title%",
         "icon": "$(symbol-misc)"
       },
       {
         "command": "ht32.convertHt32Ide",
         "category": "HT32",
-        "title": "Convert HT32-IDE Projects",
+        "title": "%ht32.command.convertHt32Ide.title%",
         "icon": "$(symbol-misc)"
       },
       {
         "command": "ht32.generateTasksLaunch",
         "category": "HT32",
-        "title": "Generate Build & Debug Config",
+        "title": "%ht32.command.generateTasksLaunch.title%",
         "icon": "$(json)"
       },
       {
         "command": "ht32.regenerateCompileCommands",
         "category": "HT32",
-        "title": "Regenerate compile_commands.json"
+        "title": "%ht32.command.regenerateCompileCommands.title%"
       },
       {
         "command": "ht32.regenerateMakefile",
         "category": "HT32",
-        "title": "Regenerate Makefile"
+        "title": "%ht32.command.regenerateMakefile.title%"
       },
       {
         "command": "ht32.build",
         "category": "HT32",
-        "title": "Build",
+        "title": "%ht32.command.build.title%",
         "icon": "$(build)"
       },
       {
         "command": "ht32.stopBuild",
         "category": "HT32",
-        "title": "Stop Build",
+        "title": "%ht32.command.stopBuild.title%",
         "icon": "$(stop-circle)"
       },
       {
         "command": "ht32.download",
         "category": "HT32",
-        "title": "Download",
+        "title": "%ht32.command.download.title%",
         "icon": "$(cloud-download)"
       },
       {
         "command": "ht32.eraseFlash",
         "category": "HT32",
-        "title": "Erase Flash",
+        "title": "%ht32.command.eraseFlash.title%",
         "icon": {
           "light": "icons/erase_light.svg",
           "dark": "icons/erase_dark.svg"
@@ -192,79 +192,79 @@
       {
         "command": "ht32.runClean",
         "category": "HT32",
-        "title": "Clean",
+        "title": "%ht32.command.runClean.title%",
         "icon": "$(clear-all)"
       },
       {
         "command": "ht32.startDebug",
         "category": "HT32",
-        "title": "Debug",
+        "title": "%ht32.command.startDebug.title%",
         "icon": "$(debug-alt)"
       },
       {
         "command": "ht32.openSettings",
         "category": "HT32",
-        "title": "Open Settings",
+        "title": "%ht32.command.openSettings.title%",
         "icon": "$(settings-gear)"
       },
       {
         "command": "ht32.treeMoveProjectUp",
         "category": "HT32",
-        "title": "Move Up",
+        "title": "%ht32.command.treeMoveProjectUp.title%",
         "icon": "$(arrow-up)"
       },
       {
         "command": "ht32.treeMoveProjectDown",
         "category": "HT32",
-        "title": "Move Down",
+        "title": "%ht32.command.treeMoveProjectDown.title%",
         "icon": "$(arrow-down)"
       },
       {
         "command": "ht32.treeAddGroup",
         "category": "HT32",
-        "title": "Add Group",
+        "title": "%ht32.command.treeAddGroup.title%",
         "icon": "$(add)"
       },
       {
         "command": "ht32.treeAddNewFilesToGroup",
         "category": "HT32",
-        "title": "Add New Files",
+        "title": "%ht32.command.treeAddNewFilesToGroup.title%",
         "icon": "$(new-file)"
       },
       {
         "command": "ht32.treeAddExistingFilesToGroup",
         "category": "HT32",
-        "title": "Add Existing Files",
+        "title": "%ht32.command.treeAddExistingFilesToGroup.title%",
         "icon": "$(file-add)"
       },
       {
         "command": "ht32.treeFileSettings",
         "category": "HT32",
-        "title": "File Settings...",
+        "title": "%ht32.command.treeFileSettings.title%",
         "icon": "$(settings-gear)"
       },
       {
         "command": "ht32.treeDelete",
         "category": "HT32",
-        "title": "Remove / Delete...",
+        "title": "%ht32.command.treeDelete.title%",
         "icon": "$(trash)"
       },
       {
         "command": "ht32.closeProject",
         "category": "HT32",
-        "title": "Close Project",
+        "title": "%ht32.command.closeProject.title%",
         "icon": "$(folder)"
       },
       {
         "command": "ht32.refreshStackAnalysis",
         "category": "HT32",
-        "title": "Refresh Stack Usage",
+        "title": "%ht32.command.refreshStackAnalysis.title%",
         "icon": "$(refresh)"
       },
       {
         "command": "ht32.refreshProjectTree",
         "category": "HT32",
-        "title": "Refresh Project Tree"
+        "title": "%ht32.command.refreshProjectTree.title%"
       }
     ],
     "configuration": {
