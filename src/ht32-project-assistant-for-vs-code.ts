@@ -565,11 +565,12 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const current = readActiveProjectFile(bgParent(root)) || '';
       if (!current) { vscode.window.showErrorMessage(vscode.l10n.t('No active project file to rename.')); return; }
       const currentName = path.basename(current, '.ht32vs');
-      const newName = await vscode.window.showInputBox({
-        title: 'Rename Project File',
+      const newName = await showInputDialog({
+        title: vscode.l10n.t('Rename Project File'),
+        prompt: vscode.l10n.t('Enter a new name for the project file'),
         value: currentName,
-        validateInput: v => !v.trim() ? 'Name cannot be empty'
-          : /[<>:"/\\|?*]/.test(v.trim()) ? 'Invalid characters' : undefined,
+        validateInput: v => !v.trim() ? vscode.l10n.t('Name cannot be empty.')
+          : /[<>:"/\\|?*]/.test(v.trim()) ? vscode.l10n.t('Invalid characters in file name.') : undefined,
       });
       if (!newName || newName.trim() === currentName) return;
       const oldPath = path.join(parent, current);
@@ -619,17 +620,13 @@ export async function activate(ctx: vscode.ExtensionContext) {
             isBgDir(parent, d) &&
             !existing.includes(d)).sort()
         : [];
-      const picks = await vscode.window.showQuickPick(
-        available.map(d => ({ label: d })),
-        {
-          canPickMany: true,
-          placeHolder: available.length === 0
-            ? 'No additional projects found in this folder — run Convert or Create Project first'
-            : 'Select projects to include'
-        }
-      );
+      const picks = await pickMultiPanel({
+        title: vscode.l10n.t('Add Sub-Project'),
+        items: available,
+        emptyMessage: vscode.l10n.t('No additional projects found in this folder — run Convert or Create Project first.'),
+      });
       if (!picks || picks.length === 0) return;
-      const toAdd = picks.map(p => p.label);
+      const toAdd = picks;
 
       if (existing.length === 1) {
         // First time going multi-project: prompt for workspace file name
@@ -663,7 +660,10 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!parsed) return;
       const projects: string[] = parsed.projects ?? [];
       if (projects.length <= 1) {
-        vscode.window.showWarningMessage(vscode.l10n.t('Cannot remove the only remaining sub-project.'));
+        await vscode.window.showWarningMessage(
+          vscode.l10n.t('Cannot remove the only remaining sub-project.'),
+          { modal: true }
+        );
         return;
       }
       const updated = projects.filter(p => p !== dirName);
@@ -1341,6 +1341,7 @@ function showInputDialog(opts: {
   prompt: string;
   value: string;
   placeHolder?: string;
+  validateInput?: (v: string) => string | undefined;
 }): Promise<string | undefined> {
   return new Promise(resolve => {
     const panel = vscode.window.createWebviewPanel(
@@ -1366,6 +1367,7 @@ function showInputDialog(opts: {
           border:1px solid var(--vscode-input-border,#3c3c3c); border-radius:3px;
           font-size:1em; outline:none; }
   input:focus { border-color:var(--vscode-focusBorder,#007fd4); }
+  .err { color:var(--vscode-inputValidation-errorForeground,#f48771); font-size:.85em; margin-top:6px; min-height:1em; }
   .row { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
   button { padding:5px 16px; border:none; border-radius:3px; cursor:pointer; font-size:.9em; }
   #ok  { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
@@ -1378,23 +1380,282 @@ function showInputDialog(opts: {
   <h2>${esc(opts.title)}</h2>
   <p>${esc(opts.prompt)}</p>
   <input id="inp" type="text" value="${esc(opts.value)}" placeholder="${esc(opts.placeHolder ?? opts.value)}" autofocus />
-  <div class="row"><button id="cancel">Cancel</button><button id="ok">OK</button></div>
+  <p id="err" class="err"></p>
+  <div class="row"><button id="cancel">${esc(vscode.l10n.t('Cancel'))}</button><button id="ok">${esc(vscode.l10n.t('OK'))}</button></div>
 </div>
 <script>
   const vscode = acquireVsCodeApi();
   const inp = document.getElementById('inp');
   inp.select();
-  const submit = () => vscode.postMessage({ type: 'ok', value: inp.value.trim() || inp.placeholder });
+  const err = document.getElementById('err');
+  const submit = () => { err.textContent = ''; vscode.postMessage({ type: 'ok', value: inp.value.trim() || inp.placeholder }); };
   document.getElementById('ok').addEventListener('click', submit);
   document.getElementById('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') vscode.postMessage({ type: 'cancel' }); });
+  window.addEventListener('message', e => { if (e.data.type === 'validationError') { err.textContent = e.data.message; inp.focus(); } });
   inp.focus();
 </script></body></html>`;
 
     vscode.commands.executeCommand('workbench.action.maximizeEditorGroup');
 
     panel.webview.onDidReceiveMessage(msg => {
-      done(msg.type === 'ok' ? msg.value : undefined);
+      if (msg.type === 'ok') {
+        const error = opts.validateInput?.(msg.value);
+        if (error) {
+          panel.webview.postMessage({ type: 'validationError', message: error });
+          return;
+        }
+        done(msg.value);
+      } else {
+        done(undefined);
+      }
+      panel.dispose();
+    });
+    panel.onDidDispose(() => {
+      vscode.commands.executeCommand('workbench.action.evenEditorWidths');
+      done(undefined);
+    });
+  });
+}
+
+/** Webview panel for picking multiple items from a list. Returns selected labels, or undefined if cancelled. */
+function pickMultiPanel(opts: {
+  title: string;
+  items: string[];
+  emptyMessage?: string;
+}): Promise<string[] | undefined> {
+  if (opts.items.length === 0) {
+    vscode.window.showInformationMessage(opts.emptyMessage ?? vscode.l10n.t('No items available.'), { modal: true });
+    return Promise.resolve(undefined);
+  }
+  return new Promise(resolve => {
+    const panel = vscode.window.createWebviewPanel(
+      'ht32MultiPick', opts.title, vscode.ViewColumn.Active,
+      { enableScripts: true, retainContextWhenHidden: false },
+    );
+    let resolved = false;
+    const done = (v: string[] | undefined) => { if (!resolved) { resolved = true; resolve(v); } };
+
+    const nonce = crypto.randomUUID().replace(/-/g, '');
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    const addSelectedLabel = escScript(JSON.stringify(vscode.l10n.t('Add Selected')));
+    const cancelLabel = esc(vscode.l10n.t('Cancel'));
+    const itemsJson = escScript(JSON.stringify(opts.items));
+
+    panel.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<style>
+  body { display:flex; align-items:center; justify-content:center; height:100vh; margin:0;
+         background:rgba(0,0,0,0.4); font-family:var(--vscode-font-family); font-size:var(--vscode-font-size); color:var(--vscode-foreground); }
+  .card { background:var(--vscode-editorWidget-background); border:1px solid var(--vscode-editorWidget-border,#454545);
+          border-radius:6px; padding:24px 28px; min-width:320px; max-width:480px; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
+  h2 { margin:0 0 16px; font-size:1.1em; font-weight:600; }
+  .list { display:flex; flex-direction:column; gap:4px; margin-bottom:20px; }
+  .item { padding:8px 12px; border-radius:3px; cursor:pointer; border:1px solid var(--vscode-panel-border);
+          background:var(--vscode-editor-background); display:flex; align-items:center; gap:10px; user-select:none; }
+  .item:hover { border-color:var(--vscode-focusBorder); }
+  .item.selected { background:var(--vscode-button-background); color:var(--vscode-button-foreground); border-color:var(--vscode-button-background); }
+  .check { font-size:1em; width:16px; text-align:center; }
+  .label { flex:1; }
+  .footer { display:flex; justify-content:flex-end; gap:8px; }
+  button { padding:5px 16px; border:none; border-radius:3px; cursor:pointer; font-size:.9em; }
+  #ok  { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+  #ok:hover  { background:var(--vscode-button-hoverBackground); }
+  #cancel { background:var(--vscode-button-secondaryBackground,#3a3d41); color:var(--vscode-button-secondaryForeground,#ccc); }
+  #cancel:hover { background:var(--vscode-button-secondaryHoverBackground,#45494e); }
+</style></head><body>
+<div class="card">
+  <h2>${esc(opts.title)}</h2>
+  <div class="list" id="list"></div>
+  <div class="footer">
+    <button id="cancel">${cancelLabel}</button>
+    <button id="ok" disabled>${esc(vscode.l10n.t('Add Selected'))} (0)</button>
+  </div>
+</div>
+<script nonce="${nonce}">
+  const vscode = acquireVsCodeApi();
+  const items = ${itemsJson};
+  const selected = new Set();
+  const okBtn = document.getElementById('ok');
+  const list  = document.getElementById('list');
+
+  function updateOk() {
+    okBtn.textContent = ${addSelectedLabel} + ' (' + selected.size + ')';
+    okBtn.disabled = selected.size === 0;
+  }
+
+  items.forEach((label, i) => {
+    const row = document.createElement('div');
+    row.className = 'item';
+    row.innerHTML = '<span class="check"></span><span class="label">' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+    row.addEventListener('click', () => {
+      if (selected.has(i)) { selected.delete(i); row.classList.remove('selected'); row.querySelector('.check').textContent = ''; }
+      else { selected.add(i); row.classList.add('selected'); row.querySelector('.check').textContent = '✓'; }
+      updateOk();
+    });
+    list.appendChild(row);
+  });
+
+  okBtn.addEventListener('click', () => {
+    if (selected.size === 0) return;
+    const indices = [...selected].filter(i => i >= 0 && i < items.length);
+    vscode.postMessage({ type: 'ok', indices });
+  });
+  document.getElementById('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
+</script></body></html>`;
+
+    vscode.commands.executeCommand('workbench.action.maximizeEditorGroup');
+
+    panel.webview.onDidReceiveMessage(msg => {
+      if (msg.type === 'ok') {
+        done((msg.indices as number[]).sort((a, b) => a - b).map(i => opts.items[i]));
+      } else {
+        done(undefined);
+      }
+      panel.dispose();
+    });
+    panel.onDidDispose(() => {
+      vscode.commands.executeCommand('workbench.action.evenEditorWidths');
+      done(undefined);
+    });
+  });
+}
+
+/** Webview panel for per-file build settings (exclude, execute-only, ROM region). */
+function showFileSettingsPanel(
+  fileName: string,
+  current: { exclude?: true; xo?: true; rom?: { origin: string; length: string } },
+  romRegions: Array<{ name: string; origin: string; length: string }>,
+): Promise<{ exclude?: true; xo?: true; rom?: { origin: string; length: string } } | undefined> {
+  return new Promise(resolve => {
+    const panel = vscode.window.createWebviewPanel(
+      'ht32FileSettings',
+      vscode.l10n.t('File Settings: {0}', fileName),
+      vscode.ViewColumn.Active,
+      { enableScripts: true, retainContextWhenHidden: false },
+    );
+    let resolved = false;
+    const done = (v: typeof current | undefined) => { if (!resolved) { resolved = true; resolve(v); } };
+
+    const nonce = crypto.randomUUID().replace(/-/g, '');
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+
+    const regionOptions = [
+      { value: '0', label: vscode.l10n.t('Default (FLASH)'), desc: vscode.l10n.t('Place in primary flash region') },
+      ...romRegions.map((r, idx) => ({
+        value: String(idx + 1),  // use stable index as value; look up origin/length on host side
+        label: r.name,
+        desc: `ORIGIN = ${r.origin}, LENGTH = ${r.length}`,
+      })),
+    ];
+    const currentRomIdx = current.rom
+      ? romRegions.findIndex(r => r.origin === current.rom!.origin && r.length === current.rom!.length) + 1
+      : 0;
+
+    const regionOptionsHtml = regionOptions.map(o =>
+      `<option value="${esc(o.value)}"${o.value === String(currentRomIdx) ? ' selected' : ''}>${esc(o.label)} — ${esc(o.desc)}</option>`
+    ).join('');
+
+    const i18n = {
+      title:        vscode.l10n.t('File Settings: {0}', fileName),
+      exclude:      vscode.l10n.t('Exclude from build'),
+      excludeDesc:  vscode.l10n.t('File will not be compiled or assembled.'),
+      xo:           vscode.l10n.t('Execute-only (-mpure-code)'),
+      xoDesc:       vscode.l10n.t('Marks the file\'s code section as execute-only (no data reads). Cortex-M23/M33 only.'),
+      romRegion:    vscode.l10n.t('ROM Region'),
+      romDesc:      vscode.l10n.t('Place this file\'s code in a specific memory region (e.g. OPT_B).'),
+      apply:        vscode.l10n.t('Apply'),
+      cancel:       vscode.l10n.t('Cancel'),
+    };
+
+    panel.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<style>
+  body { display:flex; align-items:center; justify-content:center; height:100vh; margin:0;
+         background:rgba(0,0,0,0.4); font-family:var(--vscode-font-family); font-size:var(--vscode-font-size); color:var(--vscode-foreground); }
+  .card { background:var(--vscode-editorWidget-background); border:1px solid var(--vscode-editorWidget-border,#454545);
+          border-radius:6px; padding:24px 28px; width:420px; max-width:90vw; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
+  h2 { margin:0 0 20px; font-size:1.05em; font-weight:600; word-break:break-all; }
+  .field { margin-bottom:16px; }
+  .toggle-row { display:flex; align-items:flex-start; gap:10px; padding:8px 10px; border-radius:3px;
+                border:1px solid var(--vscode-panel-border); cursor:pointer; user-select:none; }
+  .toggle-row:hover { border-color:var(--vscode-focusBorder); }
+  .toggle-row input[type="checkbox"] { margin-top:2px; width:15px; height:15px; cursor:pointer;
+                                       accent-color:var(--vscode-button-background); flex-shrink:0; }
+  .toggle-text { display:flex; flex-direction:column; gap:2px; }
+  .toggle-label { font-weight:600; font-size:0.92em; }
+  .toggle-desc  { font-size:0.82em; color:var(--vscode-descriptionForeground); }
+  .field-label { font-size:0.82em; font-weight:600; margin-bottom:5px; color:var(--vscode-foreground); }
+  .field-desc  { font-size:0.80em; color:var(--vscode-descriptionForeground); margin-bottom:5px; }
+  select { width:100%; padding:5px 8px; background:var(--vscode-dropdown-background,var(--vscode-input-background));
+           color:var(--vscode-dropdown-foreground,var(--vscode-foreground));
+           border:1px solid var(--vscode-dropdown-border,var(--vscode-input-border,#3c3c3c));
+           border-radius:3px; font-size:0.92em; cursor:pointer; }
+  select:focus { outline:1px solid var(--vscode-focusBorder); }
+  .footer { display:flex; justify-content:flex-end; gap:8px; margin-top:24px; }
+  button { padding:5px 18px; border:none; border-radius:3px; cursor:pointer; font-size:.9em; }
+  #apply  { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+  #apply:hover  { background:var(--vscode-button-hoverBackground); }
+  #cancel { background:var(--vscode-button-secondaryBackground,#3a3d41); color:var(--vscode-button-secondaryForeground,#ccc); }
+  #cancel:hover { background:var(--vscode-button-secondaryHoverBackground,#45494e); }
+</style></head><body>
+<div class="card">
+  <h2>${esc(i18n.title)}</h2>
+  <div class="field">
+    <label class="toggle-row">
+      <input type="checkbox" id="exclude"${current.exclude ? ' checked' : ''}>
+      <span class="toggle-text">
+        <span class="toggle-label">${esc(i18n.exclude)}</span>
+        <span class="toggle-desc">${esc(i18n.excludeDesc)}</span>
+      </span>
+    </label>
+  </div>
+  <div class="field">
+    <label class="toggle-row">
+      <input type="checkbox" id="xo"${current.xo ? ' checked' : ''}>
+      <span class="toggle-text">
+        <span class="toggle-label">${esc(i18n.xo)}</span>
+        <span class="toggle-desc">${esc(i18n.xoDesc)}</span>
+      </span>
+    </label>
+  </div>
+  <div class="field">
+    <div class="field-label">${esc(i18n.romRegion)}</div>
+    <div class="field-desc">${esc(i18n.romDesc)}</div>
+    <select id="rom">${regionOptionsHtml}</select>
+  </div>
+  <div class="footer">
+    <button id="cancel">${esc(i18n.cancel)}</button>
+    <button id="apply">${esc(i18n.apply)}</button>
+  </div>
+</div>
+<script nonce="${nonce}">
+  const vsc = acquireVsCodeApi();
+  document.getElementById('apply').addEventListener('click', () => {
+    const romIdx = parseInt(document.getElementById('rom').value, 10);
+    vsc.postMessage({ type: 'apply',
+      exclude: document.getElementById('exclude').checked,
+      xo:      document.getElementById('xo').checked,
+      romIdx:  isNaN(romIdx) ? 0 : romIdx });
+  });
+  document.getElementById('cancel').addEventListener('click', () => vsc.postMessage({ type: 'cancel' }));
+</script></body></html>`;
+
+    vscode.commands.executeCommand('workbench.action.maximizeEditorGroup');
+
+    panel.webview.onDidReceiveMessage(msg => {
+      if (msg.type === 'apply') {
+        const result: typeof current = {};
+        if (msg.exclude) result.exclude = true;
+        if (msg.xo)      result.xo = true;
+        const idx = typeof msg.romIdx === 'number' ? msg.romIdx : 0;
+        if (idx > 0 && idx <= romRegions.length) {
+          result.rom = { origin: romRegions[idx - 1].origin, length: romRegions[idx - 1].length };
+        }
+        done(result);
+      } else {
+        done(undefined);
+      }
       panel.dispose();
     });
     panel.onDidDispose(() => {
@@ -1597,10 +1858,12 @@ async function pickAdapterPanel(
   content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
 <style>
   body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
-         color: var(--vscode-foreground); background: var(--vscode-sideBar-background);
-         padding: 24px; margin: 0; }
-  .container { border: 1px solid var(--vscode-panel-border); border-radius: 4px;
-               padding: 20px 24px; max-width: 520px; background: var(--vscode-editor-background); }
+         color: var(--vscode-foreground); background: rgba(0,0,0,0.4);
+         margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; }
+  .container { border: 1px solid var(--vscode-editorWidget-border, #454545); border-radius: 6px;
+               padding: 24px 28px; width: 480px; max-width: 90vw;
+               background: var(--vscode-editorWidget-background);
+               box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
   h3   { margin: 0 0 6px 0; font-size: 1.1em; }
   .sub { color: var(--vscode-descriptionForeground); margin-bottom: 18px; font-size: 0.95em; }
   #mainGrid { display: grid; grid-template-columns: 1fr auto;
@@ -1698,6 +1961,8 @@ async function pickAdapterPanel(
 </body>
 </html>`;
 
+    vscode.commands.executeCommand('workbench.action.maximizeEditorGroup');
+
     let settled = false;
     const done = (val: { serial: string; label: string } | undefined) => {
       if (!settled) { settled = true; resolve(val); }
@@ -1718,7 +1983,10 @@ async function pickAdapterPanel(
         panel.webview.postMessage({ command: 'infoResult', text });
       }
     });
-    panel.onDidDispose(() => done(undefined));
+    panel.onDidDispose(() => {
+      vscode.commands.executeCommand('workbench.action.evenEditorWidths');
+      done(undefined);
+    });
   });
 }
 
@@ -5392,9 +5660,14 @@ function registerTreeEditCommands(
     }
     if (!buildGenDir) return;
 
-    const prompt      = parentPath ? `New sub-group name under "${parentPath}"` : 'New group name';
-    const placeHolder = parentPath ? 'e.g. NewGroup' : 'e.g. User';
-    const input = await vscode.window.showInputBox({ prompt, placeHolder });
+    const prompt      = parentPath ? vscode.l10n.t('New sub-group name under "{0}"', parentPath) : vscode.l10n.t('New group name');
+    const placeHolder = parentPath ? vscode.l10n.t('e.g. NewGroup') : vscode.l10n.t('e.g. User');
+    const input = await showInputDialog({
+      title: parentPath ? vscode.l10n.t('Add Sub-Group') : vscode.l10n.t('Add Group'),
+      prompt,
+      value: '',
+      placeHolder,
+    });
     if (!input?.trim()) return;
     if (input.includes('/')) {
       vscode.window.showErrorMessage(vscode.l10n.t('Group name cannot contain "/". Use the right-click menu to create nested sub-groups.'));
@@ -5674,64 +5947,15 @@ function registerTreeEditCommands(
     type FO = { exclude?: true; xo?: true; rom?: { origin: string; length: string } };
     const fo: FO = { ...(meta.fileOptions?.[filePath] ?? {}) };
     const fileName = path.basename(filePath);
-
-    // Parse available ROM regions from the linker script
     const romRegions = ldRomRegions(buildGenDir, meta);
 
-    const numOrigin = (v: string) => /^0x/i.test(v) ? parseInt(v, 16) : parseInt(v, 10);
-    const regionNameFor = (rom: { origin: string; length: string } | undefined): string => {
-      if (!rom) return 'default (FLASH)';
-      const n = numOrigin(rom.origin);
-      return romRegions.find(r => numOrigin(r.origin) === n)?.name ?? `0x${n.toString(16)}`;
-    };
+    const result = await showFileSettingsPanel(fileName, fo, romRegions);
+    if (!result) return;
 
-    while (true) {
-      const exIcon = fo.exclude ? '$(check)' : '$(blank)';
-      const xoIcon = fo.xo     ? '$(check)' : '$(blank)';
-      const romLabel = `ROM: ${regionNameFor(fo.rom)}`;
-
-      type ActionItem = vscode.QuickPickItem & { id: string };
-      const action = await vscode.window.showQuickPick<ActionItem>([
-        { label: `${exIcon} Exclude from build`,       id: 'exclude',  description: fo.exclude ? 'enabled' : '' },
-        { label: `${xoIcon} Execute-only (-mpure-code)`,id: 'xo',      description: fo.xo ? 'enabled' : '' },
-        { label: `$(database) ${romLabel}`,             id: 'rom',      description: 'select region...' },
-        { label: '$(check) Apply',                      id: 'apply',    description: 'save and regenerate Makefile' },
-        { label: '$(discard) Cancel',                   id: 'cancel' },
-      ], { title: `File Settings: ${fileName}`, placeHolder: 'Select a setting to toggle or Apply to save' });
-
-      if (!action || action.id === 'cancel') return;
-
-      if (action.id === 'exclude') {
-        fo.exclude = fo.exclude ? undefined : true;
-      } else if (action.id === 'xo') {
-        fo.xo = fo.xo ? undefined : true;
-      } else if (action.id === 'rom') {
-        type RegionItem = vscode.QuickPickItem & { rom: FO['rom'] };
-        const currentN = fo.rom ? numOrigin(fo.rom.origin) : -1;
-        const regionItems: RegionItem[] = [
-          { label: '$(dash) Default (FLASH)', description: 'use primary flash region', rom: undefined, picked: !fo.rom },
-          ...romRegions.map(r => ({
-            label: `$(database) ${r.name}`,
-            description: `ORIGIN = ${r.origin}, LENGTH = ${r.length}`,
-            rom: { origin: r.origin, length: r.length } as FO['rom'],
-            picked: numOrigin(r.origin) === currentN,
-          })),
-        ];
-        const picked = await vscode.window.showQuickPick<RegionItem>(regionItems, {
-          title: `ROM Region for ${fileName}`,
-          placeHolder: 'Choose which memory region to place this file\'s code in',
-        });
-        if (picked !== undefined) fo.rom = picked.rom;
-      } else if (action.id === 'apply') {
-        break;
-      }
-    }
-
-    // Write back to meta.fileOptions
     const cleaned: FO = {};
-    if (fo.exclude) cleaned.exclude = true;
-    if (fo.xo)     cleaned.xo = true;
-    if (fo.rom)    cleaned.rom = fo.rom;
+    if (result.exclude) cleaned.exclude = true;
+    if (result.xo)     cleaned.xo = true;
+    if (result.rom)    cleaned.rom = result.rom;
 
     if (!meta.fileOptions) meta.fileOptions = {};
     if (Object.keys(cleaned).length) {

@@ -868,7 +868,8 @@ function buildHtml(
     width: calc(33.333% - 4px); min-width: 140px;
   }
   .def-row input[type="text"] { font-size: 0.82em; padding: 4px 6px; flex: 1; min-width: 0; }
-  .lib-section-label { font-size: 0.76em; color: var(--vscode-descriptionForeground); margin: 4px 0 2px; font-weight: 600; letter-spacing: 0.03em; }
+  .lib-section-label { font-size: 0.76em; color: var(--vscode-descriptionForeground); margin: 0 0 4px; font-weight: 600; letter-spacing: 0.03em; }
+  .lib-sub-group { border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 8px 10px; display: flex; flex-direction: column; }
   .btn-remove { padding: 2px 6px; font-size: 0.85em; border-radius: 2px; background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-input-border, #555); cursor: pointer; }
   .btn-remove:hover { background: var(--vscode-inputValidation-errorBackground); }
   .auto-row { opacity: 0.65; }
@@ -877,7 +878,7 @@ function buildHtml(
   .auto-row .auto-addr { font-family: monospace; }
   .auto-section-label { font-size: 0.76em; color: var(--vscode-descriptionForeground); margin: 5px 0 2px; font-style: italic; }
   .no-items { font-size: 0.84em; color: var(--vscode-descriptionForeground); padding: 4px 0; font-style: italic; }
-  .add-btn { margin-top: 5px; padding: 3px 12px; font-size: 0.85em; }
+  .add-btn { margin-top: 5px; padding: 3px 12px; font-size: 0.85em; color: var(--vscode-terminal-ansiBrightGreen); border-color: var(--vscode-terminal-ansiBrightGreen); }
 
   /* Tabs */
   .tab-bar { display: flex; gap: 0; margin-bottom: 14px; border-bottom: 2px solid var(--vscode-panel-border); }
@@ -1755,12 +1756,16 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 </div>
 <div class="row">
   <label>${vscode.l10n.t('Extra Libraries')}</label>
-  <p class="lib-section-label" style="margin-top:0">${vscode.l10n.t('Libraries (-l)')}</p>
-  <div id="${id('libNameRows')}">${libNameRowsHtml || `<p class="no-items">${vscode.l10n.t('No -l libraries.')}</p>`}</div>
-  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibName(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -l')}</button>
-  <p class="lib-section-label" style="margin-top:10px">${vscode.l10n.t('Search Paths (-L)')}</p>
-  <div id="${id('libPathRows')}">${libPathRowsHtml || `<p class="no-items">${vscode.l10n.t('No -L search paths.')}</p>`}</div>
-  <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibPath(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -L')}</button>
+  <div class="lib-sub-group">
+    <p class="lib-section-label">${vscode.l10n.t('Libraries (-l)')}</p>
+    <div id="${id('libNameRows')}">${libNameRowsHtml || `<p class="no-items">${vscode.l10n.t('No -l libraries.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibName(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -l')}</button>
+  </div>
+  <div class="lib-sub-group">
+    <p class="lib-section-label">${vscode.l10n.t('Search Paths (-L)')}</p>
+    <div id="${id('libPathRows')}">${libPathRowsHtml || `<p class="no-items">${vscode.l10n.t('No -L search paths.')}</p>`}</div>
+    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addLibPath(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add -L')}</button>
+  </div>
 </div>
 <div class="row">
   <label>${vscode.l10n.t('Extra LDFLAGS')}</label>
