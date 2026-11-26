@@ -16,7 +16,7 @@ A VS Code extension for **Holtek HT32** series Cortex-M microcontrollers (M0+/M3
 |---|------|-------------|
 | **1** | HT32 Activity Bar icon | Click to open the HT32 panel |
 | **2** | Project File Tree | Source groups: add/remove files and groups via right-click |
-| **3** | Toolbar | Quick-access buttons: **Build**, **Clean**, **Download**, **Debug**, **Settings**, and more<br>The **`···` (More Actions)** button at the right end of the toolbar also contains **Open Project**, **Close Project**, and **Create Project** |
+| **3** | Toolbar | Quick-access buttons: **Build**, **Clean**, **Download**, **Debug**, **Settings**, and more<br>The **`···` (More Actions)** button at the right end of the toolbar also contains **Create Project**, **Open Project**, **Convert uVision Project**, **Convert HT32-IDE Projects**, and **Close Project** |
 | **4** | Editor | Main code editor: displays any open source file |
 | **5** | Configuration Wizard controls | Visible in the top-right when a file containing Configuration Wizard syntax is open<br>**Preview icon**: opens the visual wizard directly<br>**Text Editor ▼** dropdown: switches between text editor and wizard view |
 | **6** | Bottom panels | **Problems**: build errors and warnings<br>**Output**: extension and debugger logs<br>**Debug Console**: debug session output<br>**Terminal**: raw build output from Make |
@@ -143,6 +143,10 @@ The **`···` (More Actions)** menu also contains:
 |------|--------|
 | Create Project | Open the Create Project wizard |
 | Open Project | Open a `.ht32vs` project file |
+| *(separator)* | |
+| Convert uVision Project | Import a Keil `.uvprojx` / `.uvmpw` project |
+| Convert HT32-IDE Projects | Import one or more Eclipse CDT `.project` folders |
+| *(separator)* | |
 | Close Project | Close the currently loaded project |
 
 <img src="media/more_actions.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
@@ -656,9 +660,9 @@ Open via the **Settings** button in the HT32 toolbar. The panel has four tabs.
 
 <br>
 
-### Common Section
+### Common Tab
 
-Shown at the top of the Settings panel, above all project sections. Settings here are machine-wide and saved to VS Code User Settings.
+Settings here are machine-wide and saved to VS Code User Settings.
 
 | Setting | Description |
 |---------|-------------|

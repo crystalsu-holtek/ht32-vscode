@@ -497,7 +497,17 @@
         {
           "command": "ht32.closeProject",
           "when": "view == ht32ProjectView && ht32.hasProject",
-          "group": "1_project@3"
+          "group": "3_close@1"
+        },
+        {
+          "command": "ht32.convertUvision",
+          "when": "view == ht32ProjectView",
+          "group": "2_convert@1"
+        },
+        {
+          "command": "ht32.convertHt32Ide",
+          "when": "view == ht32ProjectView",
+          "group": "2_convert@2"
         },
         {
           "command": "ht32.refreshStackAnalysis",

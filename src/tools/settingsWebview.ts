@@ -716,6 +716,7 @@ function buildHtml(
 
   const commonSection = buildCommonSection(machine, detectedGccPath);
 
+  const isSingleProject = bgDirs.length === 1;
   const projSections = bgDirs.length > 0
     ? bgDirs.map((bg, i) => buildProjectSection(
         bg.name,
@@ -725,11 +726,12 @@ function buildHtml(
         autoLoadersByBg[bg.name] ?? [],
         availableFlms,
         targetNamesByBg[bg.name]  ?? '',
-        linkerScriptsByBg[bg.name] ?? DEFAULT_LINKER_SCRIPTS
+        linkerScriptsByBg[bg.name] ?? DEFAULT_LINKER_SCRIPTS,
+        isSingleProject ? commonSection : null
       )).join('\n')
     : `<p class="hint" style="color:var(--vscode-inputValidation-warningForeground);margin:8px 0 16px">
   ${vscode.l10n.t('No converted project found in the workspace. Convert a .uvprojx/.uvmpw first, then reopen this panel.')}
-</p>` + buildProjectSection('', '', '', DEFAULT_PROJECT_SETTINGS, [], availableFlms, '', []);
+</p>` + buildProjectSection('', '', '', DEFAULT_PROJECT_SETTINGS, [], availableFlms, '', [], commonSection);
 
   const saveCancelBar = (isTop: boolean) => `
 <div class="${isTop ? 'sticky-bar' : 'footer-bar'}">
@@ -898,7 +900,7 @@ ${saveCancelBar(true)}
 
 ${projSections}
 
-${commonSection}
+${isSingleProject ? '' : commonSection}
 
 ${saveCancelBar(false)}
 
@@ -1205,7 +1207,7 @@ function switchTab(bgName, tab) {
   var targets = BG_NAMES.length > 0 ? BG_NAMES : [''];
   targets.forEach(function(bg) {
     var prefix = bg ? bg + '__' : '';
-    ['compiler', 'linker', 'debugger', 'build'].forEach(function(t) {
+    ['compiler', 'linker', 'debugger', 'build', 'common'].forEach(function(t) {
       var panel = document.getElementById(prefix + 'tab_' + t);
       var btn   = document.getElementById(prefix + 'tabBtn_' + t);
       if (panel) panel.classList.toggle('active', t === tab);
@@ -1470,7 +1472,8 @@ function buildProjectSection(
   autoLoaders: AutoLoaderEntry[],
   availableFlms: string[],
   defaultTargetName: string = '',
-  linkerScripts: string[] = DEFAULT_LINKER_SCRIPTS
+  linkerScripts: string[] = DEFAULT_LINKER_SCRIPTS,
+  commonHtml: string | null = null
 ): string {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
   const p   = bgName ? bgName + '__' : '';
@@ -1549,6 +1552,7 @@ ${titleHtml}
   <button class="tab-btn"        id="${p}tabBtn_linker"   onclick="switchTab('${esc(bg)}','linker')">${vscode.l10n.t('Linker')}</button>
   <button class="tab-btn"        id="${p}tabBtn_debugger" onclick="switchTab('${esc(bg)}','debugger')">${vscode.l10n.t('Debugger')}</button>
   <button class="tab-btn"        id="${p}tabBtn_build"    onclick="switchTab('${esc(bg)}','build')">${vscode.l10n.t('Build')}</button>
+  ${commonHtml !== null ? `<button class="tab-btn" id="${p}tabBtn_common" onclick="switchTab('${esc(bg)}','common')">${vscode.l10n.t('Common')}</button>` : ''}
 </div>
 
 <div class="tab-panel" id="${p}tab_debugger">
@@ -1826,6 +1830,8 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 </div>
 </div>
 </div><!-- /tab_build -->
+
+${commonHtml !== null ? `<div class="tab-panel" id="${p}tab_common">${commonHtml}</div><!-- /tab_common -->` : ''}
 
 ${wrapClose}`;
 }

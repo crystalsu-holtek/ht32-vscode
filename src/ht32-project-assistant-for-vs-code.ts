@@ -11,8 +11,9 @@ import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSe
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
 import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
-import { semverCmp, writeProjectLists, resolveInclude, parseIncludesList } from './tools/utils';
+import { semverCmp, writeProjectLists, resolveInclude, parseIncludesList, pathEq } from './tools/utils';
 import { syncAfterBuildBats } from './tools/afterbuildSync';
+import { writeCodeWorkspace } from './tools/codeWorkspace';
 import * as https from 'https';
 import AdmZip = require('adm-zip');
 
@@ -81,6 +82,9 @@ interface Ht32BuildTaskDef extends vscode.TaskDefinition {
 
 // Shared GCC diagnostic pattern: file:line:col: error|warning|note: ...
 const GCC_DIAG_RE = /^(.+?):(\d+):(\d+):\s+(?:error|warning|note):\s/;
+// Linker error lines (ld/collect2) that lack a line:col prefix
+const LD_ERROR_RE  = /\bundefined reference to\b|\bmultiple definition of\b|\bcannot find -l\S|\boverflowed by \d/;
+const LD_NOTICE_RE = /^collect2(?:\.exe)?:\s+error:/i;
 
 class BuildPseudoterminal implements vscode.Pseudoterminal {
   private writeEmitter = new vscode.EventEmitter<string>();
@@ -111,8 +115,10 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
     const splitter = new LineSplitter(raw => {
       let colored: string;
       if (/:\d+:\d+:\s+(?:fatal\s+)?error:/.test(raw)) { errors++;   colored = `\x1b[31m${toAbsLine(raw)}\x1b[0m`; }
-      else if (/:\d+:\d+:\s+warning:/.test(raw)) { warnings++; colored = `\x1b[33m${toAbsLine(raw)}\x1b[0m`; }
-      else                                        {             colored = toAbsLine(raw); }
+      else if (/:\d+:\d+:\s+warning:/.test(raw))        { warnings++; colored = `\x1b[33m${toAbsLine(raw)}\x1b[0m`; }
+      else if (LD_ERROR_RE.test(raw))                    { errors++;   colored = `\x1b[31m${raw}\x1b[0m`; }
+      else if (LD_NOTICE_RE.test(raw))                   {             colored = `\x1b[31m${raw}\x1b[0m`; }
+      else                                               {             colored = toAbsLine(raw); }
       this.writeEmitter.fire(colored + '\r\n');
     });
     const sep  = process.platform === 'win32' ? ';' : ':';
@@ -610,9 +616,9 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const activeFile = readActiveProjectFile(bgParent(root)) || '';
       if (!activeFile) { vscode.window.showErrorMessage(vscode.l10n.t('No active project file.')); return; }
       // Read currently listed projects from .ht32vs
-      const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
-      const _parsed = parseHt32vsFile(ht32wsPath, e =>
-        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32wsPath), e.message))
+      const ht32vsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
+      const _parsed = parseHt32vsFile(ht32vsPath, e =>
+        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32vsPath), e.message))
       );
       if (!_parsed) return;
       const existing: string[] = _parsed.projects ?? [];
@@ -655,9 +661,9 @@ export async function activate(ctx: vscode.ExtensionContext) {
       const activeFile = readActiveProjectFile(parent) || '';
       if (!activeFile) return;
       const dirName = item.id ? path.basename(item.id as string) : (item.label as string);
-      const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
-      const parsed = parseHt32vsFile(ht32wsPath, e =>
-        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32wsPath), e.message))
+      const ht32vsPath = path.isAbsolute(activeFile) ? activeFile : path.join(parent, activeFile);
+      const parsed = parseHt32vsFile(ht32vsPath, e =>
+        vscode.window.showErrorMessage(vscode.l10n.t('Project file "{0}" contains invalid JSON: {1}', path.basename(ht32vsPath), e.message))
       );
       if (!parsed) return;
       const projects: string[] = parsed.projects ?? [];
@@ -670,7 +676,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       }
       const updated = projects.filter(p => p !== dirName);
       if (updated.length === projects.length) { return; }
-      fs.writeFileSync(ht32wsPath, JSON.stringify({ projects: updated }, null, 2), 'utf8');
+      fs.writeFileSync(ht32vsPath, JSON.stringify({ projects: updated }, null, 2), 'utf8');
       await refreshTasksConfig(tree, root, 'removing project');
     }),
     vscode.commands.registerCommand('ht32.closeProject',  () => {
@@ -1052,8 +1058,13 @@ export async function activate(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.uri.scheme !== 'file' || !doc.fileName.toLowerCase().endsWith('.ht32vs')) { return; }
       const folder = path.dirname(doc.uri.fsPath);
+      const baseName = path.basename(doc.uri.fsPath, '.ht32vs');
+      const expectedWsFile = path.join(folder, `${baseName}.code-workspace`);
       const currentRoot = currentWsRoot();
-      if (!currentRoot || path.resolve(currentRoot) !== path.resolve(folder)) {
+      const inRightWs = !!currentRoot && pathEq(currentRoot, folder)
+        && !!vscode.workspace.workspaceFile
+        && pathEq(vscode.workspace.workspaceFile.fsPath, expectedWsFile);
+      if (!inRightWs) {
         openHt32vsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
       }
     })
@@ -1063,8 +1074,13 @@ export async function activate(ctx: vscode.ExtensionContext) {
   for (const doc of vscode.workspace.textDocuments) {
     if (doc.uri.scheme !== 'file' || !doc.fileName.toLowerCase().endsWith('.ht32vs')) { continue; }
     const folder = path.dirname(doc.uri.fsPath);
+    const baseName = path.basename(doc.uri.fsPath, '.ht32vs');
+    const expectedWsFile = path.join(folder, `${baseName}.code-workspace`);
     const currentRoot = currentWsRoot();
-    if (!currentRoot || path.resolve(currentRoot) !== path.resolve(folder)) {
+    const inRightWs = !!currentRoot && pathEq(currentRoot, folder)
+      && !!vscode.workspace.workspaceFile
+      && pathEq(vscode.workspace.workspaceFile.fsPath, expectedWsFile);
+    if (!inRightWs) {
       openHt32vsFile(ctx, tree, doc.uri.fsPath).catch(() => {});
       break;
     }
@@ -2574,9 +2590,13 @@ function createProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTreePro
       await addRecentProject(ctx, cpProjFile);
 
       const _curRoot = currentWsRoot();
-      if (!_curRoot || path.resolve(_curRoot) !== path.resolve(wsOpenRoot)) {
+      const wsFilePathCp = cpProjFile.replace(/\.ht32vs$/, '.code-workspace');
+      const inRightWsCp = !!_curRoot && pathEq(_curRoot, wsOpenRoot)
+        && !!vscode.workspace.workspaceFile
+        && pathEq(vscode.workspace.workspaceFile.fsPath, wsFilePathCp);
+      if (!inRightWsCp) {
         ctx.globalState.update('ht32.focusHt32OnActivate', true);
-        await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsOpenRoot));
+        await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsFilePathCp));
       } else {
         // writeOrUpdateProjectFile already wrote activeProjectFile to settings.json — just refresh.
         tree.setRoot(wsOpenRoot);
@@ -2681,39 +2701,45 @@ async function openProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTre
     openLabel: 'Open HT32 Project',
   });
   if (!picks || !picks[0]) return;
-  const ht32wsPath = picks[0].fsPath;
-  await addRecentProject(ctx, ht32wsPath);
-  await openHt32vsFile(ctx, tree, ht32wsPath);
+  const ht32vsPath = picks[0].fsPath;
+  await addRecentProject(ctx, ht32vsPath);
+  await openHt32vsFile(ctx, tree, ht32vsPath);
 }
 
-/** Open a .ht32vs project file: set it as active and open the parent folder if needed. */
-async function openHt32vsFile(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, ht32wsPath: string) {
-  const bgParentDir = path.dirname(ht32wsPath);
-  const fileName    = path.basename(ht32wsPath);
-  const currentRoot = currentWsRoot();
-  if (currentRoot && path.resolve(currentRoot) === path.resolve(bgParentDir)) {
-    // Already in the right folder — write directly to settings.json (bypasses VS Code config API cache lag).
-    const settingsPath = path.join(bgParentDir, '.vscode', 'settings.json');
-    let settings: any = {};
-    if (fs.existsSync(settingsPath)) { try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {} }
-    settings['ht32.internal.activeProjectFile'] = fileName;
-    try { fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8'); } catch {}
+/** Open a .ht32vs project file: set it as active and open the .code-workspace if needed. */
+async function openHt32vsFile(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, ht32vsPath: string) {
+  const bgParentDir  = path.dirname(ht32vsPath);
+  const fileName     = path.basename(ht32vsPath);
+  const baseName     = path.basename(ht32vsPath, '.ht32vs');
+  const wsFilePath   = path.join(bgParentDir, `${baseName}.code-workspace`);
+  const currentRoot  = currentWsRoot();
+
+  // "In the right workspace" = folder[0] is HT32_VSCode/ AND workspaceFile is the matching .code-workspace.
+  const inRightWs = currentRoot && pathEq(currentRoot, bgParentDir)
+    && !!vscode.workspace.workspaceFile
+    && pathEq(vscode.workspace.workspaceFile.fsPath, wsFilePath);
+
+  // Always write activeProjectFile to settings.json before any potential reload.
+  const settingsPath = path.join(bgParentDir, '.vscode', 'settings.json');
+  let settings: any = {};
+  if (fs.existsSync(settingsPath)) { try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {} }
+  settings['ht32.internal.activeProjectFile'] = fileName;
+  try {
+    fs.mkdirSync(path.join(bgParentDir, '.vscode'), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  } catch {}
+
+  if (inRightWs) {
+    // Already in the correct workspace — just refresh the tree.
     tree.refresh();
     vscode.commands.executeCommand('ht32ProjectView.focus');
   } else {
-    // Write setting to settings.json before opening folder so it's ready on reload.
-    const settingsPath = path.join(bgParentDir, '.vscode', 'settings.json');
-    let settings: any = {};
-    if (fs.existsSync(settingsPath)) {
-      try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
-    }
-    settings['ht32.internal.activeProjectFile'] = fileName;
-    try {
-      fs.mkdirSync(path.join(bgParentDir, '.vscode'), { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    } catch {}
+    // Generate (or regenerate) the .code-workspace, then switch to it.
+    const bgDirNames = parseHt32vsFile(ht32vsPath)?.projects ?? [];
+    let wsWritten = false;
+    try { writeCodeWorkspace(ht32vsPath, bgDirNames); wsWritten = true; } catch {}
     ctx.globalState.update('ht32.focusHt32OnActivate', true);
-    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bgParentDir));
+    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsWritten ? wsFilePath : bgParentDir));
   }
 }
 
@@ -2868,10 +2894,10 @@ function parseHt32vsFile(filePath: string, onError?: (e: Error) => void): { proj
 function readProjectOrder(bgParentDir: string): string[] | undefined {
   const activeFile = readActiveProjectFile(bgParentDir);
   if (!activeFile) return undefined;
-  const ht32wsPath = path.isAbsolute(activeFile) ? activeFile : path.join(bgParentDir, activeFile);
-  const ws = parseHt32vsFile(ht32wsPath, () =>
+  const ht32vsPath = path.isAbsolute(activeFile) ? activeFile : path.join(bgParentDir, activeFile);
+  const ws = parseHt32vsFile(ht32vsPath, () =>
     vscode.window.showWarningMessage(
-      vscode.l10n.t('HT32: "{0}" has invalid JSON format and cannot be parsed. All projects will be shown. Please check the JSON format.', path.basename(ht32wsPath))
+      vscode.l10n.t('HT32: "{0}" has invalid JSON format and cannot be parsed. All projects will be shown. Please check the JSON format.', path.basename(ht32vsPath))
     )
   );
   if (ws && Array.isArray(ws.projects) && ws.projects.length > 0) {
@@ -3066,7 +3092,10 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     applyPrebuiltDiagnostics(allPrebuiltWarnings);
     applyConvertDiagnostics(allConvertWarnings);
     const _curRoot2 = currentWsRoot();
-    const needsReload2 = !_curRoot2 || path.resolve(_curRoot2) !== path.resolve(wsOpenRoot);
+    const wsFilePathUv = uvProjFile.replace(/\.ht32vs$/, '.code-workspace');
+    const needsReload2 = !_curRoot2 || !pathEq(_curRoot2, wsOpenRoot)
+      || !vscode.workspace.workspaceFile
+      || !pathEq(vscode.workspace.workspaceFile.fsPath, wsFilePathUv);
     const hasAnyDiag2 = allPrebuiltWarnings.length > 0 || allConvertWarnings.length > 0;
     if (needsReload2) {
       if (allPrebuiltWarnings.length) {
@@ -3082,7 +3111,7 @@ async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     }
     if (needsReload2) {
       ctx.globalState.update('ht32.focusHt32OnActivate', true);
-      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsOpenRoot));
+      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsFilePathUv));
     }
   });
 }
@@ -3200,12 +3229,13 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
         writeOrUpdateProjectFile(bgParent(ideWsOpenRoot), [subName], subName);
       }
     }
+    let ideProjFile: string;
     {
       const ideConvDirNames = convResults.map(r => path.basename(r.bgDir));
       const wsBaseName = (convResults.length === 1)
         ? path.basename(convResults[0].bgDir)
         : ((activeWsRoot ? path.basename(activeWsRoot) : '') || path.basename(path.dirname(projectDirs[0])) || 'HT32');
-      const ideProjFile = writeOrUpdateProjectFile(bgParent(ideWsOpenRoot), ideConvDirNames, wsBaseName);
+      ideProjFile = writeOrUpdateProjectFile(bgParent(ideWsOpenRoot), ideConvDirNames, wsBaseName);
       await addRecentProject(ctx, ideProjFile);
     }
 
@@ -3251,7 +3281,10 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
 
     applyConvertDiagnostics(ideConvertWarnings);
     const _curRoot3 = currentWsRoot();
-    const needsReload3 = !_curRoot3 || path.resolve(_curRoot3) !== path.resolve(ideWsOpenRoot);
+    const wsFilePathIde = ideProjFile.replace(/\.ht32vs$/, '.code-workspace');
+    const needsReload3 = !_curRoot3 || !pathEq(_curRoot3, ideWsOpenRoot)
+      || !vscode.workspace.workspaceFile
+      || !pathEq(vscode.workspace.workspaceFile.fsPath, wsFilePathIde);
     if (ideConvertWarnings.length) {
       if (needsReload3) {
         const pendingFile = path.join(bgParent(ideWsOpenRoot), '.ht32-convert-warnings.json');
@@ -3262,7 +3295,7 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     }
     if (needsReload3) {
       ctx.globalState.update('ht32.focusHt32OnActivate', true);
-      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(ideWsOpenRoot));
+      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsFilePathIde));
     }
   });
 }
@@ -6006,12 +6039,6 @@ function ldRomRegions(buildGenDir: string, meta: Meta): Array<{ name: string; or
 const RECENT_KEY = 'ht32.recentProjects';
 const RECENT_MAX = 10;
 
-/** Case-insensitive path comparison on Windows to avoid duplicates from drive-letter casing differences. */
-function pathEq(a: string, b: string): boolean {
-  const na = path.normalize(a);
-  const nb = path.normalize(b);
-  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
-}
 
 async function removeRecentProject(ctx: vscode.ExtensionContext, folderPath: string): Promise<void> {
   const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => !pathEq(p, folderPath));
@@ -6047,13 +6074,14 @@ function pruneRecentProjects(ctx: vscode.ExtensionContext): string[] {
  *  Merges with existing list so previously added dirs are preserved.
  *  Returns the full path of the .ht32vs file. */
 function writeOrUpdateProjectFile(bgParentDir: string, bgDirs: string[], projectName: string): string {
-  const ht32wsPath = path.join(bgParentDir, projectName + '.ht32vs');
+  const ht32vsPath = path.join(bgParentDir, projectName + '.ht32vs');
   let prevProjects: string[] = [];
-  if (fs.existsSync(ht32wsPath)) {
-    prevProjects = parseHt32vsFile(ht32wsPath)?.projects ?? [];
+  if (fs.existsSync(ht32vsPath)) {
+    prevProjects = parseHt32vsFile(ht32vsPath)?.projects ?? [];
   }
   const merged = [...new Set([...prevProjects, ...bgDirs])];
-  fs.writeFileSync(ht32wsPath, JSON.stringify({ projects: merged }, null, 2), 'utf8');
+  fs.writeFileSync(ht32vsPath, JSON.stringify({ projects: merged }, null, 2), 'utf8');
+  try { writeCodeWorkspace(ht32vsPath, merged); } catch { /* non-critical */ }
 
   // Write ht32.activeProjectFile into .vscode/settings.json so TreeView filters correctly
   // after the next openFolder (or immediately if already in bgParentDir).
@@ -6068,7 +6096,7 @@ function writeOrUpdateProjectFile(bgParentDir: string, bgDirs: string[], project
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
   } catch {}
 
-  return ht32wsPath;
+  return ht32vsPath;
 }
 
 /** Returns immediate child nodes of parentPath in the group key trie. */
@@ -6155,8 +6183,8 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     let wsProjectOrder: string[] | undefined;
     const _activeFile: string | undefined = _settingsData['ht32.internal.activeProjectFile'];
     if (_activeFile) {
-      const _ht32wsPath = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
-      const _ws = parseHt32vsFile(_ht32wsPath);
+      const _ht32vsPath = path.isAbsolute(_activeFile) ? _activeFile : path.join(parent, _activeFile);
+      const _ws = parseHt32vsFile(_ht32vsPath);
       if (_ws && Array.isArray(_ws.projects) && _ws.projects.length > 0) {
         wsProjectOrder = _ws.projects.filter((p: unknown): p is string => typeof p === 'string');
         wsAllowedDirs = new Set(wsProjectOrder);

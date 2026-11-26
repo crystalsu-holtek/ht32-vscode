@@ -6,7 +6,7 @@ v0.3.3  (from v0.3.2)
 --------------------------------------------------------------------------------
 
 摘要
-  新功能（12）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
+  新功能（16）：HT32-IDE folder link 支援、TPMaker 自動同步、linker_oldversion.ld 輸出、
                TreeView 子群組支援、TreeView 統一 Remove/Delete 對話框、
                keil2gnu 格式全面改善（STACK/HEAP GCC labels、condStack、aw,%nobits）、
                Convert uVision INCLUDE 自動走 keil2gnu（不再 fallback template）、
@@ -14,8 +14,12 @@ v0.3.3  (from v0.3.2)
                Settings 新增 Build Before Debug（F5 可跳過重新編譯直接燒錄）、
                Build task 改用 CustomExecution（同一 terminal 顯示彩色 error/warning 統計行）、
                Erase Flash（toolbar 新增按鈕，pyocd/OpenOCD 均支援，chip erase）、
-               pyOCD 斷線偵測（電源移除自動彈 modal，支援重新連線或停止除錯）
-  修正（21）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
+               pyOCD 斷線偵測（電源移除自動彈 modal，支援重新連線或停止除錯）、
+               Settings Include Paths 改為 listbox 並支援上下排序、
+               .code-workspace 自動產生（開啟/建立/轉換專案自動切換 multi-root workspace）、
+               Settings 通用分頁獨立（single-project 時顯示為第五個分頁）、
+               toolbar ··· More Actions 加入 Convert uVision / Convert HT32-IDE 命令
+  修正（22）：uV CC 完整路徑、uV meta.json source 路徑、HT32-IDE GCC 路徑統一、
               開啟專案 GCC 路徑更新偵測、winget 進度條、ELF 清除容錯、Project_ 名稱前綴、
               Multi-project Move Up/Down 右鍵選單不出現、點選 .c 檔節點 clangd 不切換、
               Add/Delete project 不再彈工具鏈安裝 UI（skipUI）、
@@ -105,6 +109,28 @@ v0.3.3  (from v0.3.2)
   session 結束時 fs.unwatchFile 正確清除所有 pyocd session 的 watcher（包含非 active session）；
   繞過 onDidWriteTerminalData 的 window-focus throttle 問題（window inactive 時嚴重延遲）
 
+- Settings 編譯器分頁 — Include Paths 改為 listbox 並支援排序：
+  UI 由逐列 input + 瀏覽按鈕改為 <select size="8"> listbox；
+  新增 ↑ / ↓ 按鈕可調整選取項目的順序；右側 ✕ 移除選取項目；
+  下方新增文字輸入欄 + 瀏覽按鈕，填入路徑後按「+ Add」加入清單；
+  路徑順序直接反映 includes.list 寫入順序（即 -I 搜尋優先順序）
+
+- .code-workspace 自動產生與 multi-root workspace 切換：
+  開啟 .ht32vs、建立專案、轉換 uVision/HT32-IDE 後，
+  自動在 HT32_VSCode/ 產生同名 .code-workspace（含 .、..、及外部 include/source 目錄）；
+  若目前不在對應 .code-workspace，自動切換（vscode.openFolder），失敗時 fallback 開資料夾；
+  目的：讓 Ctrl+Shift+F 全域搜尋涵蓋 HT32_VSCode/ 以外的原始碼（如上層 FWLib）
+
+- Settings 通用 分頁獨立（single-project）：
+  Single-project 時，原本置於頁面底部的「通用」設定區塊改為分頁列第五個 tab；
+  Multi-project 保持原本放在最下方的版面；
+  ID 衝突問題（機器設定 DOM ID 全域唯一）透過 single/multi 分路渲染解決
+
+- toolbar ··· More Actions 加入 Convert 命令：
+  HT32 專案視圖右上角 ··· 選單新增「轉換 uVision 專案」與「轉換 HT32-IDE 專案」；
+  位置：Open Project 與 Close Project 之間，以分隔線區隔（group 2_convert）；
+  無須開啟歡迎畫面即可快速啟動轉換流程
+
 - TreeView 統一 Remove/Delete 對話框（Del 鍵 / 右鍵選單）：
   新增 ht32.treeDelete 命令，取代原本分散的 treeRemoveGroup / treeRemoveFile / treeDeleteFile；
   File 節點：第一個 modal 選擇「Remove from Project」或「Remove + Delete File」，
@@ -116,6 +142,10 @@ v0.3.3  (from v0.3.2)
   新增 removeFileFromMeta() helper，消除三份重複的 ldRel 路徑計算邏輯
 
 修正
+- Build terminal — linker 錯誤紅色顯示並計入 error 統計：
+  新增 LD_ERROR_RE（undefined reference / multiple definition / cannot find -l / overflowed）
+  與 LD_NOTICE_RE（collect2 error）匹配；匹配到的行以紅色顯示並累加 errors 計數；
+  修正：linker 錯誤發生時統計欄仍顯示「0 error(s)」、錯誤行未顯示紅色
 - Convert uVision — Makefile CC 路徑寫入完整路徑：
   cfgOpts.cc 改為 await locateArmGcc() || 'arm-none-eabi-gcc'；
   修正：原本固定寫 'arm-none-eabi-gcc' 裸名，Make 需依賴 PATH 才能找到工具鏈

@@ -1,6 +1,22 @@
 import * as fs   from 'fs';
 import * as path from 'path';
 
+export function pathEq(a: string, b: string): boolean {
+  const na = path.normalize(a);
+  const nb = path.normalize(b);
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+export function pathStartsWith(child: string, parent: string): boolean {
+  const c = path.normalize(child);
+  const p = path.normalize(parent);
+  if (process.platform === 'win32') {
+    return c.toLowerCase() === p.toLowerCase() ||
+           c.toLowerCase().startsWith(p.toLowerCase() + path.sep);
+  }
+  return c === p || c.startsWith(p + path.sep);
+}
+
 /**
  * Compare two version-like strings semantically (numeric segment by segment).
  * Handles plain versions ("1.0.76"), embedded versions ("Holtek.HT32_DFP.1.0.76.pack"),
