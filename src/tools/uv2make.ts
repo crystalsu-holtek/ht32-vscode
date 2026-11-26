@@ -2842,7 +2842,10 @@ export function patchLinkerScriptRom(
 
   // ── Step 1: Remove all existing HT32ROM_ entries ─────────────────────────
   ld = ld.replace(/^[ \t]*HT32ROM_\w+[ \t]*\([^)]*\)[ \t]*:[^\n]*\n/gm, '');
-  ld = ld.replace(/\n[ \t]*\.ht32rom_\w+[ \t]*:[ \t]*\{[^}]*\}[ \t]*>[ \t]*\w+[^\n]*/g, '');
+  // [^}]* matches newlines too, so this handles multi-line { ... } blocks
+  ld = ld.replace(/\n[ \t]*\.ht32rom_\w+[ \t]*:[^}]*\}[ \t]*>[ \t]*\w+[^\n]*/g, '');
+  // Normalize leftover blank lines (each removal leaves an extra \n)
+  ld = ld.replace(/\n{3,}/g, '\n\n');
 
   // ── Step 2: Collect files with rom settings ───────────────────────────────
   type RomFile = { objName: string; safeName: string; rom: FileRomOption };
@@ -2908,7 +2911,7 @@ export function patchLinkerScriptRom(
     const origin = /^0x/i.test(rom.origin)
       ? parseInt(rom.origin, 16) : parseInt(rom.origin, 10);
     const regionName = existingRegions.get(origin) ?? `HT32ROM_${safeName}`;
-    return `\n  .ht32rom_${safeName} :\n  {\n    *${objName}(.text* .rodata*)\n  } > ${regionName}`;
+    return `\n  .ht32rom_${safeName} :\n  {\n    */${objName}(.text* .rodata*)\n  } > ${regionName}`;
   }).join('\n');
 
   if (/^[ \t]*\.text[ \t]*:/m.test(ld)) {

@@ -343,7 +343,9 @@ export class StackAnalysisProvider implements vscode.TreeDataProvider<StackItem>
 
   getChildren(): StackItem[] {
     if (!this.stats) {
-      const label = vscode.debug.activeDebugSession ? 'Initializing...' : 'Start a debug session';
+      const label = vscode.debug.activeDebugSession
+        ? vscode.l10n.t('Initializing...')
+        : vscode.l10n.t('Start a debug session');
       return [new StackItem(label, '')];
     }
 
@@ -357,32 +359,32 @@ export class StackAnalysisProvider implements vscode.TreeDataProvider<StackItem>
     const items: StackItem[] = [];
 
     if (s.targetName) {
-      items.push(new StackItem('Target', s.targetName));
+      items.push(new StackItem(vscode.l10n.t('Target'), s.targetName));
     }
 
-    items.push(new StackItem('Stack Top Addr (Start)', hex8(s.stackTop)));
+    items.push(new StackItem(vscode.l10n.t('Stack Top Addr (Start)'), hex8(s.stackTop)));
 
     if (s.stackBottom !== null && size !== null) {
-      items.push(new StackItem('Stack Bottom Addr (End/Limit)', hex8(s.stackBottom)));
-      items.push(new StackItem('Stack Size',                    `${hex8(size)} [${size}]`));
+      items.push(new StackItem(vscode.l10n.t('Stack Bottom Addr (End/Limit)'), hex8(s.stackBottom)));
+      items.push(new StackItem(vscode.l10n.t('Stack Size'),                    `${hex8(size)} [${size}]`));
     } else if (s.stackBottomMissing) {
-      items.push(new StackItem('Stack Bottom Addr (End/Limit)', '[__HT_check_sp missing]', true));
+      items.push(new StackItem(vscode.l10n.t('Stack Bottom Addr (End/Limit)'), vscode.l10n.t('[__HT_check_sp missing]'), true));
     }
 
-    items.push(new StackItem('Current Usage', pctStr(s.currentUsed), usedPct >= WARN_PCT));
+    items.push(new StackItem(vscode.l10n.t('Current Usage'), pctStr(s.currentUsed), usedPct >= WARN_PCT));
 
     if (s.paintMax !== null) {
       const maxUsed = Math.max(s.paintMax, s.sessionMax);
       const maxAddr = (s.paintMax > s.sessionMax) ? s.paintAddr! : s.sessionMaxAddr;
       const maxPct  = size ? Math.round(maxUsed * 100 / size) : 0;
-      items.push(new StackItem('Peak Usage', pctStr(maxUsed), maxPct >= WARN_PCT));
-      items.push(new StackItem('Peak Addr',  hex8(maxAddr)));
+      items.push(new StackItem(vscode.l10n.t('Peak Usage'), pctStr(maxUsed), maxPct >= WARN_PCT));
+      items.push(new StackItem(vscode.l10n.t('Peak Addr'),  hex8(maxAddr)));
     } else if (s.stackBottomMissing) {
-      items.push(new StackItem('Peak Usage', '[__HT_check_sp missing]', true));
+      items.push(new StackItem(vscode.l10n.t('Peak Usage'), vscode.l10n.t('[__HT_check_sp missing]'), true));
     } else if (s.stackBottom !== null) {
-      items.push(new StackItem('Peak Usage',                    '', true));
-      items.push(new StackItem('call StackUsageAnalysisInit(0)', ''));
-      items.push(new StackItem('HTCFG_STACK_USAGE_ANALYSIS must be 1', ''));
+      items.push(new StackItem(vscode.l10n.t('Peak Usage'),                         '', true));
+      items.push(new StackItem(vscode.l10n.t('call StackUsageAnalysisInit(0)'),      ''));
+      items.push(new StackItem(vscode.l10n.t('HTCFG_STACK_USAGE_ANALYSIS must be 1'), ''));
     }
 
     return items;

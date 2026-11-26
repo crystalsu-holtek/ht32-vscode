@@ -856,13 +856,6 @@ function buildHtml(
   }
   .lib-path-row:last-child { border-bottom: none; }
   .lib-path-row input[type="text"] { font-size: 0.82em; padding: 4px 6px; }
-  .inc-path-row {
-    display: grid; grid-template-columns: 1fr 28px 28px;
-    gap: 6px; align-items: center;
-    padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border);
-  }
-  .inc-path-row:last-child { border-bottom: none; }
-  .inc-path-row input[type="text"] { font-size: 0.82em; padding: 4px 6px; }
   .def-row {
     display: flex; align-items: center; gap: 4px;
     width: calc(33.333% - 4px); min-width: 140px;
@@ -1036,38 +1029,58 @@ function browseDirAt(browseId, bgName) {
 }
 
 function addIncPath(bgName) {
-  var rows = document.getElementById(pid(bgName, 'extraIncRows'));
-  var ph = rows.querySelector('.no-items');
-  if (ph) ph.remove();
+  var sel = document.getElementById(pid(bgName, 'extraIncSel'));
+  var editInp = document.getElementById(pid(bgName, 'extraIncEdit'));
+  if (!sel || !editInp) return;
+  var val = editInp.value.trim();
+  if (!val) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === val) { sel.selectedIndex = i; return; }
+  }
+  var opt = document.createElement('option');
+  opt.value = val; opt.text = val; opt.title = val;
+  sel.add(opt);
+  sel.selectedIndex = sel.options.length - 1;
+  editInp.value = '';
+  setDirty();
+}
 
-  var row = document.createElement('div');
-  row.className = 'inc-path-row';
+function removeIncPath(bgName) {
+  var sel = document.getElementById(pid(bgName, 'extraIncSel'));
+  var editInp = document.getElementById(pid(bgName, 'extraIncEdit'));
+  if (!sel || sel.selectedIndex < 0) return;
+  sel.remove(sel.selectedIndex);
+  if (editInp) editInp.value = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].value : '';
+  setDirty();
+}
 
-  var inp = document.createElement('input');
-  inp.type = 'text'; inp.className = 'inc-path-val';
-  inp.placeholder = 'e.g. ../../freertos/source/portable/GCC/ARM_CM4F';
+function moveIncPath(bgName, dir) {
+  var sel = document.getElementById(pid(bgName, 'extraIncSel'));
+  if (!sel || sel.selectedIndex < 0) return;
+  var idx = sel.selectedIndex;
+  var newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= sel.options.length) return;
+  var val = sel.options[idx].value; var ttl = sel.options[idx].title;
+  sel.options[idx].value = sel.options[idx].text = sel.options[newIdx].value;
+  sel.options[idx].title = sel.options[newIdx].title;
+  sel.options[newIdx].value = sel.options[newIdx].text = val;
+  sel.options[newIdx].title = ttl;
+  sel.selectedIndex = newIdx;
+  setDirty();
+}
 
-  var browseId = 'incBrowse_' + Date.now();
-  var browseBtn = document.createElement('button');
-  browseBtn.className = 'btn-secondary'; browseBtn.title = 'Browse directory';
-  browseBtn.style.cssText = 'padding:0 6px;min-width:26px;';
-  browseBtn.textContent = '\u2026';
-  browseBtn.addEventListener('click', function() { browseDirAt(browseId, bgName); });
-  inp.setAttribute('data-browse-id', browseId);
-
-  var removeBtn = document.createElement('button');
-  removeBtn.className = 'btn-remove'; removeBtn.title = 'Remove'; removeBtn.textContent = '\u2715';
-  removeBtn.addEventListener('click', function() { row.remove(); setDirty(); });
-
-  row.appendChild(inp); row.appendChild(browseBtn); row.appendChild(removeBtn);
-  rows.appendChild(row);
+function onIncSelChange(bgName) {
+  var sel = document.getElementById(pid(bgName, 'extraIncSel'));
+  var editInp = document.getElementById(pid(bgName, 'extraIncEdit'));
+  if (!sel || !editInp) return;
+  editInp.value = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].value : '';
 }
 
 function collectIncPaths(bgName) {
-  var rows = document.getElementById(pid(bgName, 'extraIncRows'));
-  if (!rows) return [];
-  return Array.from(rows.querySelectorAll('.inc-path-val'))
-    .map(function(inp) { return inp.value.trim(); })
+  var sel = document.getElementById(pid(bgName, 'extraIncSel'));
+  if (!sel) return [];
+  return Array.from(sel.options)
+    .map(function(o) { return o.value.trim(); })
     .filter(function(v) { return v !== ''; });
 }
 
@@ -1476,15 +1489,10 @@ function buildProjectSection(
   <input class="def-val" type="text" value="${esc(v)}" placeholder="e.g. USE_HT32_CHIP=4">
   <button class="btn-remove" onclick="this.closest('.def-row').remove();setDirty()" title="Remove">✕</button>
 </div>`).join('');
-  // extra include path rows
-  const incPathRowsHtml = (s.includePaths ?? []).map((v, i) => {
-    const browseId = `incBrowse_static_${p}${i}`;
-    return `<div class="inc-path-row">
-  <input class="inc-path-val" type="text" value="${esc(v)}" placeholder="e.g. ../../freertos/source/portable/GCC/ARM_CM4F" data-browse-id="${browseId}">
-  <button class="btn-secondary" title="Browse directory" style="padding:0 6px;min-width:26px;" onclick="browseDirAt('${browseId}','${esc(bgName)}')">&#8230;</button>
-  <button class="btn-remove" onclick="this.closest('.inc-path-row').remove();setDirty()" title="Remove">\u2715</button>
-</div>`;
-  }).join('');
+  // include path options for <select>
+  const incPathOptionsHtml = (s.includePaths ?? []).map(v =>
+    `<option value="${esc(v)}" title="${esc(v)}">${esc(v)}</option>`
+  ).join('');
 
   // linker script rows
   const ldRowsHtml = linkerScripts.map((v, i) => {
@@ -1706,10 +1714,23 @@ ${availableFlms.length > 0 ? `<button class="btn-secondary add-btn" onclick="add
 </div>
 <div class="row">
   <label>${vscode.l10n.t('Include Paths')}</label>
-  <div style="display:flex;flex-direction:column;gap:0">
-    <p class="hint" style="margin:0 0 4px">${vscode.l10n.t('All <code>-I</code> paths written to <code>includes.list</code>. Populated automatically at conversion time; add extra paths here (e.g. FreeRTOS GCC port directory).')}</p>
-    <div id="${id('extraIncRows')}">${incPathRowsHtml || `<p class="no-items">${vscode.l10n.t('No include paths.')}</p>`}</div>
-    <button class="btn-secondary add-btn" style="margin-top:4px;align-self:flex-start" onclick="addIncPath(${bgName ? `'${esc(bgName)}'` : "''"})">${vscode.l10n.t('+ Add Include Path')}</button>
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <p class="hint" style="margin:0 0 2px">${vscode.l10n.t('All <code>-I</code> paths written to <code>includes.list</code>. Populated automatically at conversion time; add extra paths here (e.g. FreeRTOS GCC port directory).')}</p>
+    <div style="display:flex;gap:6px;align-items:flex-start">
+      <select id="${id('extraIncSel')}" size="8" style="flex:1;min-height:120px;font-size:0.82em;padding:2px" onchange="onIncSelChange('${bg}');event.stopPropagation()" oninput="event.stopPropagation()">
+        ${incPathOptionsHtml}
+      </select>
+      <div style="display:flex;flex-direction:column;gap:2px;align-self:stretch">
+        <button class="btn-secondary" title="Move up"   style="padding:2px 8px" onclick="moveIncPath('${bg}',-1)">↑</button>
+        <button class="btn-secondary" title="Move down" style="padding:2px 8px" onclick="moveIncPath('${bg}',1)">↓</button>
+        <button class="btn-remove" title="Remove selected" style="margin-top:auto" onclick="removeIncPath('${bg}')">✕</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input id="${id('extraIncEdit')}" type="text" style="flex:1;font-size:0.82em;padding:4px 6px" placeholder="e.g. ../../freertos/source/portable/GCC/ARM_CM4F" data-browse-id="${id('extraIncBrowse')}" oninput="event.stopPropagation()" onchange="event.stopPropagation()">
+      <button class="btn-secondary" title="Browse directory" style="padding:0 6px;min-width:26px" onclick="browseDirAt('${id('extraIncBrowse')}','${esc(bgName)}')">&#8230;</button>
+      <button class="btn-secondary add-btn" style="white-space:nowrap;margin-top:0" onclick="addIncPath('${bg}')">${vscode.l10n.t('+ Add')}</button>
+    </div>
   </div>
 </div>
 <div class="row">

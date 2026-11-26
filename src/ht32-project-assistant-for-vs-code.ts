@@ -109,9 +109,11 @@ class BuildPseudoterminal implements vscode.Pseudoterminal {
       return path.resolve(this.cwd, m[1]) + line.slice(m[1].length);
     };
     const splitter = new LineSplitter(raw => {
-      if (/:\d+:\d+:\s+error:/.test(raw))        errors++;
-      else if (/:\d+:\d+:\s+warning:/.test(raw)) warnings++;
-      this.writeEmitter.fire(toAbsLine(raw) + '\r\n');
+      let colored: string;
+      if (/:\d+:\d+:\s+(?:fatal\s+)?error:/.test(raw)) { errors++;   colored = `\x1b[31m${toAbsLine(raw)}\x1b[0m`; }
+      else if (/:\d+:\d+:\s+warning:/.test(raw)) { warnings++; colored = `\x1b[33m${toAbsLine(raw)}\x1b[0m`; }
+      else                                        {             colored = toAbsLine(raw); }
+      this.writeEmitter.fire(colored + '\r\n');
     });
     const sep  = process.platform === 'win32' ? ';' : ':';
     const PATH = this.extraPath.length
@@ -542,7 +544,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
       if (!fs.existsSync(filePath)) {
         vscode.window.showErrorMessage(vscode.l10n.t('Project not found: {0}', filePath));
         const all = ctx.globalState.get<string[]>(RECENT_KEY, []);
-        await ctx.globalState.update(RECENT_KEY, all.filter(p => p !== filePath));
+        await ctx.globalState.update(RECENT_KEY, all.filter(p => !pathEq(p, filePath)));
         _recentTree?.refresh();
         return;
       }
@@ -593,7 +595,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
         } catch {}
         // Update recent projects list so the renamed entry doesn't disappear.
         const recents = ctx.globalState.get<string[]>(RECENT_KEY, []);
-        const updatedRecents = recents.map(p => path.resolve(p) === path.resolve(oldPath) ? newPath : p);
+        const updatedRecents = recents.map(p => pathEq(p, oldPath) ? newPath : p);
         await ctx.globalState.update(RECENT_KEY, updatedRecents);
         _recentTree?.refresh();
         tree.refresh();
@@ -1178,12 +1180,21 @@ async function handlePyocdDisconnect(session: vscode.DebugSession): Promise<void
       const stripped = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
       const parsed = JSON.parse(stripped);
       const configs: any[] = parsed.configurations ?? [];
-      const attachName = (session.configuration.name as string ?? '').replace(/\bDebug\b/, 'Attach');
-      const attachConfig = configs.find((c: any) => c.name === attachName) ?? null;
+      // Match by type+servertype+request+suffix — guards against non-HT32 attach configs and
+      // cross-server-type matches (pyocd session must not reconnect via openocd attach config).
+      const currentName   = session.configuration.name as string ?? '';
+      const currentSuffix = currentName.match(/\(([^)]+)\)$/)?.[1] ?? null;
+      const attachConfig  = configs.find((c: any) => {
+        if (c.request !== 'attach')                                          { return false; }
+        if (c.type !== 'cortex-debug')                                       { return false; }
+        if (c.servertype !== session.configuration.servertype)               { return false; }
+        const cSuffix = (c.name as string ?? '').match(/\(([^)]+)\)$/)?.[1] ?? null;
+        return currentSuffix === cSuffix;
+      }) ?? null;
       if (attachConfig) {
         await vscode.debug.startDebugging(wsFolder, attachConfig);
       } else {
-        vscode.window.showErrorMessage(vscode.l10n.t('Attach configuration not found: "{0}"', attachName));
+        vscode.window.showErrorMessage(vscode.l10n.t('Attach configuration not found: "{0}"', currentName));
       }
     } catch (e: any) {
       vscode.window.showErrorMessage(vscode.l10n.t('Reconnect failed: {0}', e?.message ?? String(e)));
@@ -5077,7 +5088,7 @@ async function generateTasksAndLaunchAndMakefile(
       ...(bgDevice ? [`set_expected_name ${bgDevice}`] : []),
     ];
 
-    // Config 命名規則：
+    // Config 命名規則（固定英文，寫入 launch.json 作為技術識別碼，不隨 UI 語言變化）：
     //   pyocd:   "HT32 PyOCD Debug (suffix)"  / "HT32 PyOCD Attach (suffix)"
     //   openocd: "HT32 OpenOCD Debug (suffix)" / "HT32 OpenOCD Attach (suffix)"
     //   external: same as openocd (legacy)
@@ -5995,15 +6006,22 @@ function ldRomRegions(buildGenDir: string, meta: Meta): Array<{ name: string; or
 const RECENT_KEY = 'ht32.recentProjects';
 const RECENT_MAX = 10;
 
+/** Case-insensitive path comparison on Windows to avoid duplicates from drive-letter casing differences. */
+function pathEq(a: string, b: string): boolean {
+  const na = path.normalize(a);
+  const nb = path.normalize(b);
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
 async function removeRecentProject(ctx: vscode.ExtensionContext, folderPath: string): Promise<void> {
-  const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => p !== folderPath);
+  const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => !pathEq(p, folderPath));
   await ctx.globalState.update(RECENT_KEY, list);
   if (list.length === 0) { await vscode.commands.executeCommand('setContext', 'ht32.hasRecent', false); }
   _recentTree?.refresh();
 }
 
 async function addRecentProject(ctx: vscode.ExtensionContext, folderPath: string): Promise<void> {
-  const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => p !== folderPath);
+  const list = (ctx.globalState.get<string[]>(RECENT_KEY, [])).filter(p => !pathEq(p, folderPath));
   list.unshift(folderPath);
   await ctx.globalState.update(RECENT_KEY, list.slice(0, RECENT_MAX));
   await vscode.commands.executeCommand('setContext', 'ht32.hasRecent', true);
@@ -6013,8 +6031,15 @@ async function addRecentProject(ctx: vscode.ExtensionContext, folderPath: string
 function pruneRecentProjects(ctx: vscode.ExtensionContext): string[] {
   const all  = ctx.globalState.get<string[]>(RECENT_KEY, []);
   const live = all.filter(p => fs.existsSync(p));
-  if (live.length !== all.length) { ctx.globalState.update(RECENT_KEY, live); }
-  return live;
+  // Deduplicate (case-insensitive on Windows) in case a stale duplicate slipped in.
+  const seen: string[] = [];
+  const deduped = live.filter(p => {
+    if (seen.some(s => pathEq(s, p))) return false;
+    seen.push(p);
+    return true;
+  });
+  if (deduped.length !== all.length) { ctx.globalState.update(RECENT_KEY, deduped); }
+  return deduped;
 }
 
 /** Create or update a .ht32vs project file and set it as active in .vscode/settings.json.
@@ -6209,13 +6234,34 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return this._makeGroupOrMixedItem(parsed.buildGenDir, parsed.groupName, proj);
     }
 
+    // 專案節點的父層是 vscode 節點
+    if (ctx === 'project' || ctx === 'project-first' || ctx === 'project-mid' || ctx === 'project-last') {
+      return this._makeVscodeItem();
+    }
+
+    // configFile 的父層是 configGroup；configGroup 的父層是 vscode 節點
+    if (ctx === 'configFile') {
+      const vscodeDir = path.dirname(el.id);
+      const item = new vscode.TreeItem('.vscode', vscode.TreeItemCollapsibleState.Collapsed);
+      item.id = `${vscodeDir}::configGroup`;
+      item.contextValue = 'configGroup';
+      item.iconPath = new vscode.ThemeIcon('folder');
+      return item;
+    }
+    if (ctx === 'configGroup') {
+      return this._makeVscodeItem();
+    }
+
     if (ctx !== 'group' && ctx !== 'groupMixed' && ctx !== 'groupFolder') return undefined;
     const parsed = parseGroupItemId(el.id);
     if (!parsed) return undefined;
     const { buildGenDir, groupName } = parsed;
     const proj = this.projects.find(p => p.buildGenDir === buildGenDir);
     if (!proj) return undefined;
-    if (!groupName.includes('/')) return this._makeProjectItem(proj, 0, 1);
+    if (!groupName.includes('/')) {
+      const projIdx = this.projects.indexOf(proj);
+      return this._makeProjectItem(proj, projIdx, this.projects.length);
+    }
 
     const parentPath = groupName.split('/').slice(0, -1).join('/');
     // parentPath is a direct key in meta.groups → parent is a group/groupMixed node
@@ -6223,6 +6269,31 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return this._makeGroupOrMixedItem(buildGenDir, parentPath, proj);
     }
     return this._makeFolderItem(buildGenDir, parentPath);
+  }
+
+  private _makeVscodeItem(state = vscode.TreeItemCollapsibleState.Collapsed): vscode.TreeItem | undefined {
+    if (!this.root) return undefined;
+    const vscodeDir = path.join(this.root, '.vscode');
+    if (!fs.existsSync(vscodeDir)) return undefined;
+    let _activeFile = '';
+    try { _activeFile = JSON.parse(fs.readFileSync(path.join(computeWsOpenRoot(this.root), '.vscode', 'settings.json'), 'utf8'))['ht32.internal.activeProjectFile'] || ''; } catch {}
+    const item = new vscode.TreeItem(_activeFile ? path.basename(_activeFile, '.ht32vs') : '.vscode', state);
+    item.contextValue = _activeFile ? 'vscodeRoot' : 'vscodeRootFolder';
+    item.id = vscodeDir;
+    item.iconPath = new vscode.ThemeIcon('folder-library');
+    return item;
+  }
+
+  private _makeProjectItems(): vscode.TreeItem[] {
+    return this.projects.map((proj, idx) => {
+      const item = this._makeProjectItem(proj, idx, this.projects.length);
+      item.iconPath = new vscode.ThemeIcon(proj.isLibrary ? 'package' : 'circuit-board');
+      const isClangdActive = this.projects.length > 1 && proj.buildGenDir === this._clangdActiveBgDir;
+      const descParts = [proj.mcu, proj.isLibrary ? 'lib' : '', isClangdActive ? '● clangd' : ''].filter(Boolean);
+      if (descParts.length) item.description = descParts.join(' · ');
+      item.tooltip = proj.buildGenDir + (isClangdActive ? '\n● clangd active' : '');
+      return item;
+    });
   }
 
   private _makeGroupOrMixedItem(buildGenDir: string, groupName: string, proj: ProjectEntry): vscode.TreeItem {
@@ -6260,35 +6331,28 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [];
     }
 
-    // 根層：.vscode 節點（顯示 .ht32vs 檔名）+ 每個 build-gen*/ 專案節點
+    // 根層：只有 .vscode 節點（Expanded）；無 .vscode 時直接展示專案節點
     if (!el) {
-      const items: vscode.TreeItem[] = [];
-      const vscodeDir = path.join(this.root!, '.vscode');
-      if (fs.existsSync(vscodeDir)) {
-        let _activeFile = '';
-        try { _activeFile = JSON.parse(fs.readFileSync(path.join(computeWsOpenRoot(this.root!), '.vscode', 'settings.json'), 'utf8'))['ht32.internal.activeProjectFile'] || ''; } catch {}
-        const _rootLabel = _activeFile ? path.basename(_activeFile, '.ht32vs') : '.vscode';
-        const vscodeItem = new vscode.TreeItem(_rootLabel, vscode.TreeItemCollapsibleState.Expanded);
-        vscodeItem.contextValue = _activeFile ? 'vscodeRoot' : 'vscodeRootFolder';
-        vscodeItem.id = vscodeDir;
-        vscodeItem.iconPath = new vscode.ThemeIcon('folder-library');
-        items.push(vscodeItem);
-      }
-      items.push(...this.projects.map((proj, idx) => {
-        const item = this._makeProjectItem(proj, idx, this.projects.length);
-        item.iconPath = new vscode.ThemeIcon(proj.isLibrary ? 'package' : 'circuit-board');
-        const isClangdActive = this.projects.length > 1 && proj.buildGenDir === this._clangdActiveBgDir;
-        const descParts = [proj.mcu, proj.isLibrary ? 'lib' : '', isClangdActive ? '● clangd' : ''].filter(Boolean);
-        if (descParts.length) item.description = descParts.join(' · ');
-        item.tooltip = proj.buildGenDir + (isClangdActive ? '\n● clangd active' : '');
-        return item;
-      }));
-      return items;
+      const vscodeItem = this._makeVscodeItem(vscode.TreeItemCollapsibleState.Expanded);
+      if (vscodeItem) return [vscodeItem];
+      // 沒有 .vscode 目錄（罕見）：直接顯示專案節點
+      return this._makeProjectItems();
     }
 
-    // .vscode 節點 → 直接子 .json 檔
+    // .vscode 節點 → 專案節點（先）+ .vscode config group（後，預設 Collapsed）
     if ((el as any).contextValue === 'vscodeRoot' || (el as any).contextValue === 'vscodeRootFolder') {
       const vscodeDir = el.id!;
+      const projItems = this._makeProjectItems();
+      const configGroup = new vscode.TreeItem('.vscode', vscode.TreeItemCollapsibleState.Collapsed);
+      configGroup.id = `${vscodeDir}::configGroup`;
+      configGroup.contextValue = 'configGroup';
+      configGroup.iconPath = new vscode.ThemeIcon('folder');
+      return [...projItems, configGroup];
+    }
+
+    // .vscode config group → .json 檔
+    if ((el as any).contextValue === 'configGroup') {
+      const vscodeDir = el.id!.replace(/::configGroup$/, '');
       let jsonItems: vscode.TreeItem[] = [];
       try {
         jsonItems = fs.readdirSync(vscodeDir)

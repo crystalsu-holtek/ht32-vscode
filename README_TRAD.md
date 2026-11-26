@@ -16,7 +16,7 @@ Holtek HT32 系列 Cortex-M 微控制器（M0+/M3/M4）專用 VS Code 擴充功�
 |---|------|------|
 | **1** | HT32 活動列圖示 | 點擊開啟 HT32 面板 |
 | **2** | 專案檔案樹 | 原始碼群組：右鍵可新增/移除檔案與群組 |
-| **3** | 工具列 | 快速操作按鈕：**Build**、**Clean**、**Download**、**Debug**、**Settings** 等<br>工具列最右側的 **`···`（更多動作）** 按鈕內含 **Open Project**、**Close Project** 與 **Create Project** |
+| **3** | 工具列 | 快速操作按鈕：**編譯**、**清除建置輸出**、**燒錄**、**除錯**、**開啟設定** 等<br>工具列最右側的 **`···`（更多動作）** 按鈕內含 **開啟專案**、**關閉專案** 與 **建立專案** |
 | **4** | 編輯器 | 主程式碼編輯區：顯示任何開啟中的原始檔 |
 | **5** | Configuration Wizard 控制項 | 開啟含有 Configuration Wizard 語法的檔案時出現於右上角<br>**預覽圖示**：可直接開啟視覺化精靈<br>**Text Editor ▼** 下拉選單：可切換文字編輯器與精靈視圖 |
 | **6** | 底部面板 | **Problems**：編譯錯誤與警告<br>**Output**：擴充功能與除錯器 log<br>**Debug Console**：除錯輸出<br>**Terminal**：Make 編譯的原始輸出 |
@@ -129,21 +129,21 @@ HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
 
 | 按鈕 | 功能 |
 |------|------|
-| Build | 編譯 |
-| Debug | 透過 pyOCD 或 OpenOCD 啟動 Cortex-Debug 除錯（Flash & Debug 或 Attach 模式） |
-| Clean | 刪除 `build/` 輸出目錄 |
-| Download | 燒錄韌體（不啟動除錯） |
-| Erase Flash | 清除整顆晶片的 Flash（chip erase） |
-| Settings | 開啟專案設定 |
-| Generate Build & Debug Config | 重新產生 `tasks.json` 與 `launch.json` |
+| 編譯 | 編譯 |
+| 除錯 | 透過 pyOCD 或 OpenOCD 啟動 Cortex-Debug 除錯（Flash & Debug 或 Attach 模式） |
+| 清除建置輸出 | 刪除 `build/` 輸出目錄 |
+| 燒錄 | 燒錄韌體（不啟動除錯） |
+| 清除 Flash | 清除整顆晶片的 Flash（chip erase） |
+| 開啟設定 | 開啟專案設定 |
+| 產生編譯與除錯設定 | 重新產生 `tasks.json` 與 `launch.json` |
 
 **`···`（更多動作）** 選單另外包含：
 
 | 項目 | 功能 |
 |------|------|
-| Create Project | 開啟建立專案精靈 |
-| Open Project | 開啟 `.ht32vs` 專案檔 |
-| Close Project | 關閉目前載入的專案 |
+| 建立專案 | 開啟建立專案精靈 |
+| 開啟專案 | 開啟 `.ht32vs` 專案檔 |
+| 關閉專案 | 關閉目前載入的專案 |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/more_actions.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -155,12 +155,12 @@ HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/5-1.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 
-將滑鼠移至根節點即可顯示兩個按鈕：**Add New Project**與 **Add Existing Project**：
+將滑鼠移至根節點即可顯示兩個按鈕：**新增子專案（新建）** 與 **新增子專案（現有）**：
 
 | 按鈕 | 功能 |
 |------|------|
-| **Add New Project** | 執行精靈，在同一資料夾建立新子專案 |
-| **Add Existing Project** | 從同一資料夾選取已轉換或建立的專案 |
+| **新增子專案（新建）** | 執行精靈，在同一資料夾建立新子專案 |
+| **新增子專案（現有）** | 從同一資料夾選取已轉換或建立的專案 |
 
 <br>
 
@@ -168,11 +168,11 @@ HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
 
 | 對象 | 操作 |
 |------|------|
-| 樹狀根節點（`.ht32vs`） | Rename Project File（重新命名）|
-| 子專案節點 | Move Up（上移）、Move Down（下移）、Open Folder in Explorer（開啟專案資料夾）、Remove Project（從清單移除）、Add Group（新增群組） |
-| 群組 | Add New Files（新建檔案）、Add Existing Files（加入現有檔案）、Add Group（在此群組下新增子群組）、Remove / Delete...（移除或刪除） |
-| 檔案 | File Settings（排除編譯 / Execute-only / ROM region）、Remove / Delete...（移除或從磁碟刪除） |
-| Linker 檔案（`.ld`） | Remove / Delete...（移除或從磁碟刪除） |
+| 樹狀根節點（`.ht32vs`） | 重新命名專案檔 |
+| 子專案節點 | 上移、下移、在檔案總管開啟資料夾、移除專案（從清單移除）、新增群組 |
+| 群組 | 新建檔案、加入現有檔案、新增群組（在此群組下新增子群組）、移除 / 刪除... |
+| 檔案 | 檔案設定...（排除編譯 / Execute-only / ROM region）、移除 / 刪除... |
+| Linker 檔案（`.ld`） | 移除 / 刪除... |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/12.jpg" width="300" style="border:1px solid #ccc; border-radius:4px; padding:3px;"><br>
 ---
@@ -188,8 +188,8 @@ HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
 | 方式 | 說明 |
 |------|------|
 | **雙擊 `.ht32vs`** | 在檔案總管雙擊 `.ht32vs` 檔案，直接開啟專案 |
-| **Open Project** | 透過歡迎畫面的 **Open** 按鈕、`···` 選單或 `HT32: Open Project` 指令瀏覽並開啟 `.ht32vs` 專案檔 |
-| **Recent Projects** | 點擊最近開啟清單中的任一項目（專案未開啟時顯示） |
+| **開啟專案** | 透過歡迎畫面的 **開啟專案** 按鈕、`···` 選單或 `HT32: 開啟專案` 指令瀏覽並開啟 `.ht32vs` 專案檔 |
+| **最近的專案** | 點擊最近開啟清單中的任一項目（專案未開啟時顯示） |
 
 ### 管理子專案
 
@@ -197,10 +197,10 @@ HT32 面板下方的**更新擴充功能**區塊提供兩個入口：
 
 | 操作 | 方式 |
 |------|------|
-| **新增子專案（新建）** | 將滑鼠移至根節點 → **Add New Project** — 執行建立專案精靈，新增子專案。精靈中的**專案資料夾**固定為目前已開啟的專案資料夾，無法變更。 |
-| **新增子專案（現有）** | 將滑鼠移至根節點 → **Add Existing Project** — 從同一資料夾中選取已轉換或建立的專案 |
-| **移除子專案** | 在專案節點按右鍵 → **Remove Project**，從清單中移除（磁碟上的檔案不會刪除）。僅剩一個子專案時無法執行。 |
-| **上移 / 下移** | 在專案節點按右鍵 → **Move Up** 或 **Move Down**，調整子專案在 **Build All** 時的編譯順序。 |
+| **新增子專案（新建）** | 將滑鼠移至根節點 → **新增子專案（新建）** — 執行建立專案精靈，新增子專案。精靈中的**專案資料夾**固定為目前已開啟的專案資料夾，無法變更。 |
+| **新增子專案（現有）** | 將滑鼠移至根節點 → **新增子專案（現有）** — 從同一資料夾中選取已轉換或建立的專案 |
+| **移除子專案** | 在專案節點按右鍵 → **移除專案**，從清單中移除（磁碟上的檔案不會刪除）。僅剩一個子專案時無法執行。 |
+| **上移 / 下移** | 在專案節點按右鍵 → **上移** 或 **下移**，調整子專案在 **Build All** 時的編譯順序。 |
 
 當目前只有**一個**子專案，新增第二個時將提示輸入**多專案檔名**（預設為專案根目錄名稱）。確認後產生：
 
@@ -237,17 +237,17 @@ MyProject/
 
 > 使用前請先從 Holtek 官網下載並準備好 HT32 FWLib。
 
-1. HT32 面板 → **Create Project**
+1. HT32 面板 → **建立專案**
 2. 依精靈步驟選擇：
 
 | 步驟 | 內容 |
 |------|------|
 | ① | 選擇 **HT32 FWLib 根目錄** |
 | ② | 選擇 **MCU 型號** |
-| ③ | 選擇輸出類型：**Executable (.elf)** 或 **Library (.a)** |
+| ③ | 選擇輸出類型：**可執行檔 (.elf)** 或 **程式庫 (.a)** |
 | ④ | 輸入**專案名稱**和儲存位置 |
 
-> **Library (.a)：** 產生靜態函式庫而非可執行檔。建立後只有一個空的 `.c` 檔作為起點——加入你的原始碼並實作函式庫內容即可。
+> **程式庫 (.a)：** 產生靜態函式庫而非可執行檔。建立後只有一個空的 `.c` 檔作為起點——加入你的原始碼並實作函式庫內容即可。
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/6-t.jpg" width="450" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -291,7 +291,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 ## 匯入 Keil uVision 專案
 
-1. HT32 面板 → **Convert uVision Project**
+1. HT32 面板 → **轉換 uVision 專案**
 2. 選取 `.uvprojx`（單一專案）或 `.uvmpw`（多專案）
 
 `.uvmpw` 可**一次轉換所有子專案**，每個子專案各產生一個獨立的目錄，目錄名稱即為 `.uvprojx` 的檔名。
@@ -342,7 +342,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 ## 匯入 HT32-IDE 專案
 
-1. HT32 面板 → **Convert HT32-IDE Projects**
+1. HT32 面板 → **轉換 HT32-IDE 專案**
 2. 選取一個或多個包含 `.project` / `.cproject` 的**專案資料夾**
 
 每個選取的資料夾各自轉換為 `HT32_VSCode/` 內的獨立目錄，共用 `HT32_VSCode/GNU_ARM/` 存放 startup、linker script 與自動產生的 C 檔案。產生的資料夾結構及**專案樹**組織方式，與匯入 uVision 專案相同。
@@ -355,12 +355,12 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 ## 建置
 
-- 點擊工具列的 **Build**
+- 點擊工具列的 **編譯**
 - 或按 `Ctrl+Shift+B`（直接執行預設建置任務 **Build (make)**）
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/8.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
-多專案時，工具列的 **Build**、**Debug**、**Clean**、**Download** 按鈕會彈出**快速選取清單**讓使用者選擇要操作哪個子專案。**Build** 與 **Clean** 另有 **Build All** / **Clean All** 選項，可依序處理所有子專案。編譯順序與**專案樹**的排列順序相同，可在專案節點上按右鍵 **Move Up / Move Down** 調整。
+多專案時，工具列的 **編譯**、**除錯**、**清除建置輸出**、**燒錄** 按鈕會彈出**快速選取清單**讓使用者選擇要操作哪個子專案。**編譯** 與 **清除建置輸出** 另有 **全部 Build** / **全部 Clean** 選項，可依序處理所有子專案。編譯順序與**專案樹**的排列順序相同，可在專案節點上按右鍵 **上移 / 下移** 調整。
 
 <br>
 
@@ -374,7 +374,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 ## 清除
 
-- 點擊工具列的 **Clean**，或按 **Ctrl+Alt+C**
+- 點擊工具列的 **清除建置輸出**，或按 **Ctrl+Alt+C**
 - 刪除 `HT32_VSCode/Project/build/`（或 `HT32_VSCode/Project_xxx/build/`）目錄下所有編譯輸出
 
 ---
@@ -385,7 +385,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 > **Cortex-Debug** 為相依套件，安裝本擴充功能時會自動一併安裝。
 
-燒錄（Download）與除錯（Debug）皆透過同一**除錯伺服器**執行，可在**設定 → Debugger → Debug Server** 切換：
+燒錄與除錯皆透過同一**除錯伺服器**執行，可在**設定 → 除錯器 → 除錯伺服器** 切換：
 
 | 除錯伺服器 | 說明 |
 |-----------|------|
@@ -394,14 +394,14 @@ MyProject/                 ← 使用者命名的專案資料夾
 
 > 若使用 J-Link 搭配 OpenOCD，Windows 需將驅動更換為 WinUSB；搭配 pyOCD 則保留原廠驅動即可。
 
-所有相關設定詳見「[專案設定 → Debugger 分頁](#debugger-分頁)」。
+所有相關設定詳見「[專案設定 → 除錯器 分頁](#除錯器-分頁)」。
 
 ### 燒錄韌體（Download）
 
 > 需要連接支援的除錯器（CMSIS-DAP / J-Link / ST-Link）
 
 1. 確認除錯器已連接並驅動正常
-2. 點擊工具列的 **Download**，或按 **Ctrl+Alt+D**
+2. 點擊工具列的 **燒錄**，或按 **Ctrl+Alt+D**
 3. 韌體自動燒錄，終端機顯示進度
 
 ### 清除 Flash（Erase Flash）
@@ -409,13 +409,13 @@ MyProject/                 ← 使用者命名的專案資料夾
 清除整顆晶片的 Flash，不燒錄新韌體。適用於現有韌體損壞或需要完全清除的情況。
 
 1. 確認除錯器已連接
-2. 點擊工具列的 **Erase Flash**
+2. 點擊工具列的 **清除 Flash**
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/10.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 ### 除錯（Debug）
 
-1. 點擊工具列的 **Debug**
+1. 點擊工具列的 **除錯**
 2. 自動編譯、燒錄，並開始除錯
 
 ### Attach（附接到執行中的目標）
@@ -426,7 +426,7 @@ MyProject/                 ← 使用者命名的專案資料夾
 2. 按 **F5** 或開啟**執行和除錯**（Ctrl+Shift+D）
 3. 從下拉選單選擇 **HT32 PyOCD Attach**（或 **HT32 OpenOCD Attach**）
 
-> Attach 不會編譯也不會燒錄，直接附接到執行中的目標，不會重置目標。
+> 附加模式不會編譯也不會燒錄，直接附接到執行中的目標，不會重置目標。
 
 | 模式 | 說明 |
 |------|------|
@@ -550,20 +550,20 @@ Error: Failed to read memory at 0x4xxxxxxx
 
 | 欄位 | 說明 |
 |------|------|
-| **Target** | ELF 檔名（輸出名稱） |
-| **Stack Top Addr (Start)** | 堆疊頂端（最高位址） |
-| **Stack Bottom Addr (End/Limit)** | 堆疊底端（堆疊限制位址） |
-| **Stack Size** | 堆疊總大小 |
-| **Current Usage** | 最近一次除錯器暫停時的堆疊使用量 |
-| **Peak Usage** | 最高堆疊使用量（需啟用 watermark 追蹤，見下方說明） |
-| **Peak Addr** | 最高使用量發生的記憶體位址 |
+| **目標** | ELF 檔名（輸出名稱） |
+| **堆疊頂端位址（起始）** | 堆疊頂端（最高位址） |
+| **堆疊底端位址（末端/上限）** | 堆疊底端（堆疊限制位址） |
+| **堆疊大小** | 堆疊總大小 |
+| **目前使用量** | 最近一次除錯器暫停時的堆疊使用量 |
+| **尖峰使用量** | 最高堆疊使用量（需啟用 watermark 追蹤，見下方說明） |
+| **尖峰位址** | 最高使用量發生的記憶體位址 |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/21.jpg" width="700" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 
-### 啟用 Peak（watermark）追蹤
+### 啟用尖峰（watermark）追蹤
 
-預設 **Peak Usage** 欄位顯示提示訊息。若需顯示實際峰值：
+預設 **尖峰使用量** 欄位顯示提示訊息。若需顯示實際峰值：
 
 1. 在 `ht32f5xxxx_conf.h`（或 `ht32f1xxxx_conf.h`）中將 `HTCFG_STACK_USAGE_ANALYSIS` 設為 `1`；49x 系列請在 conf.h 中手動新增此定義
 2. 在啟動時呼叫一次 `StackUsageAnalysisInit(0)`（RTOS scheduler 或主迴圈之前）
@@ -577,7 +577,7 @@ int main(void) {
 }
 ```
 
-兩個條件缺一不可；若未滿足，**Peak Usage** 欄位會顯示提示訊息而非數值。
+兩個條件缺一不可；若未滿足，**尖峰使用量** 欄位會顯示提示訊息而非數值。
 
 ---
 
@@ -585,21 +585,21 @@ int main(void) {
 
 ## 專案設定
 
-點擊工具列的 **Settings** 開啟設定面板，面板分為四個分頁：
+點擊工具列的 **開啟設定** 開啟設定面板，面板分為四個分頁：
 
-### Compiler 分頁
+### 編譯器 分頁
 
 | 設定項目 | 說明 |
 |----------|------|
-| Optimization | `-O0` / `-O1` / `-O2` / `-O3` / `-Os`（預設）/ `-Og` |
-| Debug Info | `-g3`（預設，完整 debug）/ `-g`（標準）/ `-g1`（僅行號）/ `-g0`（無，release 用）|
-| Float ABI | `soft`（M0/M3）/ `softfp` / `hard`（M4F） |
+| 優化等級 | `-O0` / `-O1` / `-O2` / `-O3` / `-Os`（預設）/ `-Og` |
+| Debug 資訊 | `-g3`（預設，完整 debug）/ `-g`（標準）/ `-g1`（僅行號）/ `-g0`（無，release 用）|
+| 浮點 ABI | `soft`（M0/M3）/ `softfp` / `hard`（M4F） |
 | FPU | `none` / `fpv4-sp-d16`（M4F）/ `fpv5-sp-d16`（M7）/ `fpv5-d16`（M7） |
-| LTO | 啟用 `-flto` |
-| Include Paths | 所有 `-I` 搜尋路徑，寫入 `includes.list`；轉換時自動填入，可在此新增額外路徑 |
-| C Defines | 前置處理器定義，寫入 `defines.list`；轉換時自動填入，可在此新增額外定義 |
-| ASM Defines | 組譯器前置處理器定義，寫入 `adefines.list`；轉換時自動填入，可在此新增額外定義 |
-| Extra CFLAGS | 附加編譯旗標，例如 `-DDEBUG` |
+| 連結期最佳化 | 啟用 `-flto` |
+| Include 路徑 | 所有 `-I` 搜尋路徑，寫入 `includes.list`；轉換時自動填入，可在此新增額外路徑 |
+| C 定義 | 前置處理器定義，寫入 `defines.list`；轉換時自動填入，可在此新增額外定義 |
+| ASM 定義 | 組譯器前置處理器定義，寫入 `adefines.list`；轉換時自動填入，可在此新增額外定義 |
+| 額外 CFLAGS | 附加編譯旗標，例如 `-DDEBUG` |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-1.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-2.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
@@ -608,18 +608,18 @@ int main(void) {
 
 <br>
 
-### Linker 分頁
+### 連結器 分頁
 
 | 設定項目 | 說明 |
 |----------|------|
-| Dead Code Elimination | 啟用 `-ffunction-sections -fdata-sections -Wl,--gc-sections`（預設開啟）— 移除未使用的函式與資料 |
-| C Runtime Library | `nano`（newlib-nano）/ `nosys`（不使用 syscalls）— 可同時勾選 |
-| printf float | 啟用浮點 printf（`-u _printf_float`） |
-| scanf float | 啟用浮點 scanf（`-u _scanf_float`） |
-| Libraries (-l) | 要連結的函式庫名稱。輸入名稱時不需加 `lib` 前綴，例如輸入 `MyDSP`，GCC 會在搜尋路徑中尋找 `libMyDSP.a`。若要直接加入預建 `.a` 檔（不透過搜尋路徑），請在工程視圖的群組上按右鍵，選擇**加入檔案至群組**。 |
-| Search Paths (-L) | GCC 搜尋函式庫的目錄（`-L"dir"`）。將含有 `.a` 檔的資料夾加入此處，再於上方 Libraries (-l) 填入對應的庫名。 |
-| Extra LDFLAGS | 直接傳給連結器的附加旗標。常見用途：`-Wl,--wrap=FunctionName`（攔截並替換特定函式）、`-Wl,--defsym=__heap_size=0x400`（覆蓋連結器符號值）。完整選項請參考 [GNU ld manual](https://sourceware.org/binutils/docs/ld/)。 |
-| Linker Scripts | 連結腳本路徑（相對於 build 目錄） |
+| 移除無用程式碼 | 啟用 `-ffunction-sections -fdata-sections -Wl,--gc-sections`（預設開啟）— 移除未使用的函式與資料 |
+| C 執行期程式庫 | `nano`（newlib-nano）/ `nosys`（不使用 syscalls）— 可同時勾選 |
+| nano printf 支援浮點數 | 啟用浮點 printf（`-u _printf_float`） |
+| nano scanf 支援浮點數 | 啟用浮點 scanf（`-u _scanf_float`） |
+| 程式庫 (-l) | 要連結的函式庫名稱。輸入名稱時不需加 `lib` 前綴，例如輸入 `MyDSP`，GCC 會在搜尋路徑中尋找 `libMyDSP.a`。若要直接加入預建 `.a` 檔（不透過搜尋路徑），請在工程視圖的群組上按右鍵，選擇**加入檔案至群組**。 |
+| 搜尋路徑 (-L) | GCC 搜尋函式庫的目錄（`-L"dir"`）。將含有 `.a` 檔的資料夾加入此處，再於上方 程式庫 (-l) 填入對應的庫名。 |
+| 額外 LDFLAGS | 直接傳給連結器的附加旗標。常見用途：`-Wl,--wrap=FunctionName`（攔截並替換特定函式）、`-Wl,--defsym=__heap_size=0x400`（覆蓋連結器符號值）。完整選項請參考 [GNU ld manual](https://sourceware.org/binutils/docs/ld/)。 |
+| Linker Script | 連結腳本路徑（相對於 build 目錄） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-3.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -627,20 +627,20 @@ int main(void) {
 
 <br>
 
-### Debugger 分頁
+### 除錯器 分頁
 
 | 設定項目 | 說明 |
 |----------|------|
-| **Debug Server** | **`PyOCD`**（預設）/ `OpenOCD` |
-| Debug Interface | `CMSIS-DAP`（e-Link32）/ `J-Link` / `ST-Link` |
-| Adapter Serial | 指定除錯器序號（空白 = 自動） |
-| Adapter Speed | 傳輸速率 kHz（空白 = 介面預設） |
-| Debug Level | 1~4 逐漸詳細（預設 1）|
-| DFP Path | 自訂 DFP 路徑 |
-| SVD File | 周邊暫存器 SVD 檔案（空白 = 自動偵測） |
-| Erase Mode | `erase_sector`（預設）/ `erase_chip` |
+| **除錯伺服器** | **`PyOCD`**（預設）/ `OpenOCD` |
+| 除錯介面 | `CMSIS-DAP`（e-Link32）/ `J-Link` / `ST-Link` |
+| 探針序號 | 指定探針序號（空白 = 自動） |
+| 探針速度 | 傳輸速率 kHz（空白 = 介面預設） |
+| 除錯等級 | 1~4 逐漸詳細（預設 1）|
+| DFP 路徑 | 自訂 DFP 路徑 |
+| SVD 檔案 | 周邊暫存器 SVD 檔案（空白 = 自動偵測） |
+| 抹除模式 | `erase_sector`（預設）/ `erase_chip` |
 | Smart Flash | （僅 PyOCD）跳過未更動頁面，加速重複燒錄； |
-| Flash Loaders | 附加外部 Flash Loader（例如 SPI Flash） |
+| Flash Loader | 附加外部 Flash Loader（例如 SPI Flash） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/17.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/16.png" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
@@ -651,26 +651,26 @@ int main(void) {
 
 <br>
 
-### Build 分頁
+### 建置 分頁
 
 | 設定項目 | 說明 |
 |----------|------|
-| Output Filename | 自訂輸出檔名（留空則沿用轉換時的名稱） |
-| Post-Build | Build 後執行的命令（工作目錄：`${workspaceFolder}` = `HT32_VSCode/`） |
+| 輸出檔名 | 自訂輸出檔名（留空則沿用轉換時的名稱） |
+| 建置後指令 | Build 後執行的命令（工作目錄：`${workspaceFolder}` = `HT32_VSCode/`） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-4.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
 <br>
 
-### Common 區塊
+### 通用 區塊
 
-顯示於 Settings 面板最上方，所有專案區塊之前。設定儲存於 VS Code 機器設定（User Settings），所有專案共用。
+顯示於 Settings 面板下方，所有專案區塊之後。設定儲存於 VS Code 機器設定（User Settings），所有專案共用。
 
 | 設定項目 | 說明 |
 |----------|------|
-| Build Before Debug (F5) | 取消勾選後，F5 直接燒錄並啟動除錯，不重新編譯（預設：勾選） |
-| GCC Path | `arm-none-eabi-gcc` 路徑（空白 = 自動偵測） |
-| OpenOCD Path | OpenOCD 路徑（空白 = 使用內建 OpenOCD） |
+| 除錯前先建置 (F5) | 取消勾選後，F5 直接燒錄並啟動除錯，不重新編譯（預設：勾選） |
+| GCC 路徑 (arm-none-eabi-gcc) | `arm-none-eabi-gcc` 路徑（空白 = 自動偵測） |
+| OpenOCD 路徑 | OpenOCD 路徑（空白 = 使用內建 OpenOCD） |
 
 <img src="https://raw.githubusercontent.com/ht32-holtek/ht32-vscode/main/media/15-5.jpg" width="500" style="border:1px solid #ccc; border-radius:4px; padding:3px;">
 
@@ -734,26 +734,26 @@ int main(void) {
 
 | 指令 | 說明 |
 |------|------|
-| `HT32: Create Project` | 開啟建立專案精靈 |
-| `HT32: Open Project` | 瀏覽並開啟 `.ht32vs` 專案檔 |
-| `HT32: Convert uVision Project` | 匯入 Keil `.uvprojx` / `.uvmpw` |
-| `HT32: Convert HT32-IDE Projects` | 匯入 Eclipse CDT `.project` |
-| `HT32: Build` | 執行建置任務 |
-| `HT32: Download` | 燒錄韌體 |
-| `HT32: Erase Flash` | 清除整顆晶片的 Flash（chip erase） |
-| `HT32: Debug` | 啟動除錯工作階段 |
-| `HT32: Clean` | 清除編譯輸出 |
-| `HT32: Open Settings` | 開啟專案設定 |
-| `HT32: Generate Build & Debug Config` | 重新產生 `tasks.json` 與 `launch.json` |
-| `HT32: Regenerate compile_commands.json` | 重新產生供 clangd 使用的 `compile_commands.json`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
-| `HT32: Regenerate Makefile` | 從 `project.meta.json` 重新產生 `Makefile`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
-| `HT32: Close Project` | 關閉目前載入的專案 |
-| `HT32: Clear Recent Projects` | 清除最近開啟清單 |
-| `HT32: Refresh Stack Usage` | 手動刷新 Stack Usage Analysis 面板 |
-| `HT32: Update Extension (Online)` | 從 VS Code Marketplace 檢查新版本並自動安裝 |
-| `HT32: Install Extension from VSIX` | 開啟檔案選擇器，安裝本機 `.vsix` 套件 |
-| `HT32: Update Device Packs (Online)` | 從 Holtek 官網下載並安裝缺少的 DFP packs |
-| `HT32: Install Device Pack from File` | 開啟檔案選擇器，安裝一個或多個本機 `.pack` 檔案 |
+| `HT32: 建立專案` | 開啟建立專案精靈 |
+| `HT32: 開啟專案` | 瀏覽並開啟 `.ht32vs` 專案檔 |
+| `HT32: 轉換 uVision 專案` | 匯入 Keil `.uvprojx` / `.uvmpw` |
+| `HT32: 轉換 HT32-IDE 專案` | 匯入 Eclipse CDT `.project` |
+| `HT32: 編譯` | 執行建置任務 |
+| `HT32: 燒錄` | 燒錄韌體 |
+| `HT32: 清除 Flash` | 清除整顆晶片的 Flash（chip erase） |
+| `HT32: 除錯` | 啟動除錯工作階段 |
+| `HT32: 清除建置輸出` | 清除編譯輸出 |
+| `HT32: 開啟設定` | 開啟專案設定 |
+| `HT32: 產生編譯與除錯設定` | 重新產生 `tasks.json` 與 `launch.json` |
+| `HT32: 重新產生 compile_commands.json` | 重新產生供 clangd 使用的 `compile_commands.json`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
+| `HT32: 重新產生 Makefile` | 從 `project.meta.json` 重新產生 `Makefile`；多專案工作區會顯示 QuickPick，可選擇單一專案或 **All Projects** |
+| `HT32: 關閉專案` | 關閉目前載入的專案 |
+| `HT32: 清除最近專案` | 清除最近開啟清單 |
+| `HT32: 重新整理堆疊使用分析` | 手動重新整理 Stack Usage Analysis 面板 |
+| `HT32: 更新擴充功能（線上）` | 從 VS Code Marketplace 檢查新版本並自動安裝 |
+| `HT32: 從 VSIX 安裝擴充功能` | 開啟檔案選擇器，安裝本機 `.vsix` 套件 |
+| `HT32: 更新裝置套件（線上）` | 從 Holtek 官網下載並安裝缺少的 DFP packs |
+| `HT32: 從 Pack 檔案安裝裝置套件` | 開啟檔案選擇器，安裝一個或多個本機 `.pack` 檔案 |
 
 > **注意：** Device Pack 的用途是讓 pyocd 認識原本不支援的 MCU 型號，只對使用 **pyocd** 的 debug 設定有效。若使用 OpenOCD，它有自己的內建腳本，安裝 Pack 不會有任何影響。
 
