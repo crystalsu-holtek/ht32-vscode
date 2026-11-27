@@ -1589,6 +1589,36 @@ export function fwlRootFromSourcePath(absPath: string): string | undefined {
 }
 
 /**
+ * Rename a source file with uppercase .C extension to .c so GCC treats it as C, not C++.
+ * Windows NTFS requires a two-step rename (via temp name) to change case.
+ * Returns the new absolute path (forward slashes), or the original path if no rename needed.
+ */
+export function renameCUpperToLower(absPath: string): string {
+  if (path.extname(absPath) !== '.C') return absPath;
+  const newAbs = absPath.slice(0, -2) + '.c';
+  if (!fs.existsSync(absPath)) {
+    // 已被前次呼叫改名（同一檔案出現兩次時），直接回傳 .c 版本
+    return fs.existsSync(newAbs) ? newAbs.replace(/\\/g, '/') : absPath;
+  }
+  const tmp = absPath + '.__tmp__';
+  try {
+    // Two-step rename to handle case-insensitive filesystems (Windows NTFS)
+    fs.renameSync(absPath, tmp);
+    fs.renameSync(tmp, newAbs);
+    logInfo(`Renamed ${path.basename(absPath)} → ${path.basename(newAbs)} (.C→.c for GCC compatibility)`);
+  } catch {
+    if (fs.existsSync(tmp)) {
+      try { fs.renameSync(tmp, absPath); } catch {}
+    } else if (fs.existsSync(newAbs) && !fs.existsSync(absPath)) {
+      // step 2 已完成但拋例外，newAbs 其實存在
+      return newAbs.replace(/\\/g, '/');
+    }
+    return absPath;
+  }
+  return newAbs.replace(/\\/g, '/');
+}
+
+/**
  * 從 FWLib root 取得 49x GCC startup 目錄（存在時才回傳）。
  *   {fwlRoot}/libraries/cmsis/cm4/device_support/startup/gcc/
  */
@@ -2135,6 +2165,12 @@ function extractProjectInfo(doc: any, projDir: string, fallbackName: string, bui
 
       let finalRel = rel;
 
+      // .C → .c: Keil is case-insensitive but GCC treats .C as C++
+      if (path.extname(abs) === '.C') {
+        const renamedAbs = renameCUpperToLower(abs);
+        finalRel = normalize(path.relative(projDir, renamedAbs));
+      }
+
       if (ext === ".s") {
         if (isArmGnu && gnuArmRoot) {
           // ARM-GNU 專案的 startup 已是 GCC 格式，直接複製到 GNU_ARM/，不過 keil2gnu
@@ -2642,9 +2678,10 @@ export async function buildCCDb(opts: {
   isystemPaths?: string[]; // prepended as -isystem flags after --target=arm-none-eabi
   gcSections?:  boolean;
 }): Promise<CCEntry[]> {
-  const compiler = opts.compiler || 'arm-none-eabi-gcc';
-  const fwdDir   = opts.bgDir.replace(/\\/g, '/');
-  const hasFpu   = opts.fpu && opts.fpu !== 'none';
+  const compiler  = opts.compiler || 'arm-none-eabi-gcc';
+  const normDrive = (p: string) => p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`);
+  const fwdDir    = normDrive(opts.bgDir);
+  const hasFpu    = opts.fpu && opts.fpu !== 'none';
   const fpuFlags = hasFpu
     ? [`-mfpu=${opts.fpu}`, `-mfloat-abi=${opts.floatAbi || 'hard'}`]
     : [`-mfloat-abi=${opts.floatAbi || 'soft'}`];
@@ -2655,16 +2692,16 @@ export async function buildCCDb(opts: {
     `-${opts.debugInfo ?? 'g3'}`,
     ...(opts.gcSections !== false ? ['-ffunction-sections', '-fdata-sections'] : []),
   ];
-  const defFlags = opts.defines.map(d => `-D${d}`);
-  const incFlags = opts.includes.map(p => `-I${p.replace(/\\/g, '/')}`);
-  const flags    = [...baseFlags, ...defFlags, ...incFlags];
+  const defFlags  = opts.defines.map(d => `-D${d}`);
+  const incFlags  = opts.includes.flatMap(p => ['-I', normDrive(p)]);
+  const flags     = [...baseFlags, ...defFlags, ...incFlags];
 
   const allSources = await expandIncludedCFiles(opts.absSources.filter(s => /\.(c|cpp)$/i.test(s)), opts.includes);
 
   return allSources.map(s => {
-    const fwdFile = s.replace(/\\/g, '/');
-    const isystemFlags = (opts.isystemPaths ?? []).map(p => `-isystem${p}`);
-    return { directory: fwdDir, file: fwdFile, arguments: [compiler, '--target=arm-none-eabi', ...isystemFlags, ...flags, '-c', fwdFile] };
+    const fwdFile      = normDrive(s);
+    const isystemFlags = (opts.isystemPaths ?? []).flatMap(p => ['-isystem', normDrive(p)]);
+    return { directory: fwdDir, file: fwdFile, arguments: [compiler, ...isystemFlags, ...flags, '-c', fwdFile] };
   });
 }
 

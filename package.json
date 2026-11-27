@@ -24,7 +24,7 @@
   "extensionPack": [
     "marus25.cortex-debug",
     "holtek.ht32-config-vscode",
-    "llvm-vs-code-extensions.vscode-clangd"
+    "ms-vscode.cpptools"
   ],
   "categories": [
     "Other",

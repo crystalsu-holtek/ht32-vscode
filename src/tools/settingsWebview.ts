@@ -506,7 +506,8 @@ export function openSettingsPanel(
   openocdRoot: string,
   extensionPath: string,
   onSave: (updateConfig: boolean) => Promise<void>,
-  detectedGccPath?: string
+  detectedGccPath?: string,
+  ctx?: vscode.ExtensionContext
 ): void {
   if (panel) { panel.reveal(); return; }
 
@@ -630,10 +631,12 @@ export function openSettingsPanel(
       const uris = await vscode.window.showOpenDialog({
         canSelectMany: false,
         openLabel: 'Select',
-        defaultUri: resolveBrowseDefaultUri(msg.currentPath as string | undefined, msg.bgDir as string | undefined),
+        defaultUri: resolveBrowseDefaultUri(msg.currentPath as string | undefined, msg.bgDir as string | undefined)
+          ?? getLastBrowseUri(ctx),
         filters: (msg.filters as Record<string, string[]> | undefined) ?? { 'All files': ['*'] },
       });
       if (uris && uris.length > 0) {
+        saveLastBrowseDir(ctx, uris[0].fsPath);
         const filePath = relativeBase
           ? path.relative(relativeBase, uris[0].fsPath).replace(/\\/g, '/')
           : uris[0].fsPath;
@@ -646,9 +649,11 @@ export function openSettingsPanel(
         canSelectFolders: true,
         canSelectFiles: false,
         openLabel: 'Select Folder',
-        defaultUri: resolveBrowseDefaultUri(msg.currentPath as string | undefined, msg.bgDir as string | undefined),
+        defaultUri: resolveBrowseDefaultUri(msg.currentPath as string | undefined, msg.bgDir as string | undefined)
+          ?? getLastBrowseUri(ctx),
       });
       if (uris && uris.length > 0) {
+        saveLastBrowseDir(ctx, uris[0].fsPath);
         const filePath = relativeBase
           ? path.relative(relativeBase, uris[0].fsPath).replace(/\\/g, '/')
           : uris[0].fsPath;
@@ -673,6 +678,21 @@ export function openSettingsPanel(
  */
 export function notifySettingsLinkerScriptsChanged(bgName: string, linkerScripts: string[]): void {
   panel?.webview.postMessage({ type: 'updateLinkerScripts', bgName, linkerScripts });
+}
+
+const LAST_BROWSE_KEY = 'ht32.lastBrowseDir';
+export function getLastBrowseUri(ctx: vscode.ExtensionContext | undefined): vscode.Uri | undefined {
+  if (!ctx) return undefined;
+  const p = ctx.globalState.get<string>(LAST_BROWSE_KEY);
+  if (p) try { return vscode.Uri.file(p); } catch {}
+  return undefined;
+}
+export function saveLastBrowseDir(ctx: vscode.ExtensionContext | undefined, picked: string) {
+  if (!ctx) return;
+  try {
+    const dir = fs.existsSync(picked) && fs.statSync(picked).isDirectory() ? picked : path.dirname(picked);
+    ctx.globalState.update(LAST_BROWSE_KEY, dir);
+  } catch {}
 }
 
 /** Resolve the default directory for a file/folder browse dialog.

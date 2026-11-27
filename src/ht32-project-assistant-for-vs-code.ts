@@ -7,7 +7,7 @@ import { exec as cpExec, spawn, ExecException, ExecOptions } from 'child_process
 import { XMLParser } from 'fast-xml-parser';
 import { uv2make, regenerateMakefileFlags, parseUvmpw, generateCompileRuleSection, extractDeviceInfoFromUvprojx, getAllPdscPaths, findSvdFile, clearSvdCache, generateStackAnalysis, buildCCDb, writeCCDbFromLists, buildMakefileText, fwlRootFromSourcePath, patchLinkerScriptRom, miscCNeedsRedefine, patchMiscCWeak, ensureStackAnalysisStrong, ensureStackAnalysisWeak, Meta, readProjectMeta, refreshDerivedFiles, LOG_WRITE } from './tools/uv2make';
 import { ensureToolchain, locateArmGcc, locateMake } from './tools/toolchain';
-import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot, selectIfaceCfgForProbe, runOpenocdProbe, findPyocdExeQuick, scanPyocdProbes } from './tools/settingsWebview';
+import { openSettingsPanel, AutoLoaderEntry, readProjectSettings, writeProjectSettings, scanAdapters, notifySettingsLinkerScriptsChanged, bgDirToProjectRoot, selectIfaceCfgForProbe, runOpenocdProbe, findPyocdExeQuick, scanPyocdProbes, getLastBrowseUri, saveLastBrowseDir } from './tools/settingsWebview';
 import { openCreateProjectPanel, generateProjectFiles } from './tools/createProject';
 import { generateMakefile, buildProjectMeta, generateLinkerScript, patchStartupFiles, writeHt32IdeLists, resolveHt32IdePostBuildPath, convertHt32IdeProject, computeHt32IdeVsDir, Ht32IdeConvertProjectResult } from './tools/ht32ide2make';
 import { StackAnalysisProvider, StackAnalysisTrackerFactory } from './tools/stackAnalysisProvider';
@@ -48,7 +48,6 @@ let convertDiagCollection:  vscode.DiagnosticCollection;
 /** ====== constants ====== */
 const PROJECT_VIEW_ID = 'ht32ProjectView';      // ← package.json 中 views[].id
 const CONTAINER_VIEW_ID = 'ht32Assistant';      // ← package.json 中 viewsContainers.activitybar[].id
-const MANAGED_CLANGD_ARG_PREFIXES = ['--compile-commands-dir=', '--query-driver='];
 /** ====== logging ====== */
 const CHANNEL = vscode.window.createOutputChannel('HT32 VSCode');
 function logInfo(msg: string) { CHANNEL.appendLine(`[INFO] ${msg}`); }
@@ -304,7 +303,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
     setTimeout(() => vscode.commands.executeCommand('workbench.trust.manage'), 500);
   }
 
-  setTimeout(() => ensureClangd().catch(() => {}), 3000);
+  setTimeout(() => ensureCppTools().catch(() => {}), 3000);
 
   if (ctx.globalState.get('ht32.focusOnActivate')) {
     ctx.globalState.update('ht32.focusOnActivate', false);
@@ -530,8 +529,8 @@ export async function activate(ctx: vscode.ExtensionContext) {
     if (!bgDir) { return; }
     const bgName = path.basename(bgDir);
     const bgParentDir = path.dirname(bgDir);
-    setClangdIntelliSenseProject(bgParentDir, bgName);
-    tree.setClangdActive(bgDir);
+    setCppToolsActiveProject(bgParentDir, bgName);
+    tree.setActiveIntelliSense(bgDir);
   }));
 
 
@@ -854,7 +853,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
           await regenAllMakefileFlags(root, bgDirsArg);  // 只 regen 此 .ht32vs 的 projects
         }
         tree.refresh();  // linkerScripts / sources 改變後同步更新 TreeView
-      }, detectedGcc ?? undefined);
+      }, detectedGcc ?? undefined, ctx);
     }),
     vscode.commands.registerCommand('ht32.download', () => smartRunTask('download')),
     vscode.commands.registerCommand('ht32.eraseFlash', () => smartRunTask('erase')),
@@ -1220,23 +1219,17 @@ async function handlePyocdDisconnect(session: vscode.DebugSession): Promise<void
   }
 }
 
-async function ensureClangd(): Promise<void> {
-  const clangdExt = vscode.extensions.getExtension('llvm-vs-code-extensions.vscode-clangd');
-  if (!clangdExt) return;
-
-  // 若 clangd.path 已指向有效執行檔，直接略過
-  const cfgPath = vscode.workspace.getConfiguration('clangd').get<string>('path', '');
-  if (cfgPath && fs.existsSync(cfgPath)) return;
-
-  // 檢查 PATH 裡是否已有 clangd
-  const foundInPath = await new Promise<boolean>(resolve => {
-    cpExec('where clangd', err => resolve(!err));
-  });
-  if (foundInPath) return;
-
-  // clangd binary 不存在，透過 vscode-clangd extension 觸發安裝
-  await clangdExt.activate();
-  await vscode.commands.executeCommand('clangd.install');
+async function ensureCppTools(): Promise<void> {
+  const installed = vscode.extensions.all.some(e => e.id === 'ms-vscode.cpptools');
+  if (installed) return;
+  const install = vscode.l10n.t('Install C/C++ Extension');
+  const choice = await vscode.window.showInformationMessage(
+    vscode.l10n.t('The Microsoft C/C++ extension (ms-vscode.cpptools) is required for IntelliSense. Install it now?'),
+    install
+  );
+  if (choice === install) {
+    await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-vscode.cpptools');
+  }
 }
 
 /** 將 .ht32vs 關聯到 VS Code（HKCU，不需 admin）。回傳 true 表示成功。 */
@@ -1725,10 +1718,11 @@ function exec(cmd: string, cwd: string): Promise<{ stdout: string; stderr: strin
   });
 }
 
-async function pickFile(globLabel: string, exts: string | string[]): Promise<string | undefined> {
+
+async function pickFile(globLabel: string, exts: string | string[], defaultUri?: vscode.Uri): Promise<string | undefined> {
   const filters: Record<string, string[]> = {};
   filters[globLabel] = Array.isArray(exts) ? exts : [exts];
-  const pick = await vscode.window.showOpenDialog({ canSelectMany: false, filters });
+  const pick = await vscode.window.showOpenDialog({ canSelectMany: false, filters, defaultUri });
   return pick?.[0]?.fsPath;
 }
 function ensureDir(fileOrDir: string) {
@@ -2177,113 +2171,27 @@ async function smartRunTask(kind: 'build' | 'clean' | 'download' | 'erase') {
   else                  { await runTask(sel.taskLabel); }
 }
 
-/** TreeView 選到 project node 時，更新 settings.json 的 --compile-commands-dir 並重啟 clangd。
- *  相同路徑直接略過，避免不必要的重啟。 */
-function setClangdIntelliSenseProject(root: string, bgName: string) {
-  let changed = false;
-  // 更新 .clangd 的 CompilationDatabase（可能未存在，non-critical）
-  try {
-    const destPath = path.join(root, '.clangd');
-    if (fs.existsSync(destPath)) {
-      const current = fs.readFileSync(destPath, 'utf8');
-      if (!current.includes(`CompilationDatabase: ${bgName}`)) {
-        const updated = current.replace(/CompilationDatabase:\s*.+/, `CompilationDatabase: ${bgName}`);
-        if (updated !== current) { fs.writeFileSync(destPath, updated); changed = true; }
-      }
-    }
-  } catch { /* non-critical */ }
-  // 更新 settings.json 的 --compile-commands-dir（關鍵：clangd 靠此找 compile_commands.json）
+/** TreeView 選到 project node 時，更新 .code-workspace 的 C_Cpp.default.compileCommands，
+ *  讓 cpptools 切換到該 project 的 compile_commands.json。
+ *  .code-workspace 是 workspace 層級設定，優先度高於 folder 層級的 settings.json。 */
+function setCppToolsActiveProject(root: string, bgName: string) {
   try {
     const settingsPath = path.join(root, '.vscode', 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      const args: string[] = Array.isArray(settings['clangd.arguments']) ? settings['clangd.arguments'] : [];
-      const newArgs = args.map((a: string) => {
-        if (!a.startsWith('--compile-commands-dir=')) return a;
-        // 只替換最後一段路徑（bgDir 名稱），保留 ${workspaceFolder} 等前綴
-        return a.replace(/\/[^/]+$/, `/${bgName}`);
-      });
-      if (JSON.stringify(newArgs) !== JSON.stringify(args)) {
-        settings['clangd.arguments'] = newArgs;
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-        changed = true;
-      }
-    }
-  } catch { /* non-critical */ }
-  if (changed) {
-    setTimeout(() => vscode.commands.executeCommand('clangd.restart').then(undefined, () => {}), 100);
-  }
-}
-
-/** 在 workspace root（HT32_VSCode/）內產出 .clangd。
- *  clangd 從 source file 往上找時會在 workspace root 找到，CompilationDatabase 路徑
- *  相對於此檔案位置，不含 HT32_VSCode/ 前綴，避免與 workspace root 解析衝突。
- *  gccPath 由呼叫端從 resolveToolchain 取得後傳入，推算 toolchain root 取得 isystem flags。 */
-function ensureClangdAtProjectRoot(root: string, bgName?: string, gccPath?: string) {
-  try {
-
-    const isystemFlags: string[] = [];
-    if (gccPath && fs.existsSync(gccPath)) {
-      const toolchainRoot = path.dirname(path.dirname(gccPath));
-      const newlibInc = path.join(toolchainRoot, 'arm-none-eabi', 'include').replace(/\\/g, '/');
-      if (fs.existsSync(newlibInc)) { isystemFlags.push(`-isystem${newlibInc}`); }
-      const gccLibBase = path.join(toolchainRoot, 'lib', 'gcc', 'arm-none-eabi');
-      if (fs.existsSync(gccLibBase)) {
-        const versions = fs.readdirSync(gccLibBase).sort(semverCmp);
-        const ver = versions[versions.length - 1];  // newest
-        if (ver) {
-          const inc = path.join(gccLibBase, ver, 'include').replace(/\\/g, '/');
-          if (fs.existsSync(inc)) { isystemFlags.push(`-isystem${inc}`); }
-          const incFixed = path.join(gccLibBase, ver, 'include-fixed').replace(/\\/g, '/');
-          if (fs.existsSync(incFixed)) { isystemFlags.push(`-isystem${incFixed}`); }
-        }
-      }
-    }
-
-    const lines = [
-      'CompileFlags:',
-      `  CompilationDatabase: ${bgName ?? '.vscode'}`,
-      '  Add:',
-      '    - --target=arm-none-eabi',
-      ...isystemFlags.map(f => `    - ${f}`),
-      'Diagnostics:',
-      '  UnusedIncludes: None',
-      '  ClangTidy:',
-      '    Remove:',
-      '      - readability-misleading-indentation',
-    ];
-    const destPath = path.join(root, '.clangd');
-    const newContent = lines.join('\n') + '\n';
-    const existed = fs.existsSync(destPath);
-    if (LOG_WRITE) logInfo(`Write → .clangd`);
-    fs.writeFileSync(destPath, newContent);
-    // 第一次產出時 clangd 已經啟動卻找不到 .clangd，需要重啟讓它重新載入設定
-    if (!existed) {
-      setTimeout(() => {
-        vscode.commands.executeCommand('clangd.restart').then(undefined, () => {});
-      }, 2000);
-    }
+    const ht32vsName: string = fs.existsSync(settingsPath)
+      ? (JSON.parse(fs.readFileSync(settingsPath, 'utf8'))['ht32.internal.activeProjectFile'] ?? '')
+      : '';
+    if (!ht32vsName) return;
+    const wsFilePath = path.join(root, ht32vsName.replace(/\.ht32vs$/i, '.code-workspace'));
+    if (!fs.existsSync(wsFilePath)) return;
+    const ws = JSON.parse(fs.readFileSync(wsFilePath, 'utf8'));
+    const wsFolderName = path.basename(root);
+    const newCcPath = `\${workspaceFolder:${wsFolderName}}/${bgName}/compile_commands.json`;
+    if ((ws.settings ?? {})['C_Cpp.default.compileCommands'] === newCcPath) return;
+    ws.settings = { ...(ws.settings ?? {}), 'C_Cpp.default.compileCommands': newCcPath };
+    fs.writeFileSync(wsFilePath, JSON.stringify(ws, null, 2) + '\n');
   } catch { /* non-critical */ }
 }
 
-/** 在 FWLib 根目錄寫入最小 .clangd（僅 UnusedIncludes: None）。
- *  只在尚無 .clangd 時寫入，不覆蓋使用者自訂設定。
- *  讓 clangd 解析 utilities/、libraries/ 等 FWLib 內的檔案時也套用相同診斷設定。 */
-function ensureClangdAtFwlibRoot(fwlibRoot: string | undefined) {
-  if (!fwlibRoot) return;
-  try {
-    const dest = path.join(fwlibRoot, '.clangd');
-    if (fs.existsSync(dest)) return;
-    const content = [
-      'Diagnostics:',
-      '  UnusedIncludes: None',
-      '  ClangTidy:',
-      '    Remove:',
-      '      - readability-misleading-indentation',
-    ].join('\n') + '\n';
-    fs.writeFileSync(dest, content);
-  } catch { /* non-critical */ }
-}
 
 
 interface ToolchainPaths {
@@ -2444,10 +2352,7 @@ async function autoAttachProjectFromWorkspace(ctx: vscode.ExtensionContext, tree
           const meta = readProjectMeta(bgDirs[0]);
           const anyLibSrc = Object.values(meta?.groups ?? {}).flat()
             .find(f => /[/\\](library|utilities)[/\\]/i.test(f));
-          if (anyLibSrc) {
-            const abs = path.isAbsolute(anyLibSrc) ? anyLibSrc : path.resolve(wsRoot, anyLibSrc);
-            ensureClangdAtFwlibRoot(fwlRootFromSourcePath(abs));
-          }
+          // ensureClangdAtFwlibRoot removed (switched to cpptools)
         }
       } catch { /* non-critical */ }
       // 每次開啟專案都重新產生 Makefile / sources.list / includes.list / defines.list / adefines.list
@@ -2699,9 +2604,11 @@ async function openProjectCommand(ctx: vscode.ExtensionContext, tree: ProjectTre
     canSelectMany: false,
     filters: { 'HT32 Project': ['ht32vs'] },
     openLabel: 'Open HT32 Project',
+    defaultUri: getLastBrowseUri(ctx),
   });
   if (!picks || !picks[0]) return;
   const ht32vsPath = picks[0].fsPath;
+  saveLastBrowseDir(ctx, ht32vsPath);
   await addRecentProject(ctx, ht32vsPath);
   await openHt32vsFile(ctx, tree, ht32vsPath);
 }
@@ -2919,8 +2826,9 @@ function clearActiveProjectFileSetting(wsRoot: string): void {
 /** ====== Convert: uVision (built-in uv2make) ====== */
 async function convertUvision(ctx: vscode.ExtensionContext, tree: ProjectTreeProvider, treeView: vscode.TreeView<vscode.TreeItem>) {
   // ── 步驟 1：選檔案、解析 workspace（UI 操作在 progress 之外）──
-  const picked = await pickFile('uVision Project / Workspace', ['uvprojx', 'uvmpw']);
+  const picked = await pickFile('uVision Project / Workspace', ['uvprojx', 'uvmpw'], getLastBrowseUri(ctx));
   if (!picked) return;
+  saveLastBrowseDir(ctx, picked);
 
   // toConvert：要轉換的 uvprojx 清單（含 isActive 資訊）
   let toConvert: Array<{ uvprojx: string; isActive: boolean }>;
@@ -3126,8 +3034,10 @@ async function convertHt32Ide(ctx: vscode.ExtensionContext, tree: ProjectTreePro
     canSelectMany:    true,
     openLabel: 'Select HT32-IDE Project Folder(s)',
     title: 'Convert HT32-IDE Projects',
+    defaultUri: getLastBrowseUri(ctx),
   });
   if (!picks || !picks.length) return;
+  saveLastBrowseDir(ctx, picks[0].fsPath);
 
   const isHt32IdeProject = (dir: string) =>
     fs.existsSync(path.join(dir, '.project')) && fs.existsSync(path.join(dir, '.cproject'));
@@ -3318,25 +3228,17 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
   data['cmake.configureOnOpen'] = false;
   data['cortex-debug.variableUseNaturalFormat'] = false;
 
-  // clangd: compile-commands-dir 指向 active project 的 bgDir，確保 source files 在任何位置時
-  // clangd 都能找到 compile_commands.json（source files 在 MDK_ARMv537/ 等 HT32_VSCode 的兄弟目錄）
-  const ccDir = bgRel
-    ? `\${workspaceFolder}/${bgRel}/${primaryBg}`
-    : `\${workspaceFolder}/${primaryBg}`;
-  const gccFull = gccPath ? gccPath.replace(/\\/g, '/') : undefined;
-  const queryDriver = gccFull
-    ? gccFull.replace(/arm-none-eabi-gcc(\.exe)?$/i, 'arm-none-eabi-*')
-    : '**/arm-none-eabi-gcc*';
-  // Preserve user-added clangd arguments; only update the two managed entries.
-  const existingClangdArgs: string[] = Array.isArray(data['clangd.arguments']) ? data['clangd.arguments'] : [];
-  data['clangd.arguments'] = [
-    `--compile-commands-dir=${ccDir}`,
-    `--query-driver=${queryDriver}`,
-    ...existingClangdArgs.filter(a => typeof a === 'string' && !MANAGED_CLANGD_ARG_PREFIXES.some(p => a.startsWith(p))),
-  ];
-  // 禁用 C/C++ extension 的內建 IntelliSense，讓 clangd 接管跳轉與 include 解析
-  // 若兩者並存，cpptools 會搶先接管，因為沒有 c_cpp_properties.json 所以 include 無法解析
-  data['C_Cpp.intelliSenseEngine'] = 'disabled';
+  // cpptools: workspace 層級明確啟用，覆蓋 user 層級可能的 disabled 設定
+  data['C_Cpp.intelliSenseEngine'] = 'default';
+  delete data['clangd.arguments'];
+  data['clangd.enabled'] = false;
+
+  // C_Cpp.default.compileCommands 套用到 workspace root 外的檔案（utilities/ 等）
+  // c_cpp_properties.json 的 compileCommands 只對 workspace 內的檔案有效
+  const ccPath = bgRel === ''
+    ? `\${workspaceFolder}/${primaryBg}/compile_commands.json`
+    : `\${workspaceFolder}/${bgRel}/${primaryBg}/compile_commands.json`;
+  data['C_Cpp.default.compileCommands'] = ccPath;
 
   // Auto-detect file encoding (Big5, Shift-JIS, …) — set as default, don't override if user changed it
   if (data['files.autoGuessEncoding'] === undefined) {
@@ -3349,6 +3251,36 @@ function writeMakefileToolsSettings(root: string, bgDirs: string[], gccPath?: st
   if (LOG_WRITE) logInfo(`Write → ${path.join(path.basename(path.dirname(settingsPath)), path.basename(settingsPath)).replace(/\\/g, '/')}`);
   fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2));
 
+}
+
+function writeCppProperties(root: string, bgDirs: string[], _gccPath?: string) {
+  try {
+    const vscodeDir = path.join(root, '.vscode');
+    const bgParentDir = bgParent(root);
+    const bgRel = path.relative(root, bgParentDir).replace(/\\/g, '/');
+    const readText = (p: string) => fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+
+    const configurations = bgDirs.map(bg => {
+      const bgAbsDir = path.join(bgParentDir, bg);
+      const includes = parseIncludesList(bgAbsDir, readText(path.join(bgAbsDir, 'includes.list')));
+      const defines  = [...readText(path.join(bgAbsDir, 'defines.list')).matchAll(/-D([^\s]+)/g)].map(m => m[1]);
+      const cfg: Record<string, unknown> = {
+        name: bg,
+        compileCommands: bgRel === ''
+          ? `\${workspaceFolder}/${bg}/compile_commands.json`
+          : `\${workspaceFolder}/${bgRel}/${bg}/compile_commands.json`,
+        includePath: includes,
+        defines,
+        intelliSenseMode: 'gcc-arm',
+      };
+      if (_gccPath) cfg['compilerPath'] = _gccPath.replace(/\\/g, '/');
+      return cfg;
+    });
+
+    const propsPath = path.join(vscodeDir, 'c_cpp_properties.json');
+    if (LOG_WRITE) logInfo(`Write → .vscode/c_cpp_properties.json`);
+    fs.writeFileSync(propsPath, JSON.stringify({ configurations, version: 4 }, null, 2));
+  } catch { /* non-critical */ }
 }
 
 async function generateTasksLaunchCommand(ctx: vscode.ExtensionContext) {
@@ -4733,13 +4665,13 @@ async function generateTasksAndLaunchAndMakefile(
   // bgRel: relative path from workspaceFolder to bgParentDir ('' for new layout, '.vscode' for old)
   const bgRel = path.relative(root, bgParentDir).replace(/\\/g, '/');
   /** Full cwd path for a Project dir in tasks.json */
-  const bgCwdOf = (bg: string) => bgRel
-    ? `\${workspaceFolder}/${bgRel}/${bg}`
-    : `\${workspaceFolder}/${bg}`;
+  const bgCwdOf = (bg: string) => bgRel === ''
+    ? `\${workspaceFolder}/${bg}`
+    : `\${workspaceFolder}/${bgRel}/${bg}`;
   /** ELF path relative to workspaceFolder */
-  const bgElfOf = (bg: string, name: string, ext: string) => bgRel
-    ? `${bgRel}/${bg}/build/${name}${ext}`
-    : `${bg}/build/${name}${ext}`;
+  const bgElfOf = (bg: string, name: string, ext: string) => bgRel === ''
+    ? `${bg}/build/${name}${ext}`
+    : `${bgRel}/${bg}/build/${name}${ext}`;
   // Read .ht32vs order for Build All sequence
   let ht32vsOrder: string[] | undefined;
   try {
@@ -4792,8 +4724,7 @@ async function generateTasksAndLaunchAndMakefile(
   // settings.json：需要 bgDirs 才能確定路徑，放在掃描完之後
   await writeMakefileToolsSettings(root, bgDirs, gccPath || undefined);
 
-  // .clangd：gcc 路徑已確定，統一在此產生，所有流程（create/open/convert）都經過這裡
-  ensureClangdAtProjectRoot(root, bgDirs[0], gccPath || undefined);
+  writeCppProperties(root, bgDirs, gccPath || undefined);
 
   // 把 make dir + gcc dir 都加進 PATH，確保 task 能找到工具
   const extPathFwd = extensionPath.replace(/\\/g, '/');
@@ -5158,7 +5089,7 @@ async function generateTasksAndLaunchAndMakefile(
         : p.replace(/\\/g, '/'));
     // pyocd.yaml + pyocd_user.py are always generated; yaml is always referenced via --config
     const pyocdYamlRef = projSettings.serverType === 'pyocd'
-      ? (bgRel ? `\${workspaceFolder}/${bgRel}/${bg}/pyocd.yaml` : `\${workspaceFolder}/${bg}/pyocd.yaml`)
+      ? (bgRel === '' ? `\${workspaceFolder}/${bg}/pyocd.yaml` : `\${workspaceFolder}/${bgRel}/${bg}/pyocd.yaml`)
       : undefined;
 
     if (projSettings.serverType === 'pyocd') {
@@ -5683,9 +5614,7 @@ function registerTreeEditCommands(
   ctx.subscriptions.push(vscode.commands.registerCommand('ht32.treeRevealProjectFolder', async (item: vscode.TreeItem) => {
     const buildGenDir = item.id;
     if (!buildGenDir) return;
-    // buildGenDir = …/HT32_VSCode/Project  → HT32_VSCode is the workspace/source root
-    const sourceRoot = path.dirname(buildGenDir);
-    await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(sourceRoot));
+    await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(buildGenDir));
   }));
 
   // Add Group (right-click on project node)
@@ -5796,8 +5725,10 @@ function registerTreeEditCommands(
       canSelectFolders: false,
       openLabel: 'Add Existing Files to Group',
       filters: { 'Source & Library Files': ['c', 'C', 's', 'S', 'cpp', 'h', 'H', 'a', 'o', 'obj', 'ld'] },
+      defaultUri: getLastBrowseUri(ctx),
     });
     if (!uris || uris.length === 0) return;
+    saveLastBrowseDir(ctx, uris[0].fsPath);
     await addFilesToGroupImpl(buildGenDir, groupName, uris);
   }));
 
@@ -6130,31 +6061,42 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
   private root?: string;
   private projects: ProjectEntry[] = [];
-  private _clangdActiveBgDir = '';
+  private _activeIntelliSenseBgDir = '';
   private _loading = false;
   private readonly _includesListCache = new Map<string, Promise<string[]>>();
 
   setRoot(r: string | undefined) {
     this.root = r;
-    if (r) { this._initClangdFromFile(r); } else { this._clangdActiveBgDir = ''; }
+    if (r) { this._initActiveBgFromWorkspace(r); }
+    else   { this._activeIntelliSenseBgDir = ''; }
+  }
+
+  /** 從 .code-workspace 的 C_Cpp.default.compileCommands 讀出 active bgDir。
+   *  與 setCppToolsActiveProject 一致：用 settings.json 的 ht32.internal.activeProjectFile 找正確的 .code-workspace。
+   *  回傳 true 表示成功設定，false 表示找不到。 */
+  private _initActiveBgFromWorkspace(root: string): boolean {
+    try {
+      const settingsPath = path.join(root, '.vscode', 'settings.json');
+      const ht32vsName: string = fs.existsSync(settingsPath)
+        ? (JSON.parse(fs.readFileSync(settingsPath, 'utf8'))['ht32.internal.activeProjectFile'] ?? '')
+        : '';
+      if (!ht32vsName) return false;
+      const wsFilePath = path.join(root, ht32vsName.replace(/\.ht32vs$/i, '.code-workspace'));
+      if (!fs.existsSync(wsFilePath)) return false;
+      const ws = JSON.parse(fs.readFileSync(wsFilePath, 'utf8'));
+      const ccPath: string = (ws.settings ?? {})['C_Cpp.default.compileCommands'] ?? '';
+      const match = ccPath.match(/\/([^/]+)\/compile_commands\.json$/);
+      if (!match) return false;
+      this._activeIntelliSenseBgDir = path.join(root, match[1]);
+      return true;
+    } catch { return false; }
   }
   getRoot() { return this.root; }
 
-  setClangdActive(bgDir: string) {
-    if (this._clangdActiveBgDir === bgDir) return;
-    this._clangdActiveBgDir = bgDir;
+  setActiveIntelliSense(bgDir: string) {
+    if (this._activeIntelliSenseBgDir === bgDir) return;
+    this._activeIntelliSenseBgDir = bgDir;
     this._em.fire();
-  }
-
-  private _initClangdFromFile(root: string) {
-    try {
-      const clangdPath = path.join(root, '.clangd');
-      const content = fs.readFileSync(clangdPath, 'utf8');
-      const match = content.match(/CompilationDatabase:\s*(\S+)/);
-      if (!match) return;
-      const bgName = match[1].replace(/\\/g, '/').split('/').pop();
-      if (bgName) this._clangdActiveBgDir = path.join(root, bgName);
-    } catch { /* non-critical */ }
   }
 
   setLoading(v: boolean) {
@@ -6316,10 +6258,10 @@ class ProjectTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return this.projects.map((proj, idx) => {
       const item = this._makeProjectItem(proj, idx, this.projects.length);
       item.iconPath = new vscode.ThemeIcon(proj.isLibrary ? 'package' : 'circuit-board');
-      const isClangdActive = this.projects.length > 1 && proj.buildGenDir === this._clangdActiveBgDir;
-      const descParts = [proj.mcu, proj.isLibrary ? 'lib' : '', isClangdActive ? '● clangd' : ''].filter(Boolean);
+      const isClangdActive = this.projects.length > 1 && proj.buildGenDir === this._activeIntelliSenseBgDir;
+      const descParts = [proj.mcu, proj.isLibrary ? 'lib' : '', isClangdActive ? '●' : ''].filter(Boolean);
       if (descParts.length) item.description = descParts.join(' · ');
-      item.tooltip = proj.buildGenDir + (isClangdActive ? '\n● clangd active' : '');
+      item.tooltip = proj.buildGenDir + (isClangdActive ? '\n● active' : '');
       return item;
     });
   }

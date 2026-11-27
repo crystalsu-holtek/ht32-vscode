@@ -76,10 +76,16 @@ export function writeCodeWorkspace(ht32vsPath: string, bgDirNames: string[]): st
   const outPath  = path.join(wsDir, `${baseName}.code-workspace`);
 
   const folders = computeWorkspaceFolders(wsDir, bgDirNames);
+  // ${workspaceFolder:FolderName} 明確指定 HT32_VSCode 這個 workspace folder，
+  // 使外部 workspace folder（utilities/ 等）中的檔案也能找到正確的 compile_commands.json。
+  const wsFolderName = path.basename(wsDir);
+  const primaryBg    = bgDirNames[0] ?? 'project';
   const content = {
     folders,
     settings: {
       'search.exclude': { '**/build/**': true },
+      'C_Cpp.default.compileCommands':
+        `\${workspaceFolder:${wsFolderName}}/${primaryBg}/compile_commands.json`,
     },
   };
 

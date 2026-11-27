@@ -3,7 +3,7 @@
 import * as fs   from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
-import { detectFpuPresentFromHeader, find49xGccDir, fwlRootFromSourcePath, fwlRootFromTemplate, is49xDevice, patchLdStackSections, specsFlags, makeSrcRule, makeSpacedSrcRule, buildMakefileText, enforceMinHeap, generateStackAnalysis, writeCCDbFromLists, logInfo, logWarn, bundledGnuDirFromFwlRoot, FileOption, relocateBatToWsRoot } from './uv2make';
+import { detectFpuPresentFromHeader, find49xGccDir, fwlRootFromSourcePath, fwlRootFromTemplate, is49xDevice, patchLdStackSections, specsFlags, makeSrcRule, makeSpacedSrcRule, buildMakefileText, enforceMinHeap, generateStackAnalysis, writeCCDbFromLists, logInfo, logWarn, bundledGnuDirFromFwlRoot, FileOption, relocateBatToWsRoot, renameCUpperToLower } from './uv2make';
 import { readProjectSettings, writeProjectSettings } from './settingsWebview';
 import { writeProjectLists } from './utils';
 
@@ -291,7 +291,9 @@ function parseProjectFile(projectPath: string, sourceEntries?: Array<{ name: str
     const nameParts = name.split('/');
     const group     = nameParts.length > 1 ? nameParts[0] : '(root)';
     const groupPath = nameParts.length > 2 ? nameParts.slice(0, -1).join('/') : undefined;
-    const absPath = resolveEclipseUri(uri, projectDir).replace(/\\/g, '/');
+    // .C → .c: Keil is case-insensitive but GCC treats .C as C++
+    const rawAbsPath = resolveEclipseUri(uri, projectDir);
+    const absPath = (isCompilable ? renameCUpperToLower(rawAbsPath) : rawAbsPath).replace(/\\/g, '/');
     // Skip Keil/MDK startup files — some 49x .project files include both
     // startup/gcc/ and startup/mdk/ variants; only the gcc one is GCC-compatible.
     if (/\/startup\/mdk\//i.test(absPath)) continue;
